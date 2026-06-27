@@ -38,6 +38,8 @@
 #define VPXPI_EVT_ON_PREPARE_FRAME      "OnPrepareFrame"      // Broadcasted when player starts preparing a new frame
 #define VPXPI_EVT_ON_UPDATE_PHYSICS     "OnUpdatePhysics"     // Broadcasted when player update physics (happens often, so must be used with care)
 #define VPXPI_EVT_ON_ACTION_CHANGED     "OnActionChanged"     // Broadcasted when an action state change, event data is an VPXActionEvent whose isPressed field can be modified by plugins
+#define VPXPI_EVT_ON_GAME_ELEMENT      "OnGameElement"       // Broadcasted when a table element fires a script event (hit, unhit, spin, etc.), event data is a VPXGameElementEvent
+#define VPXPI_MSG_GET_GAME_ELEMENTS    "GetGameElements"     // Broadcasted with a VPXGetGameElementsMsg to enumerate interactive table elements
 
 // Ancillary window rendering
 #define VPXPI_MSG_GET_AUX_RENDERER      "GetAuxRenderer"      // Broadcasted with a GetAncillaryRendererMsg to discover ancillary window renderer implemented in plugins
@@ -240,6 +242,44 @@ typedef struct VPXActionEvent
    int enableVPXProcessing;
 } VPXActionEvent;
 
+// Table element event IDs (matching COM dispatch IDs)
+typedef enum
+{
+   VPXELEMENT_EVT_HIT         = 1400, // Ball hit the element
+   VPXELEMENT_EVT_UNHIT       = 1401, // Ball left the element
+   VPXELEMENT_EVT_LIMIT_EOS   = 1402, // End of stroke (flipper)
+   VPXELEMENT_EVT_LIMIT_BOS   = 1403, // Beginning of stroke (flipper)
+   VPXELEMENT_EVT_ANIMATE     = 1404, // Animation frame
+   VPXELEMENT_EVT_SLINGSHOT   = 1101, // Slingshot fired
+   VPXELEMENT_EVT_FLIPPER_COLLIDE = 1200, // Flipper collision
+   VPXELEMENT_EVT_SPIN        = 1301, // Spinner rotation
+   VPXELEMENT_EVT_DROPPED     = 1302, // Drop target fell
+   VPXELEMENT_EVT_RAISED      = 1303, // Drop target raised
+   VPXELEMENT_EVT_TIMER       = 1300, // Timer event (high frequency, usually filtered)
+} VPXGameElementEventId;
+
+typedef struct VPXGameElementEvent
+{
+   const char* elementName;          // Element name (e.g. "Bumper001", "LeftFlipper")
+   VPXGameElementEventId eventId;    // Event type
+   int elementType;                  // ItemTypeEnum value identifying the element kind
+} VPXGameElementEvent;
+
+// Element info for table element enumeration
+typedef struct VPXGameElementInfo
+{
+   const char* name;                 // Element name string (e.g. "Bumper001")
+   int elementType;                  // ItemTypeEnum value (eItemBumper, eItemFlipper, etc.)
+} VPXGameElementInfo;
+
+// Message struct for VPXPI_MSG_GET_GAME_ELEMENTS broadcast
+typedef struct VPXGetGameElementsMsg
+{
+   unsigned int maxEntryCount;       // Capacity of entries array (0 = count query only)
+   unsigned int count;               // OUT: number of interactive elements
+   VPXGameElementInfo* entries;      // OUT: filled by VPX (caller allocates)
+} VPXGetGameElementsMsg;
+
 typedef struct VPXInputState
 {
    uint64_t actionMask;
@@ -294,5 +334,53 @@ typedef struct VPXPluginAPI
    // Destroy a texture created through this API.
    // Thread safe
    void(MSGPIAPI* DeleteTexture)(VPXTexture texture);
+
+   // Ball management
+   // Create a ball at a kicker device and kick it with the given parameters.
+   // deviceName: name of a Kicker element on the table (e.g., "BallRelease")
+   // angle: kick angle in degrees, speed: kick speed, inclination: kick inclination
+   // Returns 0 on success, -1 if no game is active, -2 if device not found, -3 if device is not a kicker.
+   // NOT Thread safe
+   int(MSGPIAPI* EjectBall)(const char* deviceName, const float angle, const float speed, const float inclination);
+
+   // Destroy the ball currently held by a kicker device.
+   // deviceName: name of a Kicker element on the table (e.g., "Drain")
+   // Returns the number of balls destroyed (0 or 1), -1 if no game is active, -2 if device not found, -3 if device is not a kicker.
+   // NOT Thread safe
+   int(MSGPIAPI* DestroyBall)(const char* deviceName);
+
+   // Light control
+   // Set the state of a Light element by name.
+   // deviceName: name of a Light element on the table (e.g., "B1L1")
+   // state: 0.0 = off, 1.0 = fully on, values in between for dimming
+   // Returns 0 on success, -1 if no game is active, -2 if element not found, -3 if element is not a light.
+   // NOT Thread safe
+   int(MSGPIAPI* SetLightState)(const char* deviceName, const float state);
+
+   // Drop target control
+   // Set the dropped state of a HitTarget element by name.
+   // deviceName: name of a HitTarget element on the table (e.g., "sw1")
+   // isDropped: 0 = raised (reset), 1 = dropped
+   // Returns 0 on success, -1 if no game is active, -2 if element not found, -3 if element is not a hit target.
+   // NOT Thread safe
+   int(MSGPIAPI* SetDropTargetState)(const char* deviceName, const int isDropped);
+
+   // Flipper control
+   // Set the state of a Flipper element by name.
+   // deviceName: name of a Flipper element on the table (e.g., "LeftFlipper")
+   // isActive: 1 = RotateToEnd (power stroke), 0 = RotateToStart (return to park)
+   // Returns 0 on success, -1 if no game is active, -2 if element not found, -3 if element is not a flipper.
+   // NOT Thread safe
+   int(MSGPIAPI* SetFlipperState)(const char* deviceName, const int isActive);
+
+   // Kick an existing ball held by a kicker device (kick-only, does NOT create a new ball).
+   // Counterpart to EjectBall: EjectBall creates + kicks (trough/launcher use case), while
+   // KickBall only kicks an already-held ball (gate->kicker flow). Calling KickBall on an
+   // empty kicker returns -4 instead of silently no-op'ing.
+   // deviceName: name of a Kicker element on the table (e.g., "Kicker1")
+   // angle: kick angle in degrees, speed: kick speed, inclination: kick inclination
+   // Returns 0 on success, -1 if no game is active, -2 if device not found, -3 if device is not a kicker, -4 if the kicker has no ball held.
+   // NOT Thread safe
+   int(MSGPIAPI* KickBall)(const char* deviceName, const float angle, const float speed, const float inclination);
 
 } VPXPluginAPI;

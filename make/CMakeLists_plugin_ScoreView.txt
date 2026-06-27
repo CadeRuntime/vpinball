@@ -88,16 +88,16 @@ if(BUILD_SHARED)
    endif()
 
    add_custom_command(TARGET ScoreViewPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/scoreview/plugin.cfg" "${PLUGINS_DIR}/scoreview/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:ScoreViewPlugin>" "${PLUGINS_DIR}/scoreview"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/scoreview/plugin.cfg" "${PLUGINS_DIR}/scoreview/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ScoreViewPlugin>" "${PLUGINS_DIR}/scoreview"
       COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/scoreview/layouts" "${PLUGINS_DIR}/scoreview/layouts"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:ScoreViewPlugin>"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS AND PLATFORM STREQUAL "windows-mingw")
       add_custom_command(TARGET ScoreViewPlugin POST_BUILD
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/scoreview/libgcc_s_seh-1.dll"
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/scoreview/libstdc++-6.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/scoreview/libgcc_s_seh-1.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/scoreview/libstdc++-6.dll"
       )
    endif()
 endif()

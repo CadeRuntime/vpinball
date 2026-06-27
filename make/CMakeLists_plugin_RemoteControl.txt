@@ -75,15 +75,15 @@ if(BUILD_SHARED)
    endif()
 
    add_custom_command(TARGET RemoteControlPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/remote-control/plugin.cfg" "${PLUGINS_DIR}/remote-control/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:RemoteControlPlugin>" "${PLUGINS_DIR}/remote-control"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/remote-control/plugin.cfg" "${PLUGINS_DIR}/remote-control/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:RemoteControlPlugin>" "${PLUGINS_DIR}/remote-control"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:RemoteControlPlugin>"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS AND PLATFORM STREQUAL "windows-mingw")
       add_custom_command(TARGET RemoteControlPlugin POST_BUILD
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/remote-control/libgcc_s_seh-1.dll"
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/remote-control/libstdc++-6.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/remote-control/libgcc_s_seh-1.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/remote-control/libstdc++-6.dll"
       )
    endif()
 endif()

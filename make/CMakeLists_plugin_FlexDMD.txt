@@ -172,8 +172,8 @@ if(BUILD_SHARED)
    endif()
 
    add_custom_command(TARGET FlexDMDPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/flexdmd/plugin.cfg" "${PLUGINS_DIR}/flexdmd/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:FlexDMDPlugin>" "${PLUGINS_DIR}/flexdmd"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/flexdmd/plugin.cfg" "${PLUGINS_DIR}/flexdmd/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:FlexDMDPlugin>" "${PLUGINS_DIR}/flexdmd"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:FlexDMDPlugin>"
       COMMAND "${CMAKE_COMMAND}" -E copy_directory ${CMAKE_SOURCE_DIR}/plugins/flexdmd/assets "${PLUGINS_DIR}/flexdmd/assets"
    )
@@ -182,60 +182,60 @@ if(BUILD_SHARED)
       if(PLATFORM STREQUAL "windows")
          if (ARCH STREQUAL "x64")
             file(GLOB FLEXDMD_FFMPEG_DLLS
-               "${RUNTIME_LIBS_DIR}/avcodec64-*.dll"
-               "${RUNTIME_LIBS_DIR}/avformat64-*.dll"
-               "${RUNTIME_LIBS_DIR}/avutil64-*.dll"
-               "${RUNTIME_LIBS_DIR}/swresample64-*.dll"
-               "${RUNTIME_LIBS_DIR}/swscale64-*.dll"
+               "${RUNTIME_LIBS_DIR}/avcodec64*.dll"
+               "${RUNTIME_LIBS_DIR}/avformat64*.dll"
+               "${RUNTIME_LIBS_DIR}/avutil64*.dll"
+               "${RUNTIME_LIBS_DIR}/swresample64*.dll"
+               "${RUNTIME_LIBS_DIR}/swscale64*.dll"
             )
             add_custom_command(TARGET FlexDMDPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/flexdmd/SDL364.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL3_image64.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image64.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/flexdmd/SDL364.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL3_image64.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image64.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
             )
          elseif (ARCH STREQUAL "x86")
             file(GLOB FLEXDMD_FFMPEG_DLLS
-               "${RUNTIME_LIBS_DIR}/avcodec-*.dll"
-               "${RUNTIME_LIBS_DIR}/avformat-*.dll"
-               "${RUNTIME_LIBS_DIR}/avutil-*.dll"
-               "${RUNTIME_LIBS_DIR}/swresample-*.dll"
-               "${RUNTIME_LIBS_DIR}/swscale-*.dll"
+               "${RUNTIME_LIBS_DIR}/avcodec*.dll"
+               "${RUNTIME_LIBS_DIR}/avformat*.dll"
+               "${RUNTIME_LIBS_DIR}/avutil*.dll"
+               "${RUNTIME_LIBS_DIR}/swresample*.dll"
+               "${RUNTIME_LIBS_DIR}/swscale*.dll"
             )
             add_custom_command(TARGET FlexDMDPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL3.dll" "${PLUGINS_DIR}/flexdmd/SDL3.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL3_image.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
-               COMMAND "${CMAKE_COMMAND}" -E copy ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL3.dll" "${PLUGINS_DIR}/flexdmd/SDL3.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL3_image.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
             )
          endif()
       elseif(PLATFORM STREQUAL "windows-mingw")
          file(GLOB FLEXDMD_FFMPEG_DLLS
-            "${RUNTIME_LIBS_DIR}/avcodec64-*.dll"
-            "${RUNTIME_LIBS_DIR}/avformat64-*.dll"
-            "${RUNTIME_LIBS_DIR}/avutil64-*.dll"
-            "${RUNTIME_LIBS_DIR}/swresample64-*.dll"
-            "${RUNTIME_LIBS_DIR}/swscale64-*.dll"
+            "${RUNTIME_LIBS_DIR}/avcodec64*.dll"
+            "${RUNTIME_LIBS_DIR}/avformat64*.dll"
+            "${RUNTIME_LIBS_DIR}/avutil64*.dll"
+            "${RUNTIME_LIBS_DIR}/swresample64*.dll"
+            "${RUNTIME_LIBS_DIR}/swscale64*.dll"
          )
          add_custom_command(TARGET FlexDMDPlugin POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/flexdmd/SDL364.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL3_image64.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image64.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/flexdmd/libgcc_s_seh-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/flexdmd/libstdc++-6.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/flexdmd/SDL364.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL3_image64.dll" "${PLUGINS_DIR}/flexdmd/SDL3_image64.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libiconv-2.dll" "${PLUGINS_DIR}/flexdmd/libiconv-2.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libbz2-1.dll" "${PLUGINS_DIR}/flexdmd/libbz2-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/liblzma-5.dll" "${PLUGINS_DIR}/flexdmd/liblzma-5.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/flexdmd/libwinpthread-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/zlib1.dll" "${PLUGINS_DIR}/flexdmd/zlib1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${FLEXDMD_FFMPEG_DLLS} "${PLUGINS_DIR}/flexdmd"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/flexdmd/libgcc_s_seh-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/flexdmd/libstdc++-6.dll"
          )
       elseif(PLATFORM STREQUAL "linux")
          add_custom_command(TARGET FlexDMDPlugin POST_BUILD

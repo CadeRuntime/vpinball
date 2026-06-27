@@ -93,6 +93,11 @@ public:
 
    void WriteRegDefaults() final;
 
+   // Returns true if this kicker currently holds a ball (used by the plugin
+   // API's KickBall entry point to distinguish "kicked an existing ball" from
+   // "no ball held" without silently no-op'ing as Kicker::KickXYZ does).
+   bool HasHeldBall() const;
+
    KickerData m_d;
 
    vector<Vertex3Ds> m_hitMesh;

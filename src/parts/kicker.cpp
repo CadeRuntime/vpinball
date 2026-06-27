@@ -699,6 +699,11 @@ STDMETHODIMP Kicker::DestroyBall(int *pVal)
    return S_OK;
 }
 
+bool Kicker::HasHeldBall() const
+{
+   return m_phitkickercircle && m_phitkickercircle->m_pHitBall;
+}
+
 // Ported at: VisualPinball.Unity/VisualPinball.Unity/VPT/Ball/BallManager.cs
 
 STDMETHODIMP Kicker::KickXYZ(float angle, float speed, float inclination, float x, float y, float z)

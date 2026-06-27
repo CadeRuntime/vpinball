@@ -32,6 +32,7 @@ public:
    const VPXPluginAPI& getAPI() const { return m_api; }
    unsigned int GetVPXEndPointId() const { return m_vpxPlugin->m_endpointId; }
    void BroadcastVPXMsg(const unsigned int msgId, void* data) const;
+   unsigned int GetGameElementEventMsgId() const { return m_gameElementEventMsgId; }
 
    unsigned int GetMsgID(const char* name_space, const char* name);
    void ReleaseMsgID(const unsigned int msgId);
@@ -66,6 +67,9 @@ private:
    const unsigned int m_getVPXAPIMsgId;
    const unsigned int m_onGameStartMsgId;
    const unsigned int m_onGameEndMsgId;
+   const unsigned int m_getGameElementsMsgId;
+   const unsigned int m_gameElementEventMsgId;
+   static void MSGPIAPI OnGetGameElements(const unsigned int msgId, void* userData, void* msgData);
 
    static void MSGPIAPI GetVpxInfo(VPXInfo* info);
    static void MSGPIAPI GetTableInfo(VPXTableInfo* info);
@@ -87,6 +91,13 @@ private:
    static void MSGPIAPI UpdateTexture(VPXTexture* texture, int width, int height, VPXTextureFormat format, const void* image);
    static VPXTextureInfo* MSGPIAPI GetTextureInfo(VPXTexture texture);
    static void MSGPIAPI DeleteTexture(VPXTexture texture);
+
+   static int MSGPIAPI EjectBall(const char* deviceName, const float angle, const float speed, const float inclination);
+   static int MSGPIAPI DestroyBall(const char* deviceName);
+   static int MSGPIAPI SetLightState(const char* deviceName, const float state);
+   static int MSGPIAPI SetDropTargetState(const char* deviceName, const int isDropped);
+   static int MSGPIAPI SetFlipperState(const char* deviceName, const int isActive);
+   static int MSGPIAPI KickBall(const char* deviceName, const float angle, const float speed, const float inclination);
 
    // Plugin settings
    void UpdateSetting(const std::string& pluginId, MsgPI::MsgPluginManager::SettingAction action, MsgSettingDef* settingDef);

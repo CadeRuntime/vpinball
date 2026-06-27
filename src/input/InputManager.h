@@ -7,6 +7,7 @@
 #include "input/InputAction.h"
 #include "input/PhysicsSensor.h"
 #include "math/vector.h"
+#include "plugins/VPXPlugin.h" // VPXAction enum (plugin action mapping)
 
 class PlungerSensor;
 class PlungerHandler;
@@ -143,6 +144,7 @@ public:
 
    // Used by actions to report state changes and query if local processing should be performed
    bool OnInputActionStateChanged(InputAction* action);
+   VPXAction MapActionIdToVPXAction(unsigned int id) const; // translate core action id -> stable plugin enum
 
    // Speed: 0..1
    void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration);

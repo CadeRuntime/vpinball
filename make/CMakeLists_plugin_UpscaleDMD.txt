@@ -90,15 +90,15 @@ if(BUILD_SHARED)
    endif()
 
    add_custom_command(TARGET UpscaleDMDPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/upscaledmd/plugin.cfg" "${PLUGINS_DIR}/upscaledmd/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:UpscaleDMDPlugin>" "${PLUGINS_DIR}/upscaledmd"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/upscaledmd/plugin.cfg" "${PLUGINS_DIR}/upscaledmd/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:UpscaleDMDPlugin>" "${PLUGINS_DIR}/upscaledmd"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:UpscaleDMDPlugin>"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS AND PLATFORM STREQUAL "windows-mingw")
       add_custom_command(TARGET UpscaleDMDPlugin POST_BUILD
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/upscaledmd/libgcc_s_seh-1.dll"
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/upscaledmd/libstdc++-6.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/upscaledmd/libgcc_s_seh-1.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/upscaledmd/libstdc++-6.dll"
       )
    endif()
 endif()

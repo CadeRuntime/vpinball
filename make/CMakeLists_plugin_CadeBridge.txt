@@ -1,0 +1,246 @@
+# plugin CMake file to be included in main project CMakelists
+
+# --- CadeBridge plugin ---
+# Requires grpc++ and protobuf. Skipped if not found.
+# Supports vcpkg: set VCPKG_ROOT env var or CMAKE_PREFIX_PATH.
+
+# Try to find vcpkg-installed grpc/protobuf.
+#
+# Triplet choice: x64-windows-static-md (static libs + dynamic CRT) avoids
+# transitive runtime DLLs, but vcpkg only ships the protoc / grpc_cpp_plugin
+# TOOLS in the dynamic x64-windows triplet, so find_package(Protobuf) fails
+# against a static-only triplet (missing Protobuf_PROTOC_EXECUTABLE). We
+# therefore probe candidate triplets and pick the first that provides BOTH the
+# config packages AND protoc, preferring static and falling back to the dynamic
+# triplet (whose runtime DLLs are copied into the plugin dir below).
+#
+# Paths from $ENV{VCPKG_ROOT}/$ENV{USERPROFILE} are run through TO_CMAKE_PATH
+# because backslash paths (e.g. C:\Users\..) break find_package's config search.
+#
+# Install with either:
+#   vcpkg install grpc:x64-windows-static-md protobuf:x64-windows-static-md
+#   vcpkg install grpc:x64-windows protobuf:x64-windows
+if(PLATFORM STREQUAL "windows" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+   set(_VCPKG_TRIPLETS "x64-windows-static-md" "x64-windows")
+
+   set(_VCPKG_ROOTS "")
+   if(DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
+      file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _cade_vr)
+      list(APPEND _VCPKG_ROOTS "${_cade_vr}")
+   endif()
+   if(DEFINED ENV{USERPROFILE} AND NOT "$ENV{USERPROFILE}" STREQUAL "")
+      file(TO_CMAKE_PATH "$ENV{USERPROFILE}" _cade_up)
+      list(APPEND _VCPKG_ROOTS "${_cade_up}/git/vcpkg" "${_cade_up}/vcpkg")
+   endif()
+   list(APPEND _VCPKG_ROOTS "${CMAKE_SOURCE_DIR}/../vcpkg" "C:/vcpkg")
+
+   foreach(_cade_root ${_VCPKG_ROOTS})
+      foreach(_cade_triplet ${_VCPKG_TRIPLETS})
+         set(_cade_cand "${_cade_root}/installed/${_cade_triplet}")
+         if(EXISTS "${_cade_cand}/share/grpc/gRPCConfig.cmake"
+               AND EXISTS "${_cade_cand}/tools/protobuf/protoc.exe")
+            list(APPEND CMAKE_PREFIX_PATH "${_cade_cand}")
+            set(_CADE_VCPKG_PREFIX "${_cade_cand}")
+            # Static triplets reference protoc via ${Protobuf_PROTOC_EXECUTABLE},
+            # which only the vcpkg toolchain's find_package wrapper sets. We build
+            # with a plain CMAKE_PREFIX_PATH (no toolchain), so set it explicitly
+            # or find_package(Protobuf) fails with "missing Protobuf_PROTOC_EXECUTABLE".
+            set(Protobuf_PROTOC_EXECUTABLE "${_cade_cand}/tools/protobuf/protoc.exe"
+               CACHE FILEPATH "protoc compiler for CadeBridge proto codegen" FORCE)
+            message(STATUS "CadeBridge plugin: using vcpkg at ${_cade_cand}")
+            break()
+         endif()
+      endforeach()
+      if(DEFINED _CADE_VCPKG_PREFIX)
+         break()
+      endif()
+   endforeach()
+endif()
+
+find_package(Protobuf QUIET CONFIG)
+find_package(gRPC QUIET CONFIG)
+
+if(NOT Protobuf_FOUND OR NOT gRPC_FOUND)
+   message(STATUS "CadeBridge plugin: skipped (grpc++ or protobuf not found). Install via vcpkg: vcpkg install grpc:x64-windows-static-md protobuf:x64-windows-static-md")
+   return()
+endif()
+
+message(STATUS "CadeBridge plugin: grpc++ and protobuf found, building plugin")
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_C_STANDARD 99)
+
+# --- Proto codegen ---
+
+set(CADE_PROTO_DIR "${CMAKE_SOURCE_DIR}/plugins/cade-bridge/proto")
+set(CADE_PROTO_FILE "${CADE_PROTO_DIR}/events.proto")
+set(CADE_PROTO_OUT "${CMAKE_CURRENT_BINARY_DIR}/cade-bridge-proto")
+
+file(MAKE_DIRECTORY ${CADE_PROTO_OUT})
+
+find_program(PROTOC_EXECUTABLE protoc)
+find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin)
+
+if(NOT PROTOC_EXECUTABLE OR NOT GRPC_CPP_PLUGIN)
+   # Try to get them from gRPC targets
+   if(TARGET protobuf::protoc)
+      get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION_RELEASE)
+      if(NOT PROTOC_EXECUTABLE)
+         get_target_property(PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+      endif()
+   endif()
+   if(TARGET gRPC::grpc_cpp_plugin)
+      get_target_property(GRPC_CPP_PLUGIN gRPC::grpc_cpp_plugin IMPORTED_LOCATION_RELEASE)
+      if(NOT GRPC_CPP_PLUGIN)
+         get_target_property(GRPC_CPP_PLUGIN gRPC::grpc_cpp_plugin IMPORTED_LOCATION)
+      endif()
+   endif()
+endif()
+
+if(NOT PROTOC_EXECUTABLE OR NOT GRPC_CPP_PLUGIN)
+   message(STATUS "CadeBridge plugin: skipped (protoc or grpc_cpp_plugin not found)")
+   return()
+endif()
+
+set(CADE_PROTO_SRCS
+   "${CADE_PROTO_OUT}/events.pb.cc"
+   "${CADE_PROTO_OUT}/events.grpc.pb.cc"
+)
+set(CADE_PROTO_HDRS
+   "${CADE_PROTO_OUT}/events.pb.h"
+   "${CADE_PROTO_OUT}/events.grpc.pb.h"
+)
+
+add_custom_command(
+   OUTPUT ${CADE_PROTO_SRCS} ${CADE_PROTO_HDRS}
+   COMMAND ${PROTOC_EXECUTABLE}
+      --proto_path="${CADE_PROTO_DIR}"
+      --cpp_out="${CADE_PROTO_OUT}"
+      --grpc_out="${CADE_PROTO_OUT}"
+      --plugin=protoc-gen-grpc="${GRPC_CPP_PLUGIN}"
+      "${CADE_PROTO_FILE}"
+   DEPENDS "${CADE_PROTO_FILE}"
+   COMMENT "Running protoc/grpc codegen for Cade events.proto"
+)
+
+# --- Plugin sources ---
+
+set(CADE_BRIDGE_PLUGIN_SOURCES
+   plugins/cade-bridge/CadeBridge.cpp
+   plugins/cade-bridge/GrpcServer.cpp
+   plugins/cade-bridge/EventMapper.cpp
+   plugins/cade-bridge/DeviceRegistry.cpp
+   plugins/cade-bridge/EventDebouncer.cpp
+   ${CADE_PROTO_SRCS}
+)
+
+if(BUILD_SHARED)
+   add_library(CadeBridgePlugin MODULE ${CADE_BRIDGE_PLUGIN_SOURCES})
+
+   target_include_directories(CadeBridgePlugin PUBLIC
+      ${CMAKE_SOURCE_DIR}/third-party/include
+      plugins
+      plugins/cade-bridge
+      ${CADE_PROTO_OUT}
+   )
+
+   target_link_libraries(CadeBridgePlugin PRIVATE
+      gRPC::grpc++
+      protobuf::libprotobuf
+   )
+
+   if(PLATFORM STREQUAL "windows")
+      add_compile_options(
+         $<$<CONFIG:RELEASE>:/Ob2>
+         $<$<CONFIG:RELEASE>:/O2>
+         $<$<CONFIG:RELEASE>:/Oi>
+         $<$<CONFIG:RELEASE>:/fp:fast>
+         $<$<CONFIG:RELEASE>:/fp:except->
+         $<$<CONFIG:RELEASE>:/Ot>
+         $<$<CONFIG:RELEASE>:/GF>
+         $<$<CONFIG:RELEASE>:/GS->
+         $<$<CONFIG:RELEASE>:/Gy>
+         $<$<CONFIG:RELEASE>:/GR>
+         $<$<CONFIG:RELEASE>:/Oy>
+         $<$<CONFIG:RELEASE>:/GT>
+         $<$<CONFIG:RELEASE>:/GL>
+      )
+      # Use dynamic CRT (/MD) to match vcpkg x64-windows-static-md triplet.
+      set_target_properties(CadeBridgePlugin PROPERTIES
+         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:DEBUG>:Debug>DLL"
+      )
+      target_compile_options(CadeBridgePlugin PUBLIC
+         $<$<CONFIG:RELEASE>:$<$<COMPILE_LANGUAGE:CXX>:${OPT_COMMON}>>
+         $<$<CONFIG:RELEASE>:$<$<COMPILE_LANGUAGE:C>:${OPT_COMMON}>>
+      )
+      target_link_options(CadeBridgePlugin PUBLIC
+         $<$<CONFIG:RELEASE>:/INCREMENTAL:NO>
+         $<$<CONFIG:RELEASE>:/OPT:REF>
+         $<$<CONFIG:RELEASE>:/OPT:ICF>
+         $<$<CONFIG:RELEASE>:/LTCG>
+      )
+      target_link_libraries(CadeBridgePlugin PRIVATE ws2_32)
+      if (ARCH STREQUAL "x64")
+         set_target_properties(CadeBridgePlugin PROPERTIES
+            OUTPUT_NAME "plugin-cade-bridge64"
+         )
+      else()
+         set_target_properties(CadeBridgePlugin PROPERTIES
+            OUTPUT_NAME "plugin-cade-bridge"
+         )
+      endif()
+   else()
+      set_target_properties(CadeBridgePlugin PROPERTIES
+         PREFIX ""
+         OUTPUT_NAME "plugin-cade-bridge"
+      )
+      if(PLATFORM STREQUAL "macos")
+         set_target_properties(CadeBridgePlugin PROPERTIES
+            SUFFIX ".dylib"
+         )
+      endif()
+   endif()
+
+   add_custom_command(TARGET CadeBridgePlugin POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/cade-bridge/plugin.cfg" "${PLUGINS_DIR}/cade-bridge/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:CadeBridgePlugin>" "${PLUGINS_DIR}/cade-bridge"
+      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:CadeBridgePlugin>"
+   )
+
+   # Copy runtime DLLs (gRPC, protobuf, etc.) into the plugin directory so
+   # Windows can find them when loading the plugin via SetDllDirectory.
+   # Only needed when using vcpkg dynamic triplet (x64-windows).
+   if(PLATFORM STREQUAL "windows")
+      get_filename_component(_VCPKG_BIN_DIR "${gRPC_DIR}/../../bin" ABSOLUTE)
+      if(EXISTS "${_VCPKG_BIN_DIR}")
+         message(STATUS "CadeBridge plugin: will copy runtime DLLs from ${_VCPKG_BIN_DIR}")
+         add_custom_command(TARGET CadeBridgePlugin POST_BUILD
+            COMMAND powershell -Command "Copy-Item -Path '${_VCPKG_BIN_DIR}\\*.dll' -Destination '${PLUGINS_DIR}/cade-bridge/' -Force"
+            COMMENT "Copying vcpkg runtime DLLs to cade-bridge plugin directory"
+         )
+      endif()
+   endif()
+endif()
+
+if(BUILD_STATIC)
+   add_compile_options(-fPIC)
+
+   add_library(CadeBridgePlugin STATIC ${CADE_BRIDGE_PLUGIN_SOURCES})
+
+   target_include_directories(CadeBridgePlugin PUBLIC
+      ${CMAKE_SOURCE_DIR}/third-party/include
+      plugins
+      plugins/cade-bridge
+      ${CADE_PROTO_OUT}
+   )
+
+   target_link_libraries(CadeBridgePlugin PRIVATE
+      gRPC::grpc++
+      protobuf::libprotobuf
+   )
+
+   set_target_properties(CadeBridgePlugin PROPERTIES
+      PREFIX ""
+      OUTPUT_NAME "plugin-cade-bridge"
+   )
+endif()

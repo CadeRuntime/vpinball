@@ -1,0 +1,546 @@
+// license:GPLv3+
+
+// Cade EventService protocol — the shared gRPC interface between VPX (the
+// cade-bridge plugin) and the Cade runtime. Mirrors the canonical definition in
+// the cade repository (google.api.annotations stripped).
+
+syntax = "proto3";
+
+package cade.events;
+
+// go_package is intentionally omitted: this C++-side copy only builds the VPX
+// plugin; the canonical Go codegen lives in the cade repository.
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/empty.proto";
+
+// EventCategory represents the three main categories of events
+enum EventCategory {
+  EVENT_CATEGORY_UNSPECIFIED = 0;
+  EVENT_CATEGORY_SYSTEM = 1;
+  EVENT_CATEGORY_USER = 2;
+  EVENT_CATEGORY_GENERAL = 3;
+}
+
+// DeviceCategory represents different types of pinball devices
+enum DeviceCategory {
+  DEVICE_CATEGORY_UNSPECIFIED = 0;
+  DEVICE_CATEGORY_SWITCH = 1;
+  DEVICE_CATEGORY_COIL = 2;
+  DEVICE_CATEGORY_LIGHT = 3;
+  DEVICE_CATEGORY_FLIPPER = 4;
+  DEVICE_CATEGORY_BALL_DEVICE = 5;
+  DEVICE_CATEGORY_GENERAL = 6;
+}
+
+// CategorizedEvent represents an event with category information
+message CategorizedEvent {
+  // Event metadata
+  string event_id = 1;
+  EventCategory category = 2;
+  DeviceCategory device_category = 3;
+  int32 event_type = 4; // EventType as integer
+  string event_type_name = 5; // Human-readable event type name
+
+  // Event data
+  google.protobuf.Any data = 6; // Flexible data payload
+  map<string, string> metadata = 7;
+
+  // Timing information
+  google.protobuf.Timestamp timestamp = 8;
+  int64 delta_microseconds = 9; // Time since previous event
+
+  // Device information (if applicable)
+  string device_key = 10;
+  string device_type = 11;
+}
+
+// SendEventRequest for single event submission
+message SendEventRequest {
+  CategorizedEvent event = 1;
+
+  // Optional request metadata
+  string request_id = 2;
+  map<string, string> headers = 3;
+}
+
+// SendEventResponse
+message SendEventResponse {
+  bool success = 1;
+  string event_id = 2;
+  string error_message = 3;
+  google.protobuf.Timestamp processed_at = 4;
+}
+
+// SendBatchRequest for batch event submission
+message SendBatchRequest {
+  repeated CategorizedEvent events = 1;
+
+  // Batch metadata
+  string batch_id = 2;
+  bool atomic = 3; // If true, all events must succeed or all fail
+  map<string, string> headers = 4;
+}
+
+// SendBatchResponse
+message SendBatchResponse {
+  bool success = 1;
+  int32 events_accepted = 2;
+  int32 events_rejected = 3;
+  repeated string event_ids = 4;
+  repeated string errors = 5;
+  google.protobuf.Timestamp processed_at = 6;
+}
+
+// StreamEventsRequest for subscribing to event streams
+message StreamEventsRequest {
+  // Filter criteria
+  repeated EventCategory categories = 1;
+  repeated DeviceCategory device_categories = 2;
+  repeated int32 event_types = 3;
+  repeated string device_keys = 4;
+
+  // Stream configuration
+  bool include_historical = 5; // Include recent historical events
+  int32 historical_limit = 6; // Number of historical events to include
+  int32 buffer_size = 7; // Client-side buffer size hint
+}
+
+// EventFlowRequest for bidirectional streaming
+message EventFlowRequest {
+  oneof request {
+    // Initial subscription configuration
+    StreamEventsRequest subscribe = 1;
+
+    // Send an event through the stream
+    CategorizedEvent send_event = 2;
+
+    // Control messages
+    StreamControl control = 3;
+
+    // Register devices and receive event type mappings
+    DeviceManifest register_devices = 4;
+  }
+}
+
+// StreamControl for managing the stream
+message StreamControl {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_PAUSE = 1;
+    ACTION_RESUME = 2;
+    ACTION_HEARTBEAT = 3;
+    ACTION_UPDATE_FILTERS = 4;
+  }
+
+  Action action = 1;
+
+  // For UPDATE_FILTERS action
+  StreamEventsRequest new_filters = 2;
+}
+
+// EventFlowResponse for bidirectional streaming
+message EventFlowResponse {
+  oneof response {
+    // Received event
+    CategorizedEvent event = 1;
+
+    // Acknowledgment for sent event
+    SendEventResponse ack = 2;
+
+    // Stream status
+    StreamStatus status = 3;
+
+    // Error
+    StreamError error = 4;
+
+    // Device registration result
+    RegistrationResponse registration = 5;
+
+    // Outbound device command from Cade to the client (e.g. VPX).
+    // The client should actuate the referenced device when received.
+    DeviceCommand device_command = 6;
+
+    // Batch of device commands for atomic multi-device updates.
+    // Clients should apply all commands in the batch within the same
+    // frame/tick to maintain temporal coherence (e.g. flash 2 lights
+    // + pulse coil on a bumper hit).
+    DeviceCommandBatch device_command_batch = 7;
+  }
+}
+
+// DeviceCommand carries a single outbound command from Cade to a client
+// (e.g. VPX) instructing it to actuate a device. Each variant maps to a
+// specific device action the client must support.
+message DeviceCommand {
+  // Monotonic sequence number for ordering and dedup on the client side.
+  uint64 sequence = 1;
+
+  oneof command {
+    // Pulse a solenoid coil for a fixed duration then release.
+    PulseCoilCommand pulse_coil = 10;
+
+    // Enable or disable a held coil (e.g. flippers, diverters).
+    EnableCoilCommand enable_coil = 11;
+
+    // Set a light/LED to a specific state (on/off, brightness, color).
+    SetLightCommand set_light = 12;
+
+    // Flash a light with an on/off pattern.
+    FlashLightCommand flash_light = 13;
+
+    // Set a GI (General Illumination) string on or off.
+    SetGICommand set_gi = 14;
+
+    // Reset a drop target group to the raised position.
+    ResetTargetCommand reset_target = 15;
+
+    // Eject a ball from a ball device (trough, VUK, scoop, etc.).
+    EjectBallCommand eject_ball = 16;
+
+    // Enable an autofire rule by name (e.g., at ball start).
+    EnableAutofireCommand enable_autofire = 17;
+
+    // Disable an autofire rule by name (e.g., during tilt).
+    DisableAutofireCommand disable_autofire = 18;
+
+    // Destroy the ball held by a kicker device (e.g., drain kicker).
+    // VPX client: call DestroyBall(device_name) to remove the ball from simulation.
+    DestroyBallCommand destroy_ball = 19;
+
+    // Kick an existing ball held by a kicker device (kick-only, does NOT
+    // create a new ball). Counterpart to eject_ball: eject_ball is for
+    // trough/launcher flows where a new ball enters play; kick_ball is for
+    // gate->kicker flows where the ball is already held and just needs to
+    // be fired out. VPX client: call KickBall(device_name, angle, speed)
+    // with per-kicker angle/strength previously pushed via KickerConfig
+    // in PlatformConfigUpdate.
+    KickBallCommand kick_ball = 20;
+  }
+}
+
+// EnableAutofireCommand activates an autofire rule by name.
+message EnableAutofireCommand {
+  string rule_name = 1;
+}
+
+// DisableAutofireCommand deactivates an autofire rule by name.
+message DisableAutofireCommand {
+  string rule_name = 1;
+}
+
+// PulseCoilCommand fires a coil for a fixed duration.
+message PulseCoilCommand {
+  string device_name = 1;     // Cade device name (pairing key)
+  uint32 pulse_ms = 2;        // Pulse duration in milliseconds (0 = device default)
+  uint32 power_level = 3;     // Power percentage 0-100 (0 = device default)
+}
+
+// EnableCoilCommand enables or disables a held coil.
+message EnableCoilCommand {
+  string device_name = 1;     // Cade device name (pairing key)
+  bool enable = 2;            // true = energize, false = release
+  uint32 hold_power = 3;      // Hold power percentage 0-100 (only used when enable=true)
+}
+
+// SetLightCommand sets a light to a specific state.
+message SetLightCommand {
+  string device_name = 1;     // Cade device name (pairing key)
+  bool on = 2;                // true = on, false = off
+  uint32 brightness = 3;      // Brightness 0-255 (only when on=true)
+  uint32 color_r = 4;         // Red channel 0-255 (optional, RGB lights only)
+  uint32 color_g = 5;         // Green channel 0-255
+  uint32 color_b = 6;         // Blue channel 0-255
+}
+
+// FlashLightCommand flashes a light with a timed pattern.
+message FlashLightCommand {
+  string device_name = 1;     // Cade device name (pairing key)
+  uint32 on_ms = 2;           // On duration per cycle in milliseconds
+  uint32 off_ms = 3;          // Off duration per cycle in milliseconds
+  uint32 count = 4;           // Number of flashes (0 = indefinite until cancelled)
+  uint32 brightness = 5;      // Brightness during on phase 0-255
+}
+
+// SetGICommand controls a General Illumination string.
+message SetGICommand {
+  string gi_string_name = 1;  // GI string identifier
+  bool on = 2;                // true = on, false = off
+}
+
+// ResetTargetCommand resets a drop target group.
+message ResetTargetCommand {
+  string target_group_name = 1; // Drop target group identifier
+}
+
+// EjectBallCommand ejects a ball from a ball device.
+message EjectBallCommand {
+  string device_name = 1;     // Ball device name (trough, VUK, scoop, etc.)
+  float angle = 2;            // Ejection angle in degrees (device-specific)
+  float strength = 3;         // Ejection strength 0.0-1.0 (0 = device default)
+}
+
+// KickBallCommand kicks an existing ball held by a kicker device (kick-only,
+// no ball creation). Carries only the device name — the kicker's angle and
+// strength are pushed once via KickerConfig in PlatformConfigUpdate and
+// stored locally by the bridge, keeping the runtime command lightweight.
+message KickBallCommand {
+  string device_name = 1;     // Kicker device name (e.g., "Kicker1")
+}
+
+// DestroyBallCommand removes the ball held by a kicker device from simulation.
+// Used by virtual platforms (VPX) to clear drain/trough kickers after a drain.
+message DestroyBallCommand {
+  string device_name = 1;     // Kicker device name (e.g., "Drain")
+}
+
+// DeviceCommandBatch groups multiple device commands for atomic delivery.
+// All commands in a batch should be applied within the same client frame.
+message DeviceCommandBatch {
+  repeated DeviceCommand commands = 1;
+  // Optional batch identifier for logging/debugging.
+  string batch_id = 2;
+}
+
+// StreamStatus provides information about the stream state
+message StreamStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_CONNECTED = 1;
+    STATE_PAUSED = 2;
+    STATE_DISCONNECTING = 3;
+  }
+
+  State state = 1;
+  int64 events_received = 2;
+  int64 events_sent = 3;
+  google.protobuf.Timestamp connected_since = 4;
+  int32 buffer_utilization = 5; // Percentage
+}
+
+// StreamError for stream-specific errors
+message StreamError {
+  enum ErrorType {
+    ERROR_TYPE_UNSPECIFIED = 0;
+    ERROR_TYPE_INVALID_FILTER = 1;
+    ERROR_TYPE_BUFFER_OVERFLOW = 2;
+    ERROR_TYPE_RATE_LIMIT = 3;
+    ERROR_TYPE_AUTHENTICATION = 4;
+    ERROR_TYPE_INTERNAL = 5;
+  }
+
+  ErrorType type = 1;
+  string message = 2;
+  map<string, string> details = 3;
+}
+
+// VPXDeviceEvent enumerates the event types a VPX device can emit.
+enum VPXDeviceEvent {
+  VPX_EVENT_UNSPECIFIED = 0;
+  VPX_EVENT_HIT = 1;
+  VPX_EVENT_UNHIT = 2;
+  VPX_EVENT_EOS = 3;                // End of stroke (flipper)
+  VPX_EVENT_BOS = 4;                // Beginning of stroke (flipper)
+  VPX_EVENT_SLINGSHOT = 5;
+  VPX_EVENT_SPIN = 6;
+  VPX_EVENT_DROPPED = 7;            // Drop target fell
+  VPX_EVENT_RAISED = 8;             // Drop target raised
+  VPX_EVENT_ON = 9;                 // Device/light on
+  VPX_EVENT_OFF = 10;               // Device/light off
+  VPX_EVENT_PRESSED = 11;           // Action pressed
+  VPX_EVENT_RELEASED = 12;          // Action released
+  VPX_EVENT_FLIPPER_COLLIDE = 13;
+  VPX_EVENT_BRIGHTNESS_CHANGE = 14;
+}
+
+// SwitchNormality indicates whether a switch is normally open or closed.
+enum SwitchNormality {
+  SWITCH_NORMALITY_UNSPECIFIED = 0;
+  SWITCH_NORMALLY_OPEN = 1;
+  SWITCH_NORMALLY_CLOSED = 2;
+}
+
+// DeviceManifestEntry describes a single device in a manifest.
+message DeviceManifestEntry {
+  string name = 1;                              // Element name (Cade pairing key)
+  DeviceCategory category = 2;                  // Auto-detected from element type
+  repeated VPXDeviceEvent supported_events = 3; // What this device can emit
+  SwitchNormality normality = 4;                // NO/NC (switches only)
+  map<string, string> metadata = 5;             // Extra info (element_type, groupId, etc.)
+}
+
+// DeviceManifest describes the set of devices a client (e.g. VPX) exposes.
+// Sent during EventFlow to register devices and receive event type mappings.
+message DeviceManifest {
+  repeated DeviceManifestEntry devices = 1;
+  string game_id = 2;
+  string vpx_version = 3;
+}
+
+// RegistrationResponse is returned after processing a DeviceManifest.
+message RegistrationResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_ACCEPTED = 1;
+    STATUS_ACCEPTED_WITH_WARNINGS = 2;
+    STATUS_REJECTED = 3;
+  }
+
+  Status status = 1;
+  repeated DeviceEventMapping device_mappings = 2;
+  repeated DeviceWarning warnings = 3;
+  repeated AutofireRuleConfig autofire_rules = 4;
+  repeated KickerConfig kicker_configs = 5;
+}
+
+// AutofireRuleConfig describes an autofire rule (switch->coil mapping) sent to
+// gRPC clients during registration. The client uses this to know which coils
+// are autofire-managed and should suppress redundant PulseCoilCommands.
+message AutofireRuleConfig {
+  string name = 1;
+  string switch_name = 2;
+  string coil_name = 3;
+  uint32 pulse_ms = 4;
+  uint32 pulse_power = 5;
+  uint32 recycle_ms = 6;
+  bool enabled = 7;
+  string type = 8;           // "hold" (flippers) or "pulse" (bumpers/slings)
+}
+
+// KickerConfig carries per-kicker kick physics parameters from cade to the
+// bridge. Pushed during registration / config update, stored by the bridge,
+// and consulted when a KickBallCommand references the kicker by name. The
+// values are physics-abstract and driver-independent; the VPX bridge maps
+// them to Kicker::Kick(angle, speed, inclination), and a physical-machine
+// driver would map them to coil pulse parameters.
+message KickerConfig {
+  string device_name = 1;    // Kicker device name (e.g., "Kicker1")
+  float kick_angle = 2;      // Kick yaw angle in degrees (0 = toward +Y)
+  float kick_strength = 3;   // Kick speed / force (driver-interpreted)
+}
+
+// DeviceEventMapping maps a device to its event type translations.
+message DeviceEventMapping {
+  string device_name = 1;
+  DeviceCategory device_category = 2;
+  // Maps client event type (int32) to Cade event type (int32)
+  map<int32, int32> event_type_map = 3;
+  // Maps client event type (int32) to Cade scoring trigger name (string).
+  map<int32, string> event_name_map = 4;
+}
+
+// DeviceWarning reports a non-fatal issue found during device registration.
+message DeviceWarning {
+  string device_name = 1;
+  string message = 2;
+}
+
+// Device-specific event creation helpers
+message DeviceEventRequest {
+  string device_key = 1;
+  string device_type = 2;
+  int32 event_type = 3;
+  google.protobuf.Any data = 4;
+  map<string, string> metadata = 5;
+}
+
+// EventService provides gRPC endpoints for event management
+service EventService {
+  // Send a single event
+  rpc SendEvent(SendEventRequest) returns (SendEventResponse);
+
+  // Send a batch of events
+  rpc SendBatch(SendBatchRequest) returns (SendBatchResponse);
+
+  // Send a device-specific event
+  rpc SendDeviceEvent(DeviceEventRequest) returns (SendEventResponse);
+
+  // Subscribe to a stream of events (server streaming)
+  rpc StreamEvents(StreamEventsRequest) returns (stream CategorizedEvent);
+
+  // Bidirectional event flow for real-time interaction
+  rpc EventFlow(stream EventFlowRequest) returns (stream EventFlowResponse);
+
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// HealthCheckResponse for service health
+message HealthCheckResponse {
+  enum ServingStatus {
+    SERVING_STATUS_UNKNOWN = 0;
+    SERVING_STATUS_SERVING = 1;
+    SERVING_STATUS_NOT_SERVING = 2;
+  }
+
+  ServingStatus status = 1;
+  string version = 2;
+  google.protobuf.Timestamp server_time = 3;
+  map<string, string> metadata = 4;
+}
+
+// ---------------------------------------------------------------------------
+// PlatformService — hosted by this platform (VPX) and consumed by the cade
+// orchestrator. Cade connects to this service to query device capabilities
+// and exchange real-time events/commands.
+// ---------------------------------------------------------------------------
+
+service PlatformService {
+  // Query the platform's device manifest (all available devices).
+  rpc GetDeviceManifest(GetDeviceManifestRequest) returns (DeviceManifest);
+
+  // Bidirectional event/command stream. Cade initiates the stream.
+  // Platform sends: device events (switch hits, state changes).
+  // Cade sends: device commands, config updates (autofire rules, mappings).
+  rpc PlatformEventFlow(stream PlatformCommand) returns (stream PlatformEvent);
+
+  // Health check for the platform.
+  rpc PlatformHealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// GetDeviceManifestRequest optionally filters the manifest query.
+message GetDeviceManifestRequest {
+  repeated DeviceCategory categories = 1;
+}
+
+// PlatformCommand is sent from cade TO the platform over the stream.
+message PlatformCommand {
+  oneof command {
+    StreamEventsRequest subscribe = 1;
+    DeviceCommand device_command = 2;
+    DeviceCommandBatch device_command_batch = 3;
+    StreamControl control = 4;
+    PlatformConfigUpdate config_update = 5;
+  }
+}
+
+// PlatformEvent is sent from the platform TO cade over the stream.
+message PlatformEvent {
+  oneof event {
+    CategorizedEvent device_event = 1;
+    StreamStatus status = 2;
+    StreamError error = 3;
+    ConfigUpdateAck config_ack = 4;
+    // Device manifest pushed through the stream so cade can process
+    // it without a separate unary RPC that would conflict with the
+    // active bidirectional stream.
+    DeviceManifest manifest = 5;
+  }
+}
+
+// PlatformConfigUpdate carries event mappings and autofire rules from cade.
+message PlatformConfigUpdate {
+  uint64 config_version = 1;
+  repeated DeviceEventMapping device_mappings = 2;
+  repeated AutofireRuleConfig autofire_rules = 3;
+  repeated DeviceWarning warnings = 4;
+  repeated KickerConfig kicker_configs = 5;
+}
+
+// ConfigUpdateAck acknowledges receipt of a PlatformConfigUpdate.
+message ConfigUpdateAck {
+  uint64 config_version = 1;
+  bool success = 2;
+  string error_message = 3;
+}

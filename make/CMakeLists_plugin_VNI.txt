@@ -80,8 +80,8 @@ if(BUILD_SHARED)
    endif()
 
    add_custom_command(TARGET VNIPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/vni/plugin.cfg" "${PLUGINS_DIR}/vni/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:VNIPlugin>" "${PLUGINS_DIR}/vni"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/vni/plugin.cfg" "${PLUGINS_DIR}/vni/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:VNIPlugin>" "${PLUGINS_DIR}/vni"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:VNIPlugin>"
    )
 
@@ -89,18 +89,18 @@ if(BUILD_SHARED)
       if(PLATFORM STREQUAL "windows")
          if (ARCH STREQUAL "x64")
             add_custom_command(TARGET VNIPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/vni64.dll" "${PLUGINS_DIR}/vni/vni64.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/vni64.dll" "${PLUGINS_DIR}/vni/vni64.dll"
             )
          elseif (ARCH STREQUAL "x86")
             add_custom_command(TARGET VNIPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/vni.dll" "${PLUGINS_DIR}/vni/vni.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/vni.dll" "${PLUGINS_DIR}/vni/vni.dll"
             )
          endif()
       elseif(PLATFORM STREQUAL "windows-mingw")
          add_custom_command(TARGET VNIPlugin POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/vni64.dll" "${PLUGINS_DIR}/vni/vni64.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/vni/libgcc_s_seh-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/vni/libstdc++-6.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/vni64.dll" "${PLUGINS_DIR}/vni/vni64.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/vni/libgcc_s_seh-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/vni/libstdc++-6.dll"
          )
       elseif(PLATFORM STREQUAL "linux")
          add_custom_command(TARGET VNIPlugin POST_BUILD

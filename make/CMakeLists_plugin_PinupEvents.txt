@@ -56,15 +56,15 @@ if(PLATFORM STREQUAL "windows" OR PLATFORM STREQUAL "windows-mingw")
       OUTPUT_NAME "$<IF:$<STREQUAL:${ARCH},x64>,plugin-pinup-events64,plugin-pinup-events>"
    )
    add_custom_command(TARGET PinupEventsPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/pinup-events/plugin.cfg" "$<TARGET_FILE_DIR:vpinball>/plugins/pinup-events/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:PinupEventsPlugin>" "${PLUGINS_DIR}/pinup-events"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/pinup-events/plugin.cfg" "$<TARGET_FILE_DIR:vpinball>/plugins/pinup-events/plugin.cfg"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PinupEventsPlugin>" "${PLUGINS_DIR}/pinup-events"
       COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:PinupEventsPlugin>"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS AND PLATFORM STREQUAL "windows-mingw")
       add_custom_command(TARGET PinupEventsPlugin POST_BUILD
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/pinup-events/libgcc_s_seh-1.dll"
-         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/pinup-events/libstdc++-6.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/pinup-events/libgcc_s_seh-1.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/pinup-events/libstdc++-6.dll"
       )
    endif()
 endif()

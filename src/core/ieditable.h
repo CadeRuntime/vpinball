@@ -17,6 +17,8 @@ class PinTable;
 
 #define BLUEPRINT_SOLID_COLOR RGB(0,0,0)
 
+#include "core/VPXGameElementBridge.h" // plugin game element event broadcasting (cade)
+
 class IFireEvents
 {
 public:
@@ -98,7 +100,7 @@ public:
 	STDMETHOD(put_UserValue)(VARIANT *newVal) {return IEditable::put_UserValue(newVal);} \
 	IScriptable *GetIScriptable() final {return (IScriptable *)this;} \
 	const IScriptable *GetIScriptable() const final {return (const IScriptable *)this;} \
-	void FireGroupEvent(const int dispid) final {FireVoidGroupEvent(dispid);}
+	void FireGroupEvent(const int dispid) final { FireVoidGroupEvent(dispid); VPXNotifyGameElementEvent(*this, dispid); }
 
 // used above, do not invoke directly
 #define _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType) \

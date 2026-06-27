@@ -132,6 +132,24 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          SetDllDirectory(directory.c_str());
 #endif
          void *dynamicModule = static_cast<void *>(SDL_LoadObject(file.c_str()));
+         if (!dynamicModule)
+         {
+            PLOGE << "SDL_LoadObject failed for '" << file << "': " << SDL_GetError();
+#if defined(_MSC_VER) || defined(__MINGW32__)
+            DWORD err = GetLastError();
+            if (err != 0)
+            {
+               char *msgBuf = nullptr;
+               FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                  NULL, err, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), (LPSTR)&msgBuf, 0, NULL);
+               if (msgBuf)
+               {
+                  PLOGE << "Windows error " << err << ": " << msgBuf;
+                  LocalFree(msgBuf);
+               }
+            }
+#endif
+         }
 #if defined(_MSC_VER) || defined(__MINGW32__)
          SetDllDirectory(NULL);
 #endif

@@ -4,9 +4,38 @@
 #include "VPXPluginAPIImpl.h"
 
 #include "core/VPApp.h"
+#include "core/dispid.h"
+#include "core/VPXGameElementBridge.h"
 #include "parts/flasher.h"
 #include "renderer/Renderer.h"
 #include "ui/live/LiveUI.h"
+#include "parts/kicker.h"
+#include "parts/light.h"
+#include "parts/hittarget.h"
+#include "parts/flipper.h"
+
+///////////////////////////////////////////////////////////////////////////////
+// Game element event broadcasting to plugins
+
+// Called from the FireGroupEvent hook in ieditable.h for every scriptable
+// element event. The cheap dispid filter lives here (not in the macro) so the
+// only change to upstream ieditable.h stays a single line; the GetName() string
+// is only constructed for events we actually forward.
+void VPXNotifyGameElementEvent(const IEditable& editable, int dispid)
+{
+   // Skip per-frame timer/animate events before any allocation.
+   if (dispid == DISPID_TimerEvents_Timer || dispid == DISPID_AnimateEvents_Animate)
+      return;
+   if (g_pplayer == nullptr)
+      return;
+   VPXPluginAPIImpl& api = g_pplayer->m_pluginAPI;
+   const string name_ = editable.GetName();
+   VPXGameElementEvent event;
+   event.elementName = name_.c_str(); // valid for the synchronous broadcast below
+   event.eventId = static_cast<VPXGameElementEventId>(dispid);
+   event.elementType = static_cast<int>(editable.GetItemType());
+   api.BroadcastVPXMsg(api.GetGameElementEventMsgId(), &event);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // General information API
@@ -257,6 +286,156 @@ void MSGPIAPI VPXPluginAPIImpl::DeleteTexture(VPXTexture texture)
          delete tex;
       }
    }, texture);
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Ball management
+
+int MSGPIAPI VPXPluginAPIImpl::EjectBall(const char* deviceName, const float angle, const float speed, const float inclination)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+      return -2;
+
+   if (element->GetItemType() != eItemKicker)
+      return -3;
+
+   Kicker* kicker = static_cast<Kicker*>(element);
+   IBall* ball = nullptr;
+   kicker->CreateBall(&ball);
+   kicker->Kick(angle, speed, inclination);
+   if (ball)
+      ball->Release();
+   return 0;
+}
+
+
+// KickBall fires an existing ball held by a kicker device without creating a
+// new ball. Counterpart to EjectBall (which does CreateBall + Kick and is
+// correct for trough/launcher use cases). KickBall is the gate->kicker flow
+// primitive: the ball is already held by the kicker, and we just need to
+// eject it with the script-authored angle/speed.
+//
+// Distinct from Kicker::KickXYZ's silent no-op on empty — this entry returns
+// -4 instead so the caller (cade-bridge) can log a diagnosable warning.
+int MSGPIAPI VPXPluginAPIImpl::KickBall(const char* deviceName, const float angle, const float speed, const float inclination)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+      return -2;
+
+   if (element->GetItemType() != eItemKicker)
+      return -3;
+
+   Kicker* kicker = static_cast<Kicker*>(element);
+   if (!kicker->HasHeldBall())
+      return -4;
+
+   kicker->Kick(angle, speed, inclination);
+   return 0;
+}
+
+
+int MSGPIAPI VPXPluginAPIImpl::DestroyBall(const char* deviceName)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+      return -2;
+
+   if (element->GetItemType() != eItemKicker)
+      return -3;
+
+   Kicker* kicker = static_cast<Kicker*>(element);
+   int destroyed = 0;
+   kicker->DestroyBall(&destroyed);
+   return destroyed;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Light control
+
+int MSGPIAPI VPXPluginAPIImpl::SetLightState(const char* deviceName, const float state)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+   {
+      PLOGW << "SetLightState: element '" << deviceName << "' not found";
+      return -2;
+   }
+
+   if (element->GetItemType() == eItemLight)
+   {
+      Light* light = static_cast<Light*>(element);
+      light->put_State(state);
+      return 0;
+   }
+
+   PLOGW << "SetLightState: element '" << deviceName << "' is type " << element->GetItemType() << ", not a Light";
+   return -3;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Drop target control
+
+int MSGPIAPI VPXPluginAPIImpl::SetDropTargetState(const char* deviceName, const int isDropped)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+      return -2;
+
+   if (element->GetItemType() != eItemHitTarget)
+      return -3;
+
+   HitTarget* target = static_cast<HitTarget*>(element);
+   target->put_IsDropped(isDropped ? VARIANT_TRUE : VARIANT_FALSE);
+   return 0;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Flipper control
+
+int MSGPIAPI VPXPluginAPIImpl::SetFlipperState(const char* deviceName, const int isActive)
+{
+   if (!g_pplayer)
+      return -1;
+
+   IEditable* element = g_pplayer->m_ptable->GetElementByName(deviceName);
+   if (!element)
+   {
+      PLOGW << "SetFlipperState: element '" << deviceName << "' not found";
+      return -2;
+   }
+
+   if (element->GetItemType() != eItemFlipper)
+   {
+      PLOGW << "SetFlipperState: element '" << deviceName << "' is type " << element->GetItemType() << ", not a Flipper";
+      return -3;
+   }
+
+   Flipper* flipper = static_cast<Flipper*>(element);
+   if (isActive)
+      flipper->RotateToEnd();
+   else
+      flipper->RotateToStart();
+   return 0;
 }
 
 
@@ -539,6 +718,66 @@ void VPXPluginAPIImpl::UpdateSetting(const std::string& pluginId, MsgPI::MsgPlug
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// Table element enumeration for plugins
+
+static bool IsInteractiveElementType(ItemTypeEnum type)
+{
+   switch (type)
+   {
+   case eItemBumper:
+   case eItemFlipper:
+   case eItemTrigger:
+   case eItemLight:
+   case eItemKicker:
+   case eItemGate:
+   case eItemSpinner:
+   case eItemHitTarget:
+   case eItemPlunger:
+      return true;
+   default:
+      return false;
+   }
+}
+
+void VPXPluginAPIImpl::OnGetGameElements(const unsigned int msgId, void* userData, void* msgData)
+{
+   VPXGetGameElementsMsg& msg = *static_cast<VPXGetGameElementsMsg*>(msgData);
+   if (!g_pplayer)
+   {
+      msg.count = 0;
+      return;
+   }
+
+   const vector<IEditable*>& parts = g_pplayer->m_ptable->GetParts();
+
+   // Name strings must outlive this call so callers can read msg.entries[i].name
+   // after we return. We stash them in a static vector and hand out .c_str()
+   // pointers. CRITICAL: reserve() before the push_back loop so the vector never
+   // reallocates — if it did, every previously-stored c_str() would dangle into
+   // freed memory, producing empty-string names in the protobuf serialization.
+   // parts.size() is a safe upper bound (we may skip non-interactive elements
+   // but reservation only needs to be >= actual count).
+   static vector<string> s_elementNames;
+   s_elementNames.clear();
+   s_elementNames.reserve(parts.size());
+
+   unsigned int count = 0;
+   for (const IEditable* part : parts)
+   {
+      if (!IsInteractiveElementType(part->GetItemType()))
+         continue;
+      if (count < msg.maxEntryCount && msg.entries)
+      {
+         s_elementNames.push_back(part->GetName());
+         msg.entries[count].name = s_elementNames.back().c_str();
+         msg.entries[count].elementType = static_cast<int>(part->GetItemType());
+      }
+      count++;
+   }
+   msg.count = count;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // Expose VPX contributions through plugin API
 
 #include "plugins/ControllerPlugin.h"
@@ -549,6 +788,7 @@ void VPXPluginAPIImpl::OnGameStart()
    const auto& msgApi = m_msgApi;
 
    msgApi.SubscribeMsg(GetVPXEndPointId(), m_onDisplayGetSrcMsgId, &ControllerOnGetDMDSrc, this);
+   msgApi.SubscribeMsg(GetVPXEndPointId(), m_getGameElementsMsgId, &OnGetGameElements, this);
 
    msgApi.BroadcastMsg(GetVPXEndPointId(), m_onGameStartMsgId, nullptr);
 
@@ -587,6 +827,7 @@ void VPXPluginAPIImpl::OnGameEnd()
    const auto& msgApi = m_msgApi;
 
    msgApi.UnsubscribeMsg(m_onDisplayGetSrcMsgId, &ControllerOnGetDMDSrc, this);
+   msgApi.UnsubscribeMsg(m_getGameElementsMsgId, &OnGetGameElements, this);
 
    m_dmdSources.clear();
 
@@ -697,11 +938,13 @@ void VPXPluginAPIImpl::ControllerOnGetDMDSrc(const unsigned int msgId, void* use
 // 
 
 VPXPluginAPIImpl::VPXPluginAPIImpl(MsgPI::MsgPluginManager& pluginManager)
-   : m_msgApi(pluginManager.GetMsgAPI()) 
+   : m_msgApi(pluginManager.GetMsgAPI())
    , m_apiThread(std::this_thread::get_id())
    , m_getVPXAPIMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API))
    , m_onGameStartMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_START))
    , m_onGameEndMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_END))
+   , m_getGameElementsMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_GAME_ELEMENTS))
+   , m_gameElementEventMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_ELEMENT))
    , m_getLoggingAPIMsgId(m_msgApi.GetMsgID(LOGPI_NAMESPACE, LOGPI_MSG_GET_API))
    , m_getScriptingAPIMsgId(m_msgApi.GetMsgID(SCRIPTPI_NAMESPACE, SCRIPTPI_MSG_GET_API))
    , m_onDisplaySrcChgMsgId(m_msgApi.GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_ON_SRC_CHG_MSG))
@@ -731,6 +974,12 @@ VPXPluginAPIImpl::VPXPluginAPIImpl(MsgPI::MsgPluginManager& pluginManager)
    m_api.UpdateTexture = UpdateTexture;
    m_api.GetTextureInfo = GetTextureInfo;
    m_api.DeleteTexture = DeleteTexture;
+   m_api.EjectBall = EjectBall;
+   m_api.DestroyBall = DestroyBall;
+   m_api.SetLightState = SetLightState;
+   m_api.SetDropTargetState = SetDropTargetState;
+   m_api.SetFlipperState = SetFlipperState;
+   m_api.KickBall = KickBall;
 
    m_vpxPlugin = pluginManager.RegisterPlugin(
       "vpx"s, "VPX"s, "Visual Pinball X"s, ""s, ""s, "https://github.com/vpinball/vpinball"s, //
@@ -775,6 +1024,8 @@ VPXPluginAPIImpl::~VPXPluginAPIImpl()
    m_msgApi.ReleaseMsgID(m_getScriptingAPIMsgId);
    m_msgApi.ReleaseMsgID(m_onGameStartMsgId);
    m_msgApi.ReleaseMsgID(m_onGameEndMsgId);
+   m_msgApi.ReleaseMsgID(m_getGameElementsMsgId);
+   m_msgApi.ReleaseMsgID(m_gameElementEventMsgId);
    m_msgApi.ReleaseMsgID(m_onDisplayGetSrcMsgId);
    m_msgApi.ReleaseMsgID(m_onDisplaySrcChgMsgId);
 

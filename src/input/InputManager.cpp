@@ -1015,10 +1015,42 @@ void InputManager::Unregister(ButtonMapping* mapping)
       std::erase(it->second, mapping);
 }
 
+// Translate a (dynamically assigned, registration-order) core action id to the
+// stable plugin VPXAction enum. A direct cast is wrong: action ids are indices
+// into m_inputActions and do NOT line up with VPXAction (e.g. coin/start land on
+// the wrong value -> plugins see "unknown"). Returns an out-of-range value for
+// actions with no plugin-facing VPXAction, which plugins report as "unknown".
+VPXAction InputManager::MapActionIdToVPXAction(unsigned int id) const
+{
+   if (id == m_leftFlipperActionId) return VPXACTION_LeftFlipper;
+   if (id == m_rightFlipperActionId) return VPXACTION_RightFlipper;
+   if (id == m_stagedLeftFlipperActionId) return VPXACTION_StagedLeftFlipper;
+   if (id == m_stagedRightFlipperActionId) return VPXACTION_StagedRightFlipper;
+   if (id == m_leftMagnaActionId) return VPXACTION_LeftMagnaSave;
+   if (id == m_rightMagnaActionId) return VPXACTION_RightMagnaSave;
+   if (id == m_launchBallActionId) return VPXACTION_LaunchBall;
+   if (id == m_leftNudgeActionId) return VPXACTION_LeftNudge;
+   if (id == m_centerNudgeActionId) return VPXACTION_CenterNudge;
+   if (id == m_rightNudgeActionId) return VPXACTION_RightNudge;
+   if (id == m_tiltActionId) return VPXACTION_Tilt;
+   if (id == m_addCreditActionId[0]) return VPXACTION_AddCredit;
+   if (id == m_addCreditActionId[1]) return VPXACTION_AddCredit2;
+   if (id == m_startActionId) return VPXACTION_StartGame;
+   if (id == m_lockbarActionId) return VPXACTION_Lockbar;
+   if (id == m_openInGameUIActionId) return VPXACTION_OpenInGameUI;
+   if (id == m_exitGameActionId) return VPXACTION_ExitGame;
+   if (id == m_volumeDownActionId) return VPXACTION_VolumeDown;
+   if (id == m_volumeUpActionId) return VPXACTION_VolumeUp;
+   if (id == m_vrViewCenterActionId) return VPXACTION_VRRecenter;
+   if (id == m_vrViewUpActionId) return VPXACTION_VRUp;
+   if (id == m_vrViewDownActionId) return VPXACTION_VRDown;
+   return static_cast<VPXAction>(0xFFFFFFFF); // no plugin-facing action
+}
+
 // Allow plugins to react to action event, eventually disabling local processing
 bool InputManager::OnInputActionStateChanged(InputAction* action)
 {
-   VPXActionEvent event { static_cast<VPXAction>(action->GetActionId()), action->IsPressed(), 1 };
+   VPXActionEvent event { MapActionIdToVPXAction(action->GetActionId()), action->IsPressed(), 1 };
    m_player->m_pluginAPI.BroadcastVPXMsg(m_onActionEventMsgId, &event);
    return event.enableVPXProcessing != 0;
 }

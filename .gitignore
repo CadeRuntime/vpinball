@@ -29,3 +29,6 @@ VisualPinball.sln
 /*.vcxproj
 /*.vcxproj.filters
 /.build
+
+# generated protobuf/gRPC sources
+plugins/cade-bridge/proto/generated/
