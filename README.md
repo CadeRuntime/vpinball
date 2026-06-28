@@ -2,7 +2,9 @@
 
 *An open source pinball table editor and simulator.*
 
-This project was started by Randy Davis, open sourced in 2010 and continued by the Visual Pinball development team. This is the official repository.
+> **Note:** This repository is the **Cade fork** of Visual Pinball — a fork of [vpinball/vpinball](https://github.com/vpinball/vpinball), not an official release. It tracks upstream `master` and adds a game element event plugin API and the Cade Bridge plugin. See [FORK.md](FORK.md) for details.
+
+This project was started by Randy Davis, open sourced in 2010 and continued by the Visual Pinball development team. The official repository is located at https://github.com/vpinball/vpinball
 
 ## Features
 
