@@ -439,6 +439,18 @@ cade::events::DeviceCategory DeviceRegistry::GetDeviceCategory(const std::string
    return cade::events::DEVICE_CATEGORY_GENERAL;
 }
 
+bool DeviceRegistry::IsConfiguredDevice(const std::string& deviceName) const
+{
+   // A device is "configured" when cade resolved one or more scoring/event-name
+   // triggers for it from the .cade config. Every VPX device gets a default
+   // event_type_map echoed back, but only devices referenced by the config get a
+   // non-empty event_name_map (see registration.go resolveEventNameMap). This is
+   // the signal used to suppress passive geometry (plain walls/rubbers) that have
+   // "Has Hit Event" enabled but no role in cade.
+   auto it = m_mappings.find(deviceName);
+   return it != m_mappings.end() && !it->second.eventNameMap.empty();
+}
+
 void DeviceRegistry::Clear()
 {
    m_mappings.clear();

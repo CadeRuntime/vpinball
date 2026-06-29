@@ -162,7 +162,8 @@ static bool IsForwardableElementType(int elementType)
    // ItemTypeEnum values from iselect.h
    switch (elementType)
    {
-   case 0:  // eItemSurface — named slingshot surfaces (LeftSlingShot, RightSlingShot, etc.)
+   case 0:  // eItemSurface — slingshots and config-referenced surfaces; plain walls
+            // are filtered downstream in onGameElement (see IsConfiguredDevice gate)
    case 1:  // eItemFlipper
    case 3:  // eItemPlunger
    case 5:  // eItemBumper
@@ -212,6 +213,17 @@ static void onGameElement(const unsigned int eventId, void* userData, void* even
    // commands — e.g. disable during tilt, ball save, or between balls.
    const auto* autofireRule = deviceRegistry.GetAutofireRuleForSwitch(elemEvent->elementName);
    if (autofireRule && !autofireRule->enabled)
+      return;
+
+   // Surfaces (eItemSurface) are forwardable to capture named slingshots, but the
+   // type alone can't tell a slingshot from a plain wall. A wall with "Has Hit
+   // Event" enabled (e.g. Wall37) would otherwise emit a switch.hit on every
+   // ball-wall collision — a flood of events cade has no rule for. Forward a
+   // surface only when it has a cade role: an autofire rule (slingshots) or a
+   // resolved scoring/event-name trigger (surfaces referenced by the .cade config).
+   if (elemEvent->elementType == 0 /* eItemSurface */
+       && !autofireRule
+       && !deviceRegistry.IsConfiguredDevice(elemEvent->elementName))
       return;
 
    auto event = MapGameElementToCade(elemEvent->elementName, elemEvent->eventId, elemEvent->elementType, &deviceRegistry);

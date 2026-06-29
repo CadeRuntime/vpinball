@@ -88,6 +88,11 @@ public:
    // Lookup: get device category for a device
    cade::events::DeviceCategory GetDeviceCategory(const std::string& deviceName) const;
 
+   // True when cade resolved a scoring/event-name trigger for this device from
+   // the .cade config (non-empty event_name_map). Used to gate passive geometry
+   // (plain surfaces/walls) that fire hit events but have no role in cade.
+   bool IsConfiguredDevice(const std::string& deviceName) const;
+
    // Autofire rule definition (public so callers can inspect rule properties).
    struct AutofireRule {
       std::string name;
