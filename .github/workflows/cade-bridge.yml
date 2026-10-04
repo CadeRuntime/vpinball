@@ -73,11 +73,15 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
-          key: cade-vcpkg-grpc-x64-windows-${{ steps.vcpkg.outputs.rev }}
-      # The dynamic triplet provides both the libraries and the protoc / grpc_cpp_plugin tools
+          key: cade-vcpkg-grpc-x64-windows-release-${{ steps.vcpkg.outputs.rev }}
+      # Release only dynamic triplet, also used as host triplet so that the protoc / grpc_cpp_plugin
+      # tools are built once (release) and installed next to the libraries.
+      # The C: drive is too small for gRPC build trees: build on D: and clean after each port.
       - name: Install gRPC
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install grpc:x64-windows protobuf:x64-windows
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install grpc:x64-windows-release protobuf:x64-windows-release \
+            --host-triplet=x64-windows-release --clean-after-build \
+            --x-buildtrees-root=D:/vcpkg-buildtrees --x-packages-root=D:/vcpkg-packages
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
       - name: Configure
         run: cmake -G "Visual Studio 18 2026" -A x64 -DBUILD_APP=OFF -B build | tee configure.log
@@ -91,3 +95,4 @@ jobs:
           ls -l build/plugins/cade-bridge/
           test -f build/plugins/cade-bridge/plugin.cfg
           test -f build/plugins/cade-bridge/plugin-cade-bridge64.dll
+          df -h /c /d || true
