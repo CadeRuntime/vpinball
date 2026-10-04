@@ -56,7 +56,9 @@ jobs:
         run: |
           ls -l build/plugins/cade-bridge/
           test -f build/plugins/cade-bridge/plugin.cfg
-          nm -D build/plugins/cade-bridge/plugin-cade-bridge.so | grep -q CadeBridgePluginLoad
+          # Not piped into grep -q: its early exit would SIGPIPE nm, failing the step under pipefail
+          nm -D build/plugins/cade-bridge/plugin-cade-bridge.so > symbols.txt
+          grep -q CadeBridgePluginLoad symbols.txt
 
   windows:
     name: Windows x64
