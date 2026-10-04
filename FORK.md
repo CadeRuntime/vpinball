@@ -30,11 +30,13 @@ New files:
 - `plugins/cade-bridge/**` (the plugin, proto, build files)
 - `src/core/VPXGameElementBridge.h`
 - `make/CMakeLists_plugin_CadeBridge.txt`, `make/plugin-cade-bridge.vcxproj`
+- `.github/workflows/cade-bridge.yml` (builds the plugin, which the upstream CI skips for lack of gRPC)
 
 Modified upstream files:
 - `src/core/ieditable.h` — one-line `FireGroupEvent` hook into the bridge
 - `src/core/VPXPluginAPIImpl.{h,cpp}` — game element event broadcast + plugin API verbs
 - `src/parts/kicker.{h,cpp}` — kick-only kicker primitive
 - `src/core/player.cpp` — log the OS error when a plugin DLL fails to load
-- `plugins/plugins/VPXPlugin.h` — game element event + verb declarations
+- `plugins/plugins/VPXPlugin.h` — game element events, and the `VPXGameElementAPI` verbs
+  (a separate struct from `VPXPluginAPI`, whose layout stays identical to upstream)
 - `make/CMakeLists_plugins.txt`, `.gitignore` — register the plugin / ignore generated proto
