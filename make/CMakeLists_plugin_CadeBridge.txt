@@ -201,10 +201,12 @@ if(BUILD_SHARED)
       endif()
    endif()
 
+   set_target_properties(CadeBridgePlugin PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PLUGINS_DIR}/cade-bridge"
+   )
+
    add_custom_command(TARGET CadeBridgePlugin POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/cade-bridge/plugin.cfg" "${PLUGINS_DIR}/cade-bridge/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:CadeBridgePlugin>" "${PLUGINS_DIR}/cade-bridge"
-      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:CadeBridgePlugin>"
    )
 
    # Copy runtime DLLs (gRPC, protobuf, etc.) into the plugin directory so

@@ -12,11 +12,16 @@ namespace CadeBridge {
 
 class DeviceRegistry;
 
-// VPX -> Cade: Build a CategorizedEvent from a VPX input state change
-cade::events::CategorizedEvent MapInputToCade(const InputSrcId& src, unsigned int inputIndex, int state, const DeviceRegistry* registry = nullptr);
+// Read a numeric controller state (any CTLPI_STATE_FORMAT_xxx but STRING) as a double.
+// Returns false if the state has no getter or a non numeric format.
+bool ReadControllerState(const StateDef& def, double& value);
 
-// VPX -> Cade: Build a CategorizedEvent from a VPX device state change
-cade::events::CategorizedEvent MapDeviceToCade(const DevSrcId& src, unsigned int deviceIndex, const DeviceRegistry* registry = nullptr);
+// Default cade device category of a controller state, derived from its semantic
+// type and the name of its state block (e.g. "Solenoids" -> COIL)
+cade::events::DeviceCategory ClassifyControllerState(const StateSrcId& src, const StateDef& def);
+
+// VPX -> Cade: Build a CategorizedEvent from a controller state (switch, solenoid, lamp, ...) change
+cade::events::CategorizedEvent MapStateToCade(const StateSrcId& src, unsigned int stateIndex, double value, const DeviceRegistry* registry = nullptr);
 
 // VPX -> Cade: Build a CategorizedEvent from a VPX action state change (flipper, start, coin, etc.)
 cade::events::CategorizedEvent MapActionToCade(VPXAction action, int isPressed, const DeviceRegistry* registry = nullptr);
@@ -37,11 +42,11 @@ cade::events::CategorizedEvent MapTableStoppedToCade();
 // Returns true if a matching action was found, fills outAction and outPressed
 bool MapFlipperFromCade(const cade::events::CategorizedEvent& event, VPXAction& outAction, int& outPressed);
 
-// Build a device key string from a DeviceDef's mappingId
-std::string MakeDeviceKey(const DeviceDef& def);
+// Build a device key for a controller state: its name, or "<state block id>:<mapping id>" when unnamed
+std::string MakeDeviceKey(const StateSrcId& src, const StateDef& def);
 
 // Build a device key string from a groupId and deviceId
-std::string MakeDeviceKey(uint16_t groupId, uint16_t deviceId);
+std::string MakeDeviceKey(uint32_t groupId, uint32_t deviceId);
 
 // Sanitize a string to valid UTF-8 for protobuf compatibility.
 // Replaces invalid byte sequences with U+FFFD (replacement character).

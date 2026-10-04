@@ -17,7 +17,7 @@
 #include <string>
 using namespace std::string_literals;
 #include <vector>
-#include <mutex>
+#include <memory>
 
 // Shared logging
 #include "plugins/LoggingPlugin.h"
@@ -44,9 +44,7 @@ VPXPluginAPI* vpxApi = nullptr;
 uint32_t endpointId;
 unsigned int getVpxApiId;
 unsigned int onGameStartId, onGameEndId;
-unsigned int onCtlGameStartId, onCtlGameEndId;
-unsigned int getInputSrcId, getDevSrcId;
-unsigned int onInputSrcChgId, onDevSrcChgId;
+unsigned int onPrepareFrameId;
 unsigned int onDisplaySrcChgId, onSegSrcChgId;
 unsigned int onActionChangedId;
 unsigned int onGameElementId;
@@ -56,20 +54,23 @@ GrpcServer grpcServer;
 DeviceRegistry deviceRegistry;
 EventDebouncer elementDebouncer;
 
-// Tracked input and device sources for change callbacks
-struct TrackedInputSrc
-{
-   InputSrcId src;
-};
+// Controller states (switches, solenoids, lamps, ...) exposed by controller plugins (PinMAME, B2S, ...).
+// The controller API has no change notification, so states are polled once per frame and diffed
+// against the last polled value. The list is subscribed while a game is active.
+std::unique_ptr<PinballPlugin::Controller::CtrlItemConsumer<StateSrcId>> stateSources;
 
-struct TrackedDevSrc
-{
-   DevSrcId src;
-};
+// Controllers running the game, used to send the game id to cade once the controller is started
+std::unique_ptr<PinballPlugin::Controller::CtrlItemConsumer<ControllerDef>> controllers;
+std::string announcedGameId;
 
-std::mutex sourcesMutex;
-std::vector<TrackedInputSrc> trackedInputs;
-std::vector<TrackedDevSrc> trackedDevices;
+// Last polled value of each controller state. Only accessed on the plugin API thread.
+struct PolledState
+{
+   double value = 0.0;
+   cade::events::DeviceCategory category = cade::events::DEVICE_CATEGORY_GENERAL;
+   bool valid = false; // false if the state can not be polled (no getter, string format)
+};
+std::vector<std::vector<PolledState>> polledStates; // One entry per state block, empty until first poll
 
 // True while the game-active subscriptions registered in onGameStart are live.
 // Guards teardown so unloading the plugin mid-game performs the same cleanup
@@ -93,27 +94,61 @@ static void sendCadeEvent(const cade::events::CategorizedEvent& event)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Input/device change callbacks - forward state changes to Cade
+// Controller state polling - forward state changes to Cade
 
-static void onInputChanged(unsigned int inputIndex, void* context)
+// Switch, coil and light states are forwarded on on/off transitions only, as
+// modulated outputs (PWM solenoids, fading lamps) change brightness every frame.
+// Other states (scores, mechs, ...) are forwarded on any value change.
+static bool IsStateChange(const PolledState& prev, double value)
 {
-   auto* src = static_cast<InputSrcId*>(context);
-   if (!src || !src->GetInputState)
-      return;
-   int state = src->GetInputState(inputIndex);
-   auto event = MapInputToCade(*src, inputIndex, state, &deviceRegistry);
-   LOGI("CadeBridge: input changed -> device_key="s + event.device_key() + " state=" + std::to_string(state));
-   sendCadeEvent(event);
+   switch (prev.category)
+   {
+   case cade::events::DEVICE_CATEGORY_SWITCH:
+   case cade::events::DEVICE_CATEGORY_COIL:
+   case cade::events::DEVICE_CATEGORY_LIGHT:
+      return (prev.value != 0.0) != (value != 0.0);
+   default:
+      return prev.value != value;
+   }
 }
 
-static void onDeviceChanged(unsigned int deviceIndex, void* context)
+static void onPrepareFrame(const unsigned int eventId, void* userData, void* eventData)
 {
-   auto* src = static_cast<DevSrcId*>(context);
-   if (!src)
+   if (!stateSources)
       return;
-   auto event = MapDeviceToCade(*src, deviceIndex, &deviceRegistry);
-   LOGI("CadeBridge: device changed -> device_key="s + event.device_key() + " category=" + std::to_string(event.device_category()));
-   sendCadeEvent(event);
+   stateSources->With([](const std::vector<StateSrcId>& sources)
+   {
+      if (polledStates.size() != sources.size())
+         polledStates.resize(sources.size());
+      for (size_t s = 0; s < sources.size(); s++)
+      {
+         const StateSrcId& src = sources[s];
+         std::vector<PolledState>& polled = polledStates[s];
+         const bool firstPoll = polled.size() != src.nStates;
+         if (firstPoll)
+         {
+            polled.assign(src.nStates, PolledState {});
+            for (unsigned int i = 0; i < src.nStates; i++)
+               polled[i].category = ClassifyControllerState(src, src.stateDefs[i]);
+         }
+         for (unsigned int i = 0; i < src.nStates; i++)
+         {
+            PolledState& prev = polled[i];
+            double value;
+            if (!ReadControllerState(src.stateDefs[i], value))
+               continue;
+            // On first poll of a state block, only active states are forwarded (same as the initial snapshot)
+            const bool changed = firstPoll ? value != 0.0 : (!prev.valid || IsStateChange(prev, value));
+            prev.valid = true;
+            prev.value = value;
+            if (!changed)
+               continue;
+            auto event = MapStateToCade(src, i, value, &deviceRegistry);
+            LOGI("CadeBridge: state changed -> device_key="s + event.device_key() + " value=" + std::to_string(value));
+            sendCadeEvent(event);
+         }
+      }
+   });
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -247,121 +282,32 @@ static void onGameElement(const unsigned int eventId, void* userData, void* even
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Source discovery - query and track available inputs/devices
+// Controller state discovery
 
-static void discoverInputSources()
+static void updateManifest()
 {
-   std::lock_guard<std::mutex> lock(sourcesMutex);
-   trackedInputs.clear();
-
-   // First pass: get count
-   GetInputSrcMsg msg {};
-   msg.maxEntryCount = 0;
-   msg.count = 0;
-   msg.entries = nullptr;
-   msgApi->BroadcastMsg(endpointId, getInputSrcId, &msg);
-
-   if (msg.count == 0)
-   {
-      LOGI("CadeBridge: no input sources found"s);
-      return;
-   }
-
-   // Second pass: get entries
-   unsigned int count = msg.count;
-   std::vector<InputSrcId> entries(count);
-   msg.maxEntryCount = count;
-   msg.count = 0;
-   msg.entries = entries.data();
-   msgApi->BroadcastMsg(endpointId, getInputSrcId, &msg);
-
-   unsigned int actual = std::min(msg.count, count);
-   trackedInputs.resize(actual);
-   for (unsigned int i = 0; i < actual; i++)
-   {
-      trackedInputs[i].src = entries[i];
-
-      // Register change callbacks for each input in this source
-      if (entries[i].SetChangeCallback)
-      {
-         for (unsigned int j = 0; j < entries[i].nInputs; j++)
-            entries[i].SetChangeCallback(j, 1, onInputChanged, &trackedInputs[i].src);
-      }
-   }
-
-   LOGI("CadeBridge: discovered "s + std::to_string(actual) + " input source(s)");
+   const auto states = stateSources->With([](const std::vector<StateSrcId>& sources) { return sources; });
+   grpcServer.SetManifest(deviceRegistry.BuildManifest(states, msgApi, endpointId, getGameElementsMsgId));
 }
 
-static void discoverDeviceSources()
-{
-   std::lock_guard<std::mutex> lock(sourcesMutex);
-   trackedDevices.clear();
-
-   // First pass: get count
-   GetDevSrcMsg msg {};
-   msg.maxEntryCount = 0;
-   msg.count = 0;
-   msg.entries = nullptr;
-   msgApi->BroadcastMsg(endpointId, getDevSrcId, &msg);
-
-   if (msg.count == 0)
-   {
-      LOGI("CadeBridge: no device sources found"s);
-      return;
-   }
-
-   // Second pass: get entries
-   unsigned int count = msg.count;
-   std::vector<DevSrcId> entries(count);
-   msg.maxEntryCount = count;
-   msg.count = 0;
-   msg.entries = entries.data();
-   msgApi->BroadcastMsg(endpointId, getDevSrcId, &msg);
-
-   unsigned int actual = std::min(msg.count, count);
-   trackedDevices.resize(actual);
-   for (unsigned int i = 0; i < actual; i++)
-   {
-      trackedDevices[i].src = entries[i];
-
-      // Register change callbacks for each device in this source
-      if (entries[i].SetChangeCallback)
-      {
-         for (unsigned int j = 0; j < entries[i].nDevices; j++)
-            entries[i].SetChangeCallback(j, 1, onDeviceChanged, &trackedDevices[i].src);
-      }
-   }
-
-   LOGI("CadeBridge: discovered "s + std::to_string(actual) + " device source(s)");
-}
-
+// May be called from the gRPC thread (reconnect, config update): GetState is thread safe
+// and the state list is accessed through With, which synchronizes against list changes.
 static void sendInitialStateSnapshot()
 {
-   std::lock_guard<std::mutex> lock(sourcesMutex);
-
-   for (auto& tracked : trackedInputs)
+   if (!stateSources)
+      return;
+   stateSources->With([](const std::vector<StateSrcId>& sources)
    {
-      if (!tracked.src.GetInputState)
-         continue;
-      for (unsigned int i = 0; i < tracked.src.nInputs; i++)
+      for (const StateSrcId& src : sources)
       {
-         int state = tracked.src.GetInputState(i);
-         if (state) // Only send active states
-            sendCadeEvent(MapInputToCade(tracked.src, i, state, &deviceRegistry));
+         for (unsigned int i = 0; i < src.nStates; i++)
+         {
+            double value;
+            if (ReadControllerState(src.stateDefs[i], value) && value != 0.0) // Only send active states
+               sendCadeEvent(MapStateToCade(src, i, value, &deviceRegistry));
+         }
       }
-   }
-
-   for (auto& tracked : trackedDevices)
-   {
-      if (!tracked.src.GetByteState)
-         continue;
-      for (unsigned int i = 0; i < tracked.src.nDevices; i++)
-      {
-         uint8_t state = tracked.src.GetByteState(i);
-         if (state) // Only send active states
-            sendCadeEvent(MapDeviceToCade(tracked.src, i, &deviceRegistry));
-      }
-   }
+   });
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -662,16 +608,32 @@ static void onPlatformCommand(const cade::events::PlatformCommand& cmd)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// Source change callbacks - re-discover on dynamic changes
+// Controller list/state change callbacks (plugin API thread)
 
-static void onInputSourcesChanged(const unsigned int eventId, void* userData, void* eventData)
+static void onStateSourcesAboutToChange()
 {
-   discoverInputSources();
+   // Cached states refer to the state blocks that are about to be discarded
+   polledStates.clear();
 }
 
-static void onDeviceSourcesChanged(const unsigned int eventId, void* userData, void* eventData)
+static void onStateSourcesChanged()
 {
-   discoverDeviceSources();
+   const size_t nSources = stateSources->With([](const std::vector<StateSrcId>& sources) { return sources.size(); });
+   LOGI("CadeBridge: "s + std::to_string(nSources) + " controller state source(s)");
+   // Controllers usually expose their states after the game start (when the script starts the ROM), so the manifest is refreshed
+   if (grpcServer.IsGameActive())
+      updateManifest();
+}
+
+static void onControllersChanged()
+{
+   const std::string gameId = controllers->With([](const std::vector<ControllerDef>& items)
+      { return (items.empty() || items.front().gameId == nullptr) ? std::string() : std::string(items.front().gameId); });
+   if (gameId.empty() || gameId == announcedGameId)
+      return;
+   announcedGameId = gameId;
+   LOGI("CadeBridge: sending table_ready event, gameId="s + gameId);
+   sendCadeEvent(MapTableReadyToCade(gameId.c_str()));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -703,58 +665,37 @@ static void unsubscribeGameEvents()
 
    msgApi->UnsubscribeMsg(onActionChangedId, onActionChanged, nullptr);
    msgApi->UnsubscribeMsg(onGameElementId, onGameElement, nullptr);
-   msgApi->UnsubscribeMsg(onInputSrcChgId, onInputSourcesChanged, nullptr);
-   msgApi->UnsubscribeMsg(onDevSrcChgId, onDeviceSourcesChanged, nullptr);
+   msgApi->UnsubscribeMsg(onPrepareFrameId, onPrepareFrame, nullptr);
    msgApi->UnsubscribeMsg(onDisplaySrcChgId, onDisplaySourcesChanged, nullptr);
    msgApi->UnsubscribeMsg(onSegSrcChgId, onSegSourcesChanged, nullptr);
 
-   // Clear tracked sources (callbacks auto-unregister on source change broadcast)
-   {
-      std::lock_guard<std::mutex> lock(sourcesMutex);
-      trackedInputs.clear();
-      trackedDevices.clear();
-   }
+   if (controllers->IsSubscribed())
+      controllers->Unsubscribe();
+   if (stateSources->IsSubscribed())
+      stateSources->Unsubscribe();
+   polledStates.clear();
+   announcedGameId.clear();
 }
 
 static void onGameStart(const unsigned int eventId, void* userData, void* eventData)
 {
-   const char* gameId = nullptr;
-
-   // Try controller game start for gameId
-   // The VPX game start event doesn't carry a gameId, but the controller one does
-   // We subscribe to both and use whichever fires
-
    // Subscribe to VPX action changes (flippers, start, coin, nudge, etc.)
    msgApi->SubscribeMsg(endpointId, onActionChangedId, onActionChanged, nullptr);
 
    // Subscribe to VPX game element events (bumper hits, target drops, spinner spins, etc.)
    msgApi->SubscribeMsg(endpointId, onGameElementId, onGameElement, nullptr);
 
+   // Poll controller states once per frame
+   msgApi->SubscribeMsg(endpointId, onPrepareFrameId, onPrepareFrame, nullptr);
+
    // Subscribe to dynamic source changes
-   msgApi->SubscribeMsg(endpointId, onInputSrcChgId, onInputSourcesChanged, nullptr);
-   msgApi->SubscribeMsg(endpointId, onDevSrcChgId, onDeviceSourcesChanged, nullptr);
    msgApi->SubscribeMsg(endpointId, onDisplaySrcChgId, onDisplaySourcesChanged, nullptr);
    msgApi->SubscribeMsg(endpointId, onSegSrcChgId, onSegSourcesChanged, nullptr);
    gameSubscriptionsActive = true;
 
-   // Discover available sources and register callbacks
-   discoverInputSources();
-   discoverDeviceSources();
-
-   // Build device manifest
-   cade::events::DeviceManifest manifest;
-   {
-      std::lock_guard<std::mutex> lock(sourcesMutex);
-      std::vector<InputSrcId> inputs;
-      for (const auto& t : trackedInputs)
-         inputs.push_back(t.src);
-      std::vector<DevSrcId> devices;
-      for (const auto& t : trackedDevices)
-         devices.push_back(t.src);
-      manifest = deviceRegistry.BuildManifest(inputs, devices, msgApi, endpointId, getGameElementsMsgId);
-   }
-
-   grpcServer.SetManifest(manifest);
+   // Discover available controller states, and build device manifest
+   stateSources->Subscribe();
+   updateManifest();
    grpcServer.SetGameActive(true);
 
    // Start element debouncer if configured.
@@ -771,15 +712,10 @@ static void onGameStart(const unsigned int eventId, void* userData, void* eventD
       sendInitialStateSnapshot();
    }
 
-   LOGI("CadeBridge: table ready, waiting for cade"s);
-}
+   // Announce the game id once a controller (PinMAME, ...) is started by the table script
+   controllers->Subscribe();
 
-static void onCtlGameStart(const unsigned int eventId, void* userData, void* eventData)
-{
-   auto* msg = static_cast<CtlOnGameStartMsg*>(eventData);
-   const char* gameId = msg ? msg->gameId : nullptr;
-   LOGI("CadeBridge: sending table_ready event, gameId="s + (gameId ? gameId : "(null)"));
-   sendCadeEvent(MapTableReadyToCade(gameId));
+   LOGI("CadeBridge: table ready, waiting for cade"s);
 }
 
 static void onGameEnd(const unsigned int eventId, void* userData, void* eventData)
@@ -829,21 +765,19 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginLoad(const uint32_t sessionId, const 
    msgApi->SubscribeMsg(endpointId, onGameStartId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_START), onGameStart, nullptr);
    msgApi->SubscribeMsg(endpointId, onGameEndId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_END), onGameEnd, nullptr);
 
-   // Get controller event IDs
-   onCtlGameStartId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_START);
-   msgApi->SubscribeMsg(endpointId, onCtlGameStartId, onCtlGameStart, nullptr);
-   onCtlGameEndId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_END);
-
-   // Get VPX action/element change event IDs
+   // Get VPX action/element/frame event IDs
    onActionChangedId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_ACTION_CHANGED);
    onGameElementId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_ELEMENT);
    getGameElementsMsgId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_GAME_ELEMENTS);
+   onPrepareFrameId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_PREPARE_FRAME);
 
-   // Get source discovery message IDs
-   getInputSrcId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_INPUT_GET_SRC_MSG);
-   getDevSrcId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG);
-   onInputSrcChgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_INPUT_ON_SRC_CHG_MSG);
-   onDevSrcChgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_ON_SRC_CHG_MSG);
+   // Controller discovery (subscribed while a game is active)
+   stateSources = std::make_unique<PinballPlugin::Controller::CtrlItemConsumer<StateSrcId>>(
+      msgApi, endpointId, CTLPI_STATE_GET_SRC_MSG, CTLPI_STATE_ON_SRC_CHG_MSG, nullptr, onStateSourcesAboutToChange, onStateSourcesChanged);
+   controllers = std::make_unique<PinballPlugin::Controller::CtrlItemConsumer<ControllerDef>>(
+      msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG, nullptr, nullptr, onControllersChanged);
+
+   // Get display/segment source change IDs
    onDisplaySrcChgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_ON_SRC_CHG_MSG);
    onSegSrcChgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_SEG_ON_SRC_CHG_MSG);
 
@@ -866,10 +800,13 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginUnload()
    // leaking them. No-op if no game is active.
    unsubscribeGameEvents();
 
+   // Release controller discovery (unsubscribed above)
+   stateSources.reset();
+   controllers.reset();
+
    // Unsubscribe from all events
    msgApi->UnsubscribeMsg(onGameStartId, onGameStart, nullptr);
    msgApi->UnsubscribeMsg(onGameEndId, onGameEnd, nullptr);
-   msgApi->UnsubscribeMsg(onCtlGameStartId, onCtlGameStart, nullptr);
 
    // Release all message IDs
    msgApi->ReleaseMsgID(onActionChangedId);
@@ -878,12 +815,7 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginUnload()
    msgApi->ReleaseMsgID(getVpxApiId);
    msgApi->ReleaseMsgID(onGameStartId);
    msgApi->ReleaseMsgID(onGameEndId);
-   msgApi->ReleaseMsgID(onCtlGameStartId);
-   msgApi->ReleaseMsgID(onCtlGameEndId);
-   msgApi->ReleaseMsgID(getInputSrcId);
-   msgApi->ReleaseMsgID(getDevSrcId);
-   msgApi->ReleaseMsgID(onInputSrcChgId);
-   msgApi->ReleaseMsgID(onDevSrcChgId);
+   msgApi->ReleaseMsgID(onPrepareFrameId);
    msgApi->ReleaseMsgID(onDisplaySrcChgId);
    msgApi->ReleaseMsgID(onSegSrcChgId);
 
