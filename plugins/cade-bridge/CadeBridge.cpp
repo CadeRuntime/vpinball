@@ -40,8 +40,10 @@ LPI_USE_CPP();
 
 const MsgPluginAPI* msgApi = nullptr;
 VPXPluginAPI* vpxApi = nullptr;
+VPXGameElementAPI* elementApi = nullptr; // Cade fork extension, null if VPX does not provide it
 
 uint32_t endpointId;
+unsigned int getGameElementApiId;
 unsigned int getVpxApiId;
 unsigned int onGameStartId, onGameEndId;
 unsigned int onPrepareFrameId;
@@ -170,13 +172,13 @@ static void onActionChanged(const unsigned int eventId, void* userData, void* ev
    // rules fire: cade sends Enable/DisableAutofire to gate coil activation during
    // tilt, ball save, or inter-ball intervals, and because each coil carries its
    // own rule, the coils sharing an action can be inhibited independently.
-   if (vpxApi && vpxApi->SetFlipperState)
+   if (elementApi)
    {
       for (const auto* rule : deviceRegistry.GetAutofireRulesForSwitch(deviceKey))
       {
          if (!rule->enabled || rule->type != "hold")
             continue;
-         int result = vpxApi->SetFlipperState(rule->coilName.c_str(), actionEvent->isPressed ? 1 : 0);
+         int result = elementApi->SetFlipperState(rule->coilName.c_str(), actionEvent->isPressed ? 1 : 0);
          if (result != 0)
             LOGW("CadeBridge: autofire flipper failed for '"s + rule->coilName + "', result=" + std::to_string(result));
          else
@@ -375,9 +377,9 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       case cade::events::DEVICE_CATEGORY_GENERAL:
       case cade::events::DEVICE_CATEGORY_UNSPECIFIED:
       default:
-         if (vpxApi && vpxApi->SetDropTargetState)
+         if (elementApi)
          {
-            result = vpxApi->SetDropTargetState(name.c_str(), 0);
+            result = elementApi->SetDropTargetState(name.c_str(), 0);
             action = "SetDropTargetState(raise)";
          }
          break;
@@ -405,9 +407,9 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       LOGD("CadeBridge: EnableCoil '"s + coil.device_name() + "' enable=" + std::to_string(coil.enable()));
       // EnableCoil is used for held coils like flippers. Try as flipper first,
       // fall back to logging if not a flipper element.
-      if (vpxApi && vpxApi->SetFlipperState)
+      if (elementApi)
       {
-         int result = vpxApi->SetFlipperState(coil.device_name().c_str(), coil.enable() ? 1 : 0);
+         int result = elementApi->SetFlipperState(coil.device_name().c_str(), coil.enable() ? 1 : 0);
          if (result == -2 || result == -3)
             LOGD("CadeBridge: EnableCoil '"s + coil.device_name() + "' is not a flipper (result=" + std::to_string(result) + ")");
       }
@@ -417,9 +419,9 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       const auto& light = cmd.set_light();
       float state = light.on() ? (light.brightness() > 0 ? light.brightness() / 255.0f : 1.0f) : 0.0f;
       LOGD("CadeBridge: SetLight '"s + light.device_name() + "' state=" + std::to_string(state));
-      if (vpxApi && vpxApi->SetLightState)
+      if (elementApi)
       {
-         int result = vpxApi->SetLightState(light.device_name().c_str(), state);
+         int result = elementApi->SetLightState(light.device_name().c_str(), state);
          if (result != 0)
             LOGW("CadeBridge: SetLight failed for '"s + light.device_name() + "', result=" + std::to_string(result));
       }
@@ -429,11 +431,11 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       const auto& flash = cmd.flash_light();
       float state = flash.brightness() > 0 ? flash.brightness() / 255.0f : 1.0f;
       LOGD("CadeBridge: FlashLight '"s + flash.device_name() + "' on_ms=" + std::to_string(flash.on_ms()) + " count=" + std::to_string(flash.count()));
-      if (vpxApi && vpxApi->SetLightState)
+      if (elementApi)
       {
          // Turn light on immediately. Cade's executor schedules a SetLight(off)
          // after the flash duration completes to turn the light back off.
-         int result = vpxApi->SetLightState(flash.device_name().c_str(), state);
+         int result = elementApi->SetLightState(flash.device_name().c_str(), state);
          if (result != 0)
             LOGW("CadeBridge: FlashLight failed for '"s + flash.device_name() + "', result=" + std::to_string(result));
       }
@@ -446,9 +448,9 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
    {
       const auto& reset = cmd.reset_target();
       LOGD("CadeBridge: ResetTarget '"s + reset.target_group_name() + "'");
-      if (vpxApi && vpxApi->SetDropTargetState)
+      if (elementApi)
       {
-         int result = vpxApi->SetDropTargetState(reset.target_group_name().c_str(), 0); // 0 = raised (reset)
+         int result = elementApi->SetDropTargetState(reset.target_group_name().c_str(), 0); // 0 = raised (reset)
          if (result != 0)
             LOGW("CadeBridge: ResetTarget failed for '"s + reset.target_group_name() + "', result=" + std::to_string(result));
       }
@@ -459,24 +461,24 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       LOGI("CadeBridge: EjectBall device='"s + eject.device_name()
          + "' angle=" + std::to_string(eject.angle())
          + " strength=" + std::to_string(eject.strength()));
-      if (vpxApi && vpxApi->EjectBall)
+      if (elementApi)
       {
-         int result = vpxApi->EjectBall(eject.device_name().c_str(), eject.angle(), eject.strength(), 0.0f);
+         int result = elementApi->EjectBall(eject.device_name().c_str(), eject.angle(), eject.strength(), 0.0f);
          if (result != 0)
             LOGW("CadeBridge: EjectBall failed, result="s + std::to_string(result));
       }
       else
       {
-         LOGW("CadeBridge: EjectBall not available (vpxApi missing EjectBall)");
+         LOGW("CadeBridge: EjectBall not available (VPX build lacks the game element API)");
       }
    }
    else if (cmd.has_destroy_ball())
    {
       const auto& destroy = cmd.destroy_ball();
       LOGI("CadeBridge: DestroyBall device='"s + destroy.device_name() + "'");
-      if (vpxApi && vpxApi->DestroyBall)
+      if (elementApi)
       {
-         int result = vpxApi->DestroyBall(destroy.device_name().c_str());
+         int result = elementApi->DestroyBall(destroy.device_name().c_str());
          if (result < 0)
             LOGW("CadeBridge: DestroyBall failed, result="s + std::to_string(result));
          else
@@ -484,7 +486,7 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       }
       else
       {
-         LOGW("CadeBridge: DestroyBall not available (vpxApi missing DestroyBall)");
+         LOGW("CadeBridge: DestroyBall not available (VPX build lacks the game element API)");
       }
    }
    else if (cmd.has_kick_ball())
@@ -508,9 +510,9 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       LOGI("CadeBridge: KickBall device='"s + name
          + "' angle=" + std::to_string(params->angle)
          + " strength=" + std::to_string(params->strength));
-      if (vpxApi && vpxApi->KickBall)
+      if (elementApi)
       {
-         int result = vpxApi->KickBall(name.c_str(), params->angle, params->strength, 0.0f);
+         int result = elementApi->KickBall(name.c_str(), params->angle, params->strength, 0.0f);
          if (result == -4)
          {
             // Distinct from Kicker::KickXYZ's silent no-op: return -4 means
@@ -528,7 +530,7 @@ static void handleDeviceCommand(const cade::events::DeviceCommand& cmd)
       }
       else
       {
-         LOGW("CadeBridge: KickBall not available (vpxApi missing KickBall)");
+         LOGW("CadeBridge: KickBall not available (VPX build lacks the game element API)");
       }
    }
    else
@@ -679,6 +681,9 @@ static void unsubscribeGameEvents()
 
 static void onGameStart(const unsigned int eventId, void* userData, void* eventData)
 {
+   if (elementApi == nullptr && vpxApi != nullptr)
+      vpxApi->PushNotification("Cade Bridge: incompatible VPX build (no game element API), see log", 10000);
+
    // Subscribe to VPX action changes (flippers, start, coin, nudge, etc.)
    msgApi->SubscribeMsg(endpointId, onActionChangedId, onActionChanged, nullptr);
 
@@ -761,6 +766,16 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginLoad(const uint32_t sessionId, const 
    // Get VPX API
    msgApi->BroadcastMsg(endpointId, getVpxApiId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API), &vpxApi);
 
+   // Get the game element API. It is only provided by the Cade fork of VPX, matching this plugin's version:
+   // element events and actuation can not work without it, so report it instead of failing silently.
+   msgApi->BroadcastMsg(endpointId, getGameElementApiId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_GAME_ELEMENT_API), &elementApi);
+   if (elementApi == nullptr || elementApi->version < 1)
+   {
+      elementApi = nullptr;
+      LOGE("CadeBridge: this VPX build does not provide the game element API ("s + VPXPI_MSG_GET_GAME_ELEMENT_API
+         + "). Table element events and device commands are disabled: use the Cade fork of VPX matching this plugin.");
+   }
+
    // Subscribe to game lifecycle events
    msgApi->SubscribeMsg(endpointId, onGameStartId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_START), onGameStart, nullptr);
    msgApi->SubscribeMsg(endpointId, onGameEndId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_END), onGameEnd, nullptr);
@@ -813,6 +828,7 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginUnload()
    msgApi->ReleaseMsgID(onGameElementId);
    msgApi->ReleaseMsgID(getGameElementsMsgId);
    msgApi->ReleaseMsgID(getVpxApiId);
+   msgApi->ReleaseMsgID(getGameElementApiId);
    msgApi->ReleaseMsgID(onGameStartId);
    msgApi->ReleaseMsgID(onGameEndId);
    msgApi->ReleaseMsgID(onPrepareFrameId);
@@ -820,6 +836,7 @@ MSGPI_EXPORT void MSGPIAPI CadeBridgePluginUnload()
    msgApi->ReleaseMsgID(onSegSrcChgId);
 
    vpxApi = nullptr;
+   elementApi = nullptr;
    msgApi = nullptr;
 
    LOGI("CadeBridge plugin unloaded"s);

@@ -69,7 +69,12 @@ private:
    const unsigned int m_onGameEndMsgId;
    const unsigned int m_getGameElementsMsgId;
    const unsigned int m_gameElementEventMsgId;
+   const unsigned int m_getGameElementAPIMsgId;
    static void MSGPIAPI OnGetGameElements(const unsigned int msgId, void* userData, void* msgData);
+
+   // Game element actuation API (Cade fork extension)
+   VPXGameElementAPI m_gameElementApi;
+   static void OnGetGameElementAPI(const unsigned int msgId, void* userData, void* msgData);
 
    static void MSGPIAPI GetVpxInfo(VPXInfo* info);
    static void MSGPIAPI GetTableInfo(VPXTableInfo* info);

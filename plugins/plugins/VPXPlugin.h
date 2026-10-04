@@ -40,6 +40,7 @@
 #define VPXPI_EVT_ON_ACTION_CHANGED     "OnActionChanged:1"     // Broadcasted when an action state change, event data is an VPXActionEvent whose isPressed field can be modified by plugins
 #define VPXPI_EVT_ON_GAME_ELEMENT      "OnGameElement:1"     // Broadcasted when a table element fires a script event (hit, unhit, spin, etc.), event data is a VPXGameElementEvent
 #define VPXPI_MSG_GET_GAME_ELEMENTS    "GetGameElements:1"   // Broadcasted with a VPXGetGameElementsMsg to enumerate interactive table elements
+#define VPXPI_MSG_GET_GAME_ELEMENT_API "GetGameElementAPI:1" // Get the game element actuation API (VPXGameElementAPI). Cade fork only: left unanswered (null) by upstream VPX builds
 
 // Ancillary window rendering
 #define VPXPI_MSG_GET_AUX_RENDERER      "GetAuxRenderer:1"      // Broadcasted with a GetAncillaryRendererMsg to discover ancillary window renderer implemented in plugins
@@ -349,6 +350,17 @@ typedef struct VPXPluginAPI
    // --- Scripting
    void(MSGPIAPI* RunScript)(const char* script);
 
+} VPXPluginAPI;
+
+
+// Game element actuation API (Cade fork extension).
+// Kept apart from VPXPluginAPI so that the upstream API layout is unchanged, and so that
+// a plugin can detect a VPX build without this extension (VPXPI_MSG_GET_GAME_ELEMENT_API is
+// not answered, leaving the result null) instead of reading past the end of VPXPluginAPI.
+typedef struct VPXGameElementAPI
+{
+   int version; // Must be 1. Included to allow extending the API with new functions at a later point in time
+
    // Ball management
    // Create a ball at a kicker device and kick it with the given parameters.
    // deviceName: name of a Kicker element on the table (e.g., "BallRelease")
@@ -397,4 +409,4 @@ typedef struct VPXPluginAPI
    // NOT Thread safe
    int(MSGPIAPI* KickBall)(const char* deviceName, const float angle, const float speed, const float inclination);
 
-} VPXPluginAPI;
+} VPXGameElementAPI;

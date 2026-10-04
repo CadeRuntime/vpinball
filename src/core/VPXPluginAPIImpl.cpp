@@ -956,6 +956,7 @@ VPXPluginAPIImpl::VPXPluginAPIImpl(MsgPI::MsgPluginManager& pluginManager)
    , m_onGameEndMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_END))
    , m_getGameElementsMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_GAME_ELEMENTS))
    , m_gameElementEventMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_GAME_ELEMENT))
+   , m_getGameElementAPIMsgId(m_msgApi.GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_GAME_ELEMENT_API))
    , m_getLoggingAPIMsgId(m_msgApi.GetMsgID(LOGPI_NAMESPACE, LOGPI_MSG_GET_API))
    , m_getScriptingAPIMsgId(m_msgApi.GetMsgID(SCRIPTPI_NAMESPACE, SCRIPTPI_MSG_GET_API))
 {
@@ -985,12 +986,6 @@ VPXPluginAPIImpl::VPXPluginAPIImpl(MsgPI::MsgPluginManager& pluginManager)
    m_api.UpdateTexture = UpdateTexture;
    m_api.GetTextureInfo = GetTextureInfo;
    m_api.DeleteTexture = DeleteTexture;
-   m_api.EjectBall = EjectBall;
-   m_api.DestroyBall = DestroyBall;
-   m_api.SetLightState = SetLightState;
-   m_api.SetDropTargetState = SetDropTargetState;
-   m_api.SetFlipperState = SetFlipperState;
-   m_api.KickBall = KickBall;
 
    m_api.RunScript = RunScript;
 
@@ -1000,6 +995,16 @@ VPXPluginAPIImpl::VPXPluginAPIImpl(MsgPI::MsgPluginManager& pluginManager)
       []() { /* Load: nothing to do */ });
    m_vpxPlugin->Load(&m_msgApi);
    m_msgApi.SubscribeMsg(m_vpxPlugin->m_endpointId, m_getVPXAPIMsgId, &OnGetVPXPluginAPI, nullptr);
+
+   // Game element actuation API (Cade fork extension)
+   m_gameElementApi.version = 1;
+   m_gameElementApi.EjectBall = EjectBall;
+   m_gameElementApi.DestroyBall = DestroyBall;
+   m_gameElementApi.SetLightState = SetLightState;
+   m_gameElementApi.SetDropTargetState = SetDropTargetState;
+   m_gameElementApi.SetFlipperState = SetFlipperState;
+   m_gameElementApi.KickBall = KickBall;
+   m_msgApi.SubscribeMsg(m_vpxPlugin->m_endpointId, m_getGameElementAPIMsgId, &OnGetGameElementAPI, nullptr);
 
    // Logging API
    m_loggingApi.version = 1;
@@ -1039,6 +1044,8 @@ VPXPluginAPIImpl::~VPXPluginAPIImpl()
 
    m_msgApi.UnsubscribeMsg(m_getVPXAPIMsgId, &OnGetVPXPluginAPI, nullptr);
    m_msgApi.ReleaseMsgID(m_getVPXAPIMsgId);
+   m_msgApi.UnsubscribeMsg(m_getGameElementAPIMsgId, &OnGetGameElementAPI, nullptr);
+   m_msgApi.ReleaseMsgID(m_getGameElementAPIMsgId);
    m_msgApi.UnsubscribeMsg(m_getLoggingAPIMsgId, &OnGetLoggingPluginAPI, nullptr);
    m_msgApi.ReleaseMsgID(m_getLoggingAPIMsgId);
    m_msgApi.UnsubscribeMsg(m_getScriptingAPIMsgId, &OnGetScriptablePluginAPI, nullptr);
@@ -1065,6 +1072,13 @@ void VPXPluginAPIImpl::OnGetVPXPluginAPI(const unsigned int msgId, void* userDat
    VPXPluginAPIImpl& pi = g_pplayer->m_pluginAPI;
    VPXPluginAPI** pResult = static_cast<VPXPluginAPI**>(msgData);
    *pResult = &pi.m_api;
+}
+
+void VPXPluginAPIImpl::OnGetGameElementAPI(const unsigned int msgId, void* userData, void* msgData)
+{
+   VPXPluginAPIImpl& pi = g_pplayer->m_pluginAPI;
+   VPXGameElementAPI** pResult = static_cast<VPXGameElementAPI**>(msgData);
+   *pResult = &pi.m_gameElementApi;
 }
 
 void VPXPluginAPIImpl::OnGetScriptablePluginAPI(const unsigned int msgId, void* userData, void* msgData)
