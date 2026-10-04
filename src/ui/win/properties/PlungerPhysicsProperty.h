@@ -7,7 +7,7 @@
 class PlungerPhysicsProperty final : public BasePropertyDialog
 {
 public:
-    PlungerPhysicsProperty(const VectorProtected<ISelect> *pvsel);
+    PlungerPhysicsProperty(const vector<IWinUIPart *> *pvsel);
     ~PlungerPhysicsProperty() override { }
 
     void UpdateVisuals(const int dispid=-1) override;

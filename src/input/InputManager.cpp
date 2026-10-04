@@ -25,13 +25,14 @@
 #endif
 
 
-InputManager::InputManager(Player* player)
+InputManager::InputManager(Player* player, Settings& appSettings)
    : m_player(player)
+   , m_appSettings(appSettings)
    , m_onActionEventMsgId(m_player->m_pluginAPI.GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_ACTION_CHANGED))
    , m_keyboardDeviceId(RegisterDevice("Key"s, InputManager::DeviceType::Keyboard, "Keyboards"s)) // Base device: merge inputs from all connected keyboards
    , m_mouseDeviceId(RegisterDevice("Mouse"s, InputManager::DeviceType::Mouse, "Mouse"s)) // Base device: merge inputs from all connected mice
 {
-   const Settings& settings = g_app->m_settings;
+   const Settings& settings = m_appSettings;
 
    m_inputDevices[m_keyboardDeviceId].m_connected = true;
    m_inputDevices[m_mouseDeviceId].m_connected = true;
@@ -67,7 +68,14 @@ InputManager::InputManager(Player* player)
    addTouchRegion(RECT { 0, 90, 30, 100 }, GetStartActionId());
    addTouchRegion(RECT { 70, 90, 100, 100 }, GetLaunchBallActionId());
 
-   m_rumbleMode = g_app->m_settings.GetPlayer_RumbleMode();
+   m_rumbleMode = m_appSettings.GetPlayer_RumbleMode();
+   m_rumbleFlipperContact = m_appSettings.GetPlayer_RumbleFlipperContact();
+   m_rumbleBumper = m_appSettings.GetPlayer_RumbleBumper();
+   m_rumbleSlingshot = m_appSettings.GetPlayer_RumbleSlingshot();
+   m_rumblePlunger = m_appSettings.GetPlayer_RumblePlunger();
+   m_rumbleFlipperButton = m_appSettings.GetPlayer_RumbleFlipperButton();
+   m_rumbleNudge = m_appSettings.GetPlayer_RumbleNudge();
+   m_rumbleBallBall = m_appSettings.GetPlayer_RumbleBallBall();
 
    // Load settings
    LoadDevicesFromSettings();
@@ -75,9 +83,9 @@ InputManager::InputManager(Player* player)
    for (const auto& action : m_inputActions)
       action->LoadMapping(settings);
 
-   m_nudgeHandler = std::make_unique<VPX::Physics::NudgeHandler>(this);
+   m_nudgeHandler = std::make_unique<VPX::Physics::NudgeHandler>(this, m_appSettings);
 
-   m_plungerHandler = std::make_unique<PlungerHandler>(this);
+   m_plungerHandler = std::make_unique<PlungerHandler>(this, m_appSettings);
 
    // Initialize device handlers
    m_inputHandlers.push_back(std::make_unique<SDLInputHandler>(*this));
@@ -126,6 +134,9 @@ InputManager::~InputManager()
       PLOGE << "Failed to persist input devices in settings";
    }
    m_inputHandlers.clear();
+   m_inputActions.clear();
+   m_nudgeHandler = nullptr;
+   m_plungerHandler = nullptr;
    m_sdlHandler = nullptr;
    m_player->m_pluginAPI.ReleaseMsgID(m_onActionEventMsgId);
 
@@ -190,7 +201,7 @@ void InputManager::ClearDeviceMappings(uint16_t deviceId)
    for (const auto& action : m_inputActions)
    {
       action->UnmapDevice(deviceId);
-      action->SaveMapping(g_app->m_settings);
+      action->SaveMapping(m_appSettings);
    }
    m_plungerHandler->UnmapDevice(deviceId);
    m_nudgeHandler->UnmapDevice(deviceId);
@@ -237,7 +248,7 @@ void InputManager::ApplyDefaultDeviceMapping(uint16_t deviceId)
       void MapAction(const vector<ButtonMapping>& input, unsigned int action) override
       {
          m_manager.m_inputActions[action]->AddMapping(input);
-         m_manager.m_inputActions[action]->SaveMapping(g_app->m_settings);
+         m_manager.m_inputActions[action]->SaveMapping(m_manager.m_appSettings);
       }
       void MapPlunger(std::unique_ptr<PlungerSensor> sensor) override { m_manager.m_plungerHandler->AddSensor(sensor); }
       void MapNudge(std::unique_ptr<VPX::Physics::NudgeSensor> sensor) override { m_manager.m_nudgeHandler->AddSensor(sensor); }
@@ -250,7 +261,7 @@ void InputManager::ApplyDefaultDeviceMapping(uint16_t deviceId)
 
 void InputManager::LoadDevicesFromSettings()
 {
-   const Settings& settings = g_app->m_settings;
+   const Settings& settings = m_appSettings;
    std::istringstream deviceStream(settings.GetInput_Devices());
    std::string deviceSettingId;
    while (std::getline(deviceStream, deviceSettingId, ';'))
@@ -294,7 +305,7 @@ void InputManager::LoadDevicesFromSettings()
 
 void InputManager::SaveDevicesToSettings() const
 {
-   Settings& settings = g_app->m_settings;
+   Settings& settings = m_appSettings;
    std::stringstream deviceList;
    bool first = true;
    for (const auto& device : m_inputDevices)
@@ -410,6 +421,8 @@ void InputManager::ProcessInput()
    for (const auto& handler : m_inputHandlers)
       handler->Update();
 
+   UpdateRumble();
+
    // Handle automatic start
    if (m_player->m_ptable->m_tblAutoStartEnabled)
       Autostart(m_player->m_ptable->m_tblAutoStart, m_player->m_ptable->m_tblAutoStartRetry);
@@ -462,6 +475,26 @@ void InputManager::ProcessInput()
    }
 
    // Perform pending device auto detection (deferred until in game UI is available)
+   if (m_hasPendingLayoutApply)
+   {
+      m_hasPendingLayoutApply = false;
+      for (auto& device : m_inputDevices)
+      {
+         if (!device.m_hasPendingLayoutApply)
+            continue;
+         const auto noAutoLayoutId = Settings::GetRegistry().GetPropertyId("Input"s, "Device." + device.m_settingsId + ".NoAutoLayout").value();
+         if (m_appSettings.GetBool(noAutoLayoutId))
+            device.m_hasPendingLayoutApply = false;
+         else if (device.m_type == DeviceType::VRController)
+         {
+            // The propose-layout dialog isn't reachable in the headset before the VR controller is registered, so auto-apply
+            ApplyDefaultDeviceMapping(device.m_id);
+            device.m_hasPendingLayoutApply = false;
+         }
+         else
+            m_hasPendingLayoutApply = true;
+      }
+   }
    if (m_hasPendingLayoutApply && m_player->m_liveUI && !m_player->m_liveUI->IsOpened())
    {
       for (auto& device : m_inputDevices)
@@ -470,27 +503,13 @@ void InputManager::ProcessInput()
          {
             const uint16_t deviceId = device.m_id;
             const auto noAutoLayoutId = Settings::GetRegistry().GetPropertyId("Input"s, "Device." + device.m_settingsId + ".NoAutoLayout").value();
-            if (g_app->m_settings.GetBool(noAutoLayoutId))
-            {
-               device.m_hasPendingLayoutApply = false;
-               continue;
-            }
-
-            // For VR controllers, the propose-layout dialog isn't reachable in the headset before the VR controller is registered, so auto-apply
-            if (device.m_type == DeviceType::VRController)
-            {
-               ApplyDefaultDeviceMapping(deviceId);
-               device.m_hasPendingLayoutApply = false;
-               continue;
-            }
-
             if (m_player->m_liveUI->m_inGameUI.ProposeInputLayout(device.m_name,
                    [this, deviceId, noAutoLayoutId](bool isOk, bool isDontAskAnymore)
                    {
                       if (isOk)
                          ApplyDefaultDeviceMapping(deviceId);
                       if (isDontAskAnymore)
-                         g_app->m_settings.Set(noAutoLayoutId, true, false);
+                         m_appSettings.Set(noAutoLayoutId, true, false);
                       m_hasPendingLayoutApply = false;
                       for (auto& device : m_inputDevices)
                       {
@@ -513,6 +532,11 @@ void InputManager::HandleSDLEvent(const SDL_Event& e) { m_sdlHandler->HandleSDLE
 
 void InputManager::PushButtonEvent(uint16_t deviceId, uint16_t buttonId, uint64_t timestampNs, bool isPressed)
 {
+   // Discard input events until the player has been running for a few frames to avoid triggering actions during table startup
+   // (during initial table load, the loading UI is displayed and interactive, so events must flow)
+   if (m_player->m_overall_frames < 5 && !m_player->m_isLoading)
+      return;
+
    // Discard keyboard events when the UI is capturing the keyboard (e.g. for control input)
    if (deviceId == m_keyboardDeviceId && ImGui::GetIO().WantCaptureKeyboard)
       return;
@@ -553,6 +577,11 @@ void InputManager::PushButtonEvent(uint16_t deviceId, uint16_t buttonId, uint64_
 void InputManager::PushAxisEvent(uint16_t deviceId, uint16_t axisId, uint64_t timestampNs, float position)
 {
    assert(-1.f <= position && position <= 1.f);
+
+   // Discard input events until the player has been running for a few frames to avoid triggering actions during table startup
+   // (during initial table load, the loading UI is displayed and interactive, so events must flow)
+   if (m_player->m_overall_frames < 5 && !m_player->m_isLoading)
+      return;
 
    uint32_t id = deviceId << 16 | axisId;
    if (auto it = m_sensorMappings.find(id); it != m_sensorMappings.end())
@@ -611,8 +640,14 @@ void InputManager::PushAxisEvent(uint16_t deviceId, uint16_t axisId, uint64_t ti
 
 void InputManager::PushTouchEvent(float relativeX, float relativeY, uint64_t timestampNs, bool isPressed)
 {
+   // Discard input events until the player has been running for a few frames to avoid triggering actions during table startup
+   // (during initial table load, the loading UI is displayed and interactive, so events must flow)
+   if (m_player->m_overall_frames < 5 && !m_player->m_isLoading)
+      return;
+
    if (m_player->IsVR())
       return;
+
    POINT point;
    point.x = (int)((float)m_player->m_playfieldWnd->GetWidth() * relativeX);
    point.y = (int)((float)m_player->m_playfieldWnd->GetHeight() * relativeY);
@@ -680,12 +715,8 @@ void InputManager::CreateInputActions()
          {
             if (m_player->m_liveUI->IsInGameUIOpened())
                return;
-            if (isPressed)
-            {
-               m_player->m_pininput.PlayRumble(0.f, 0.2f, 150);
-               if (m_player->IsPlaying())
-                  SDL_HideCursor();
-            }
+            if (isPressed && m_player->IsPlaying())
+               SDL_HideCursor();
          
             if (action.GetActionId() == m_leftFlipperActionId)
                m_leftFlipperLastChangePollDelay = m_player->m_logicProfiler.GetPrev(FrameProfiler::ProfileSection::PROFILE_INPUT_POLL_PERIOD);
@@ -773,7 +804,7 @@ void InputManager::CreateInputActions()
                DISPPARAMS dispparams = { rgvar, nullptr, 1, 0 };
                m_player->m_ptable->FireDispID(isPressed ? DISPID_GameEvents_KeyDown : DISPID_GameEvents_KeyUp, &dispparams);
 #ifdef __STANDALONE__
-               m_player->SetCloseState(Player::CS_CLOSE_APP);
+               m_player->SetCloseState(g_isMobile ? Player::CS_CLOSE_CAPTURE_SCREENSHOT : Player::CS_CLOSE_APP);
 #else
                m_player->SetCloseState(Player::CS_STOP_PLAY);
 #endif
@@ -803,10 +834,10 @@ void InputManager::CreateInputActions()
       {
          if (!isPressed)
             return;
-         m_player->m_MusicVolume = clamp(m_player->m_MusicVolume - 1, 0, 100);
-         m_player->m_SoundVolume = clamp(m_player->m_SoundVolume - 1, 0, 100);
+         m_player->m_backglassVolume = clamp(m_player->m_backglassVolume - 0.01f, 0.f, 1.f);
+         m_player->m_playfieldVolume = clamp(m_player->m_playfieldVolume - 0.01f, 0.f, 1.f);
          m_player->UpdateVolume();
-         m_volumeNotificationId = m_player->m_liveUI->PushNotification("Volume: " + std::to_string(m_player->m_MusicVolume) + '%', 500, m_volumeNotificationId);
+         m_volumeNotificationId = m_player->m_liveUI->PushNotification(std::format("Volume: {:3.0f}%", m_player->m_backglassVolume * 100.f), 500, m_volumeNotificationId);
       }));
    volumeDown->SetRepeatPeriod(75);
    m_volumeDownActionId = volumeDown->GetActionId();
@@ -816,10 +847,10 @@ void InputManager::CreateInputActions()
       {
          if (!isPressed)
             return;
-         m_player->m_MusicVolume = clamp(m_player->m_MusicVolume + 1, 0, 100);
-         m_player->m_SoundVolume = clamp(m_player->m_SoundVolume + 1, 0, 100);
+         m_player->m_backglassVolume = clamp(m_player->m_backglassVolume + 0.01f, 0.f, 1.f);
+         m_player->m_playfieldVolume = clamp(m_player->m_playfieldVolume + 0.01f, 0.f, 1.f);
          m_player->UpdateVolume();
-         m_volumeNotificationId = m_player->m_liveUI->PushNotification("Volume: " + std::to_string(m_player->m_MusicVolume) + '%', 500, m_volumeNotificationId);
+         m_volumeNotificationId = m_player->m_liveUI->PushNotification(std::format("Volume: {:3.0f}%", m_player->m_backglassVolume * 100.f), 500, m_volumeNotificationId);
       }));
    volumeUp->SetRepeatPeriod(75);
    m_volumeUpActionId = volumeUp->GetActionId();
@@ -841,7 +872,8 @@ void InputManager::CreateInputActions()
    m_slamTiltActionId = addKeyAction("SlamTilt"s, "Slam Tilt"s, SDL_SCANCODE_HOME);
    m_coinDoorActionId = addKeyAction("CoinDoor"s, "Coin Door"s, SDL_SCANCODE_END);
    m_resetActionId = addKeyAction("Reset"s, "Reset"s, SDL_SCANCODE_F3);
-   static constexpr SDL_Scancode serviceKeys[8] = { SDL_SCANCODE_7, SDL_SCANCODE_8, SDL_SCANCODE_9, SDL_SCANCODE_0, SDL_SCANCODE_6, SDL_SCANCODE_PAGEUP, SDL_SCANCODE_MINUS, SDL_SCANCODE_UNKNOWN };
+   static constexpr SDL_Scancode serviceKeys[8]
+      = { SDL_SCANCODE_7, SDL_SCANCODE_8, SDL_SCANCODE_9, SDL_SCANCODE_0, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_PAGEUP, SDL_SCANCODE_UNKNOWN, SDL_SCANCODE_UNKNOWN };
    for (int i = 0; i < 8; ++i)
       m_serviceActionId[i] = addKeyAction("Service" + std::to_string(i + 1), "Service Button #" + std::to_string(i + 1), serviceKeys[i]);
 
@@ -876,8 +908,8 @@ void InputManager::CreateInputActions()
    auto vrDown = addVRPositionAction("VRDown"s, "Move VR view down"s, SDL_SCANCODE_KP_2, vec3(0.f, 0.f, -1.f));
    auto vrFront = addVRPositionAction("VRFront"s, "Move VR view to the front"s, SDL_SCANCODE_UNKNOWN, vec3(0.f, 1.f, 0.f));
    auto vrBack = addVRPositionAction("VRBack"s, "Move VR view to the back"s, SDL_SCANCODE_UNKNOWN, vec3(0.f, -1.f, 0.f));
-   auto vrLeft = addVRPositionAction("VRFront"s, "Move VR view to the left"s, SDL_SCANCODE_UNKNOWN, vec3(-1.f, 0.f, 0.f));
-   auto vrRight = addVRPositionAction("VRBack"s, "Move VR view to the right"s, SDL_SCANCODE_UNKNOWN, vec3(1.f, -0.f, 0.f));
+   auto vrLeft = addVRPositionAction("VRLeft"s, "Move VR view to the left"s, SDL_SCANCODE_UNKNOWN, vec3(-1.f, 0.f, 0.f));
+   auto vrRight = addVRPositionAction("VRRight"s, "Move VR view to the right"s, SDL_SCANCODE_UNKNOWN, vec3(1.f, 0.f, 0.f));
    m_vrViewCenterActionId = vrCenter->GetActionId();
    m_vrViewUpActionId = vrUp;
    m_vrViewDownActionId = vrDown;
@@ -968,6 +1000,11 @@ InputAction* InputManager::AddAction(std::unique_ptr<InputAction>&& action)
    action->SetActionId(static_cast<int>(m_inputActions.size()));
    m_inputActions.push_back(std::move(action));
    return m_inputActions.back().get();
+}
+
+bool InputManager::IsUINavigationActionId(unsigned int id) const
+{
+   return id == m_openInGameUIActionId || id == m_uiUpActionId || id == m_uiDownActionId || id == m_uiLeftActionId || id == m_uiRightActionId;
 }
 
 bool InputManager::IsPressed(int actionId) const
@@ -1131,20 +1168,232 @@ void InputManager::PlayRumble(const float lowFrequencySpeed, const float highFre
    if (m_rumbleMode == 0)
       return;
 
+   // SDL_RumbleJoystick cancels whatever is playing on every call, so forwarding calls as they come lets the last
+   // caller win, however weak (a plunger release calls every 2 ms while its spring rings down). Pulses are
+   // therefore collected here and mixed per motor.
+   // A slider that did not quite reach zero must not leave a faint pulse behind once the motor curve lifts it
+   float low = saturate(lowFrequencySpeed);
+   float high = saturate(highFrequencySpeed);
+   if (low < RUMBLE_OFF_LEVEL)
+      low = 0.f;
+   if (high < RUMBLE_OFF_LEVEL)
+      high = 0.f;
+   if (low <= 0.f && high <= 0.f)
+      return;
+   const uint32_t now = msec();
+
+   std::lock_guard<std::mutex> lock(m_rumbleMutex);
+   // Take a free slot. With all slots busy, a pulse that would not change the mix - no stronger on either motor
+   // and not outlasting it - is not needed; anything else replaces the weakest.
+   const uint32_t endMs = now + static_cast<uint32_t>(max(ms_duration, 1));
+   int slot = -1;
+   float weakest = 2.f;
+   float mixLow = 0.f;
+   float mixHigh = 0.f;
+   uint32_t mixEndMs = 0;
+   for (int i = 0; i < RUMBLE_PULSE_SLOTS; i++)
+   {
+      const RumblePulse& p = m_rumblePulses[i];
+      if (p.endMs <= now)
+      {
+         slot = i;
+         break;
+      }
+      mixLow = max(mixLow, p.low);
+      mixHigh = max(mixHigh, p.high);
+      mixEndMs = max(mixEndMs, p.endMs);
+      if (max(p.low, p.high) < weakest)
+      {
+         weakest = max(p.low, p.high);
+         slot = i;
+      }
+   }
+   if (m_rumblePulses[slot].endMs > now && low <= mixLow && high <= mixHigh && endMs <= mixEndMs)
+      return;
+   m_rumblePulses[slot] = { low, high, endMs };
+   // Start kick: a new pulse at hit level gets it when it raises the mix or when no kick is running any more. It
+   // is decided here, per event, and not from the size of a step of the mix: the physics delivers one hit as a
+   // ramp of contacts a few milliseconds apart, whose single steps never exceed any threshold on their own, and a
+   // second hit of the same strength as a running one must be felt as its own hit.
+   if (low >= RUMBLE_KICK_MIN_LEVEL && (low > m_rumbleMixLow || now >= m_rumbleKickLowEndMs))
+      m_rumbleKickLowEndMs = now + RUMBLE_KICK_MS;
+   if (high >= RUMBLE_KICK_MIN_LEVEL && (high > m_rumbleMixHigh || now >= m_rumbleKickHighEndMs))
+      m_rumbleKickHighEndMs = now + RUMBLE_KICK_MS;
+   // A pulse that the new one covers on both motors is over: its event has been superseded, and letting it
+   // resurface once the new pulse ends would play a vibration for something long past
+   for (int i = 0; i < RUMBLE_PULSE_SLOTS; i++)
+      if (i != slot && m_rumblePulses[i].endMs > now && m_rumblePulses[i].low <= low && m_rumblePulses[i].high <= high)
+         m_rumblePulses[i].endMs = now;
+   // The output is sent by UpdateRumble (after each physics update and on input processing), not from here: most pulses come from
+   // the physics steps, which must not wait on the synchronous device call (HID report, possibly over Bluetooth)
+}
+
+void InputManager::UpdateRumble()
+{
+   std::lock_guard<std::mutex> lock(m_rumbleMutex);
+   if (m_rumbleMode == 0)
+   {
+      // Switched off while something was playing: silence the device and forget the pulses
+      if (m_rumbleSentLow != 0.f || m_rumbleSentHigh != 0.f)
+      {
+         for (RumblePulse& p : m_rumblePulses)
+            p.endMs = 0;
+         UpdateRumbleOutput(msec());
+      }
+      return;
+   }
+   UpdateRumbleOutput(msec());
+}
+
+void InputManager::UpdateRumbleOutput(const uint32_t now)
+{
+   // Strongest active pulse per motor; the output lasts until the last active pulse ends and is re-evaluated
+   // every frame, so it steps down to the next pulse once the strongest has run out.
+   float low = 0.f;
+   float high = 0.f;
+   uint32_t endMs = 0;
+   for (const RumblePulse& p : m_rumblePulses)
+   {
+      if (p.endMs <= now)
+         continue;
+      low = max(low, p.low);
+      high = max(high, p.high);
+      endMs = max(endMs, p.endMs);
+   }
+   // The kick (see PlayRumble) is flagged for RUMBLE_KICK_MS, for handlers driving motors that need it to spin up. It ends
+   // early when the mix falls: the pulse that earned it is over and a weaker remainder must not be kicked.
+   if (low < m_rumbleMixLow)
+      m_rumbleKickLowEndMs = 0;
+   if (high < m_rumbleMixHigh)
+      m_rumbleKickHighEndMs = 0;
+   m_rumbleMixLow = low;
+   m_rumbleMixHigh = high;
+   const bool kickLow = low > 0.f && now < m_rumbleKickLowEndMs;
+   const bool kickHigh = high > 0.f && now < m_rumbleKickHighEndMs;
+   if (low == m_rumbleSentLow && high == m_rumbleSentHigh && endMs == m_rumbleSentEndMs && kickLow == m_rumbleSentKickLow && kickHigh == m_rumbleSentKickHigh)
+      return;
+   m_rumbleSentLow = low;
+   m_rumbleSentHigh = high;
+   m_rumbleSentEndMs = endMs;
+   m_rumbleSentKickLow = kickLow;
+   m_rumbleSentKickHigh = kickHigh;
+   SendRumble(low, high, (endMs > now) ? static_cast<int>(endMs - now) : 0, kickLow, kickHigh);
+}
+
+void InputManager::SendRumble(const float low, const float high, const int ms_duration, const bool kickLow, const bool kickHigh)
+{
    for (const auto& handler : m_inputHandlers)
-      handler->PlayRumble(lowFrequencySpeed, highFrequencySpeed, ms_duration);
+      handler->PlayRumble(low, high, ms_duration, kickLow, kickHigh);
 
-   #ifdef __LIBVPINBALL__
-      if (!g_app->m_settings.GetStandalone_Haptics())
-         return;
-
-      VPinballLib::RumbleData rumbleData = {
-         (uint16_t)(saturate(lowFrequencySpeed) * 65535.f),
-         (uint16_t)(saturate(highFrequencySpeed) * 65535.f),
-         (uint32_t)ms_duration
-      };
-      VPinballLib::VPinballLib::SendEvent(VPINBALL_EVENT_RUMBLE, &rumbleData);
+   #if defined(__LIBVPINBALL__) && defined(__APPLE__)
+      VPinballLib::VPinballLib::PlayRumble(low, high, (unsigned int)ms_duration);
    #endif
+}
+
+void InputManager::PlayFlipperContactRumble(const float normalImpactSpeed)
+{
+   if (m_rumbleFlipperContact < RUMBLE_OFF_LEVEL)
+      return;
+
+   // Impact speed summed over the contacts of a hit (see HitFlipper::Collide). Up to two units it is a light touch,
+   // a held ball rolling on the flipper, and stays a faint pulse. From 2 to 5 the scale is steeper so that a ball
+   // dropping back onto the flipper reaches the kick level at 5. Above that the level rises slowly up to 30, where
+   // only a ball arriving at full speed gets, so an ordinary contact stays below a slingshot and only those stand
+   // out. Both motors are driven,
+   // since short pulses on the high frequency motor alone are barely noticeable; the small one at 0.7 of the
+   // impact, like the plunger, so the click does not get sharper than the thump.
+   const float s = fabsf(normalImpactSpeed);
+   const float impact = clamp(s < 2.f ? s * 0.06f : s < 5.f ? 0.12f + (s - 2.f) * 0.14f : 0.54f + (s - 5.f) * (0.46f / 25.f), 0.05f, 1.f);
+   // The level saturates early, so above it the length carries the strength: the motors need longer than the
+   // short touch pulse to reach full amplitude, so that pulse is cut off before they get there. A touch stays
+   // short, a hit runs long enough for the motors to arrive, and the hardest ones run as long as the plunger
+   // strike.
+   const int ms = s < 5.f ? 120 : 150 + static_cast<int>(100.f * clamp((s - 5.f) * (1.f / 25.f), 0.f, 1.f));
+   PlayRumble(impact * 0.8f * m_rumbleFlipperContact, impact * 0.7f * m_rumbleFlipperContact, ms);
+}
+
+void InputManager::PlayBumperRumble()
+{
+   if (m_rumbleBumper < RUMBLE_OFF_LEVEL)
+      return;
+   // The former fixed 0.10/0.05 for 100 ms is below what the motors render
+   PlayRumble(0.6f * m_rumbleBumper, 0.35f * m_rumbleBumper, 150);
+}
+
+void InputManager::PlaySlingshotRumble()
+{
+   if (m_rumbleSlingshot < RUMBLE_OFF_LEVEL)
+      return;
+   // 0.5 was still missed now and then, twice that always comes through
+   PlayRumble(0.8f * m_rumbleSlingshot, 0.5f * m_rumbleSlingshot, 150);
+}
+
+void InputManager::PlayPlungerRumble(const float fireSpeed)
+{
+   if (m_rumblePlunger < RUMBLE_OFF_LEVEL)
+      return;
+   // fireSpeed is signed (negative on the forward stroke) and PlayRumble saturates to 0..1, so the strongest
+   // bounce, the one that strikes the ball, used to be clamped to silence: only the magnitude matters. 0.15
+   // rather than the former 0.05 so the spring rebounds are felt as the rattle after the strike.
+   const float speed = fabsf(fireSpeed) * 0.15f;
+   PlayRumble(speed * m_rumblePlunger, speed * m_rumblePlunger, 60);
+}
+
+void InputManager::PlayPlungerLaunchRumble(const float impact)
+{
+   if (m_rumblePlunger < RUMBLE_OFF_LEVEL)
+      return;
+   // A launch shakes the whole cabinet, so at full impact this is the longest and strongest pulse; a ball
+   // rolling back onto the tip is a short light clack.
+   const float i = clamp(impact, 0.f, 1.f);
+   if (i <= 0.f)
+      return;
+   // A short pulse is only felt with the start kick, so a light contact is told apart from the strike by its
+   // length (the kick alone, 80 ms) rather than by a lower level; the full strike runs 250 ms
+   const float s = (0.45f + 0.55f * i) * m_rumblePlunger;
+   PlayRumble(s, 0.6f * s, 80 + static_cast<int>(170.f * i));
+}
+
+void InputManager::PlayFlipperButtonRumble()
+{
+   if (m_rumbleFlipperButton < RUMBLE_OFF_LEVEL)
+      return;
+   // A solenoid is a thump, not a buzz, so both motors carry it. Kept below the kick level on purpose: the
+   // ball hit that follows a few tens of milliseconds later is the bigger event and must stand out.
+   PlayRumble(0.35f * m_rumbleFlipperButton, 0.2f * m_rumbleFlipperButton, 150);
+}
+
+void InputManager::PlayBallBallRumble(const float impactSpeed)
+{
+   if (m_rumbleBallBall < RUMBLE_OFF_LEVEL)
+      return;
+   // Same scale as the flipper contact (roughly 17 units for a hard hit). Steel on steel is a short, sharp clack,
+   // so the high frequency motor carries most of it.
+   const float impact = clamp(fabsf(impactSpeed) * 0.06f, 0.08f, 1.f);
+   PlayRumble(impact * 0.35f * m_rumbleBallBall, impact * 0.9f * m_rumbleBallBall, 70);
+}
+
+void InputManager::PlayNudgeRumble(const Vertex2D& cabinetAcceleration)
+{
+   if (m_nudgeRumbleCooldownMs > 0)
+   {
+      m_nudgeRumbleCooldownMs--;
+      return;
+   }
+   if (m_rumbleNudge < RUMBLE_OFF_LEVEL)
+      return;
+
+   // Full rumble at the peak acceleration of a strong nudge, and nothing below 1 m/s^2 which the intent handler ignores.
+   // The cooldown keeps the decaying cabinet oscillation from retriggering
+   constexpr float thresholdAcceleration = 1.f; // m/s^2
+   constexpr float fullAcceleration = VPX::Physics::NudgeSensor::StrongNudgeAcceleration; // m/s^2
+   const float acceleration = cabinetAcceleration.Length();
+   if (acceleration < thresholdAcceleration)
+      return;
+
+   const float impact = clamp(acceleration / fullAcceleration, 0.1f, 1.f);
+   PlayRumble(impact * m_rumbleNudge, impact * 0.5f * m_rumbleNudge, 80);
+   m_nudgeRumbleCooldownMs = 200;
 }
 
 void InputManager::Autostart(const uint32_t initialDelayMs, const uint32_t retryDelayMs)

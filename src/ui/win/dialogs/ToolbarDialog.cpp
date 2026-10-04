@@ -4,11 +4,15 @@
 #include "ToolbarDialog.h"
 
 #include "core/editablereg.h"
+#include "core/VPApp.h"
 #include "parts/pintable.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
+#include "ui/win/WinUIPartRegistry.h"
 
-ToolbarDialog::ToolbarDialog() : CDialog(IDD_TOOLBAR)
+ToolbarDialog::ToolbarDialog(WinEditor* vpxEditor)
+   : CDialog(IDD_TOOLBAR)
+   , m_vpxEditor(vpxEditor)
 {
 }
 
@@ -28,6 +32,16 @@ LRESULT ToolbarDialog::OnMouseActivate(UINT msg, WPARAM wparam, LPARAM lparam)
 
 void ToolbarDialog::OnDestroy()
 {
+}
+
+void ToolbarDialog::OnOK()
+{
+   // Don't call CDialog::OnOk() as this modeless dialog is hosted inside a docked pane, and the default implementation would destroy it
+}
+
+void ToolbarDialog::OnCancel()
+{
+   // Don't call CDialog::OnCancel() as this modeless dialog is hosted inside a docked pane, and the default implementation would destroy it
 }
 
 BOOL ToolbarDialog::OnInitDialog()
@@ -62,6 +76,12 @@ BOOL ToolbarDialog::OnInitDialog()
     AttachItem(ID_INSERT_PRIMITIVE, m_primitiveButton);
     AttachItem(ID_INSERT_FLASHER, m_flasherButton);
     AttachItem(ID_INSERT_RUBBER, m_rubberButton);
+    AttachItem(IDC_TURN_VR_ON, m_vrCombo);
+
+#ifndef ENABLE_BGFX
+    GetDlgItem(IDC_VR_MODE).ShowWindow(SW_HIDE);
+    m_vrCombo.ShowWindow(SW_HIDE);
+#endif
 
     m_tooltip.Create(GetHwnd());
     m_tooltip.AddTool(m_magnifyButton, _T("Zoom in/out"));
@@ -91,6 +111,11 @@ BOOL ToolbarDialog::OnInitDialog()
     m_tooltip.AddTool(m_primitiveButton, _T("Insert Primitive"));
     m_tooltip.AddTool(m_flasherButton, _T("Insert Flasher"));
     m_tooltip.AddTool(m_rubberButton, _T("Insert Rubber"));
+
+    m_vrCombo.AddString("Disabled");
+    m_vrCombo.AddString("Autodetect");
+    m_vrCombo.AddString("Enabled");
+    m_vrCombo.SetCurSel(2 - g_settingsService.GetAppSettings().GetPlayerVR_AskToTurnOn());
 
     constexpr int iconSize = 24;
     HANDLE hIcon = ::LoadImage(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_MAGNIFY), IMAGE_ICON, iconSize, iconSize, LR_DEFAULTCOLOR);
@@ -201,6 +226,8 @@ BOOL ToolbarDialog::OnInitDialog()
     m_resizer.AddChild(m_primitiveButton.GetHwnd(), CResizer::center, RD_STRETCH_WIDTH | RD_STRETCH_HEIGHT);
     m_resizer.AddChild(m_flasherButton.GetHwnd(), CResizer::center, RD_STRETCH_WIDTH | RD_STRETCH_HEIGHT);
     m_resizer.AddChild(m_rubberButton.GetHwnd(), CResizer::center, RD_STRETCH_WIDTH | RD_STRETCH_HEIGHT);
+    m_resizer.AddChild(GetDlgItem(IDC_VR_MODE), CResizer::center, 0);
+    m_resizer.AddChild(m_vrCombo, CResizer::center, RD_STRETCH_WIDTH);
 
     m_resizer.RecalcLayout();
 
@@ -226,7 +253,7 @@ void ToolbarDialog::EnableButtons()
 {
     if (!IsWindow())
         return;
-    CComObject<PinTable> * const ptCur = g_pvp->GetActiveTable();
+    CComObject<PinTable> * const ptCur = m_vpxEditor->GetActiveTable();
     if (ptCur == nullptr && !g_pplayer)
     {
         m_magnifyButton.EnableWindow(FALSE);
@@ -235,6 +262,7 @@ void ToolbarDialog::EnableButtons()
         m_backglassButton.EnableWindow(FALSE);
         m_playButton.EnableWindow(FALSE);
         m_playCameraButton.EnableWindow(FALSE);
+        m_vrCombo.EnableWindow(FALSE);
 
         m_textboxButton.EnableWindow(FALSE);
         m_reelButton.EnableWindow(FALSE);
@@ -260,7 +288,7 @@ void ToolbarDialog::EnableButtons()
     }
     else
     {
-        BOOL lockable = ptCur->IsLocked() ? FALSE : TRUE;
+        const BOOL lockable = (ptCur == nullptr || ptCur->IsLocked()) ? FALSE : TRUE;
 
         m_magnifyButton.EnableWindow(TRUE);
         m_selectButton.EnableWindow(lockable);
@@ -268,6 +296,7 @@ void ToolbarDialog::EnableButtons()
         m_backglassButton.EnableWindow(TRUE);
         m_playButton.EnableWindow(TRUE);
         m_playCameraButton.EnableWindow(TRUE);
+        m_vrCombo.EnableWindow(TRUE);
 
         m_decalButton.EnableWindow(lockable);
         m_lightButton.EnableWindow(lockable);
@@ -275,11 +304,11 @@ void ToolbarDialog::EnableButtons()
         m_lightseqButton.EnableWindow(lockable);
         m_flasherButton.EnableWindow(lockable);
 
-        BOOL lockableNo3D = g_pvp->m_desktopBackdropView ? lockable : FALSE;
+        BOOL lockableNo3D = m_vpxEditor->m_desktopBackdropView ? lockable : FALSE;
         m_textboxButton.EnableWindow(lockableNo3D);
         m_reelButton.EnableWindow(lockableNo3D);
 
-        BOOL lockableNoBG = g_pvp->m_desktopBackdropView ? FALSE : lockable;
+        BOOL lockableNoBG = m_vpxEditor->m_desktopBackdropView ? FALSE : lockable;
         m_wallButton.EnableWindow(lockableNoBG);
         m_gateButton.EnableWindow(lockableNoBG);
         m_rampButton.EnableWindow(lockableNoBG);
@@ -324,18 +353,18 @@ BOOL ToolbarDialog::OnCommand(WPARAM wParam, LPARAM lParam)
         case ID_INSERT_FLASHER:
         case ID_INSERT_RUBBER:
         {
-            const ItemTypeEnum type = EditableRegistry::TypeFromToolID((int)id);
-            if (type != eItemInvalid)
-            {
-                g_pvp->m_ToolCur = (int)id;
-                return TRUE;
-            }
+           const ItemTypeEnum type = WinUIPartRegistry::TypeFromToolID((int)id);
+           if (type != eItemInvalid)
+           {
+              m_vpxEditor->m_ToolCur = (int)id;
+              return TRUE;
+           }
             break;
         }
         case IDC_SELECT:
         case ID_TABLE_MAGNIFY:
         {
-            g_pvp->m_ToolCur = id;
+            m_vpxEditor->m_ToolCur = id;
             m_selectButton.SetCheck(BST_UNCHECKED);
             m_magnifyButton.SetCheck(BST_UNCHECKED);
             switch (HIWORD(wParam))
@@ -354,37 +383,59 @@ BOOL ToolbarDialog::OnCommand(WPARAM wParam, LPARAM lParam)
         }
         case ID_EDIT_SCRIPT:
         {
-            g_pvp->ToggleScriptEditor();
+            m_vpxEditor->ToggleScriptEditor();
             break;
         }
         case ID_EDIT_BACKGLASSVIEW:
         {
-            g_pvp->ToggleBackglassView();
+            m_vpxEditor->ToggleBackglassView();
             break;
         }
         case ID_TABLE_PLAY:
         {
-            g_pvp->DoPlay(0);
+            m_vpxEditor->DoPlay(0);
             break;
         }
         case ID_TABLE_PLAY_CAMERA:
         {
-            g_pvp->DoPlay(1);
+            m_vpxEditor->DoPlay(1);
             break;
+        }
+        case IDC_TURN_VR_ON:
+        {
+           if (UINT notifyCode = HIWORD(wParam); notifyCode == CBN_SELCHANGE)
+           {
+              g_settingsService.GetAppSettings().SetPlayerVR_AskToTurnOn(2 - m_vrCombo.GetCurSel(), false);
+           }
+           break;
         }
     }
     return FALSE;
 }
 
-CContainToolbar::CContainToolbar()
+BOOL ToolbarDialog::PreTranslateMessage(MSG& msg)
 {
-    SetView(m_toolbar); 
+   if (!IsWindow())
+      return FALSE;
+
+   // The Alt combinations are what opens the menu, so they must not be passed through
+   if (IsAltKeyMessage(msg.message))
+      return FALSE;
+
+   return __super::PreTranslateMessage(msg);
+}
+
+CContainToolbar::CContainToolbar(WinEditor *vpxEditor)
+   : m_toolbar(vpxEditor)
+{
+    SetView(m_toolbar);
     SetTabText(_T("Toolbar"));
     SetTabIcon(IDI_TOOLBAR);
     SetDockCaption(_T("Toolbar"));
 }
 
-CDockToolbar::CDockToolbar()
+CDockToolbar::CDockToolbar(WinEditor *vpxEditor)
+   : m_toolbarContainer(vpxEditor)
 {
     SetView(m_toolbarContainer);
     SetBarWidth(4);

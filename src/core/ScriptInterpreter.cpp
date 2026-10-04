@@ -6,8 +6,6 @@
 #include "core/vpversion.h"
 #include "parts/Collection.h"
 #include "parts/pintable.h"
-#include "ui/win/WinEditor.h"
-
 #ifndef __STANDALONE__
 #include <initguid.h>
 #endif
@@ -31,7 +29,7 @@ ScriptInterpreter::ScriptInterpreter()
    if (vbScriptResult != S_OK)
       return;
 
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_SCRIPT_DEBUGGER
    // This can fail on some systems (I tested with wine 6.9 and this fails)
    // In that case, m_pProcessDebugManager will remain as nullptr
    const HRESULT debugResult = CoCreateInstance(CLSID_ProcessDebugManager, 0, CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_IProcessDebugManager, (LPVOID *)&m_pProcessDebugManager); //!! dto.?
@@ -57,7 +55,7 @@ ScriptInterpreter::ScriptInterpreter()
    m_pScriptParse->QueryInterface(IID_IActiveScriptDebug, (LPVOID *)&m_pScriptDebug);
    m_pScriptParse->InitNew();
 
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_ACTIVEX_SECURITY
    IObjectSafety *pios;
    m_pScriptParse->QueryInterface(IID_IObjectSafety, (LPVOID *)&pios);
    if (pios)
@@ -104,7 +102,7 @@ ScriptInterpreter::~ScriptInterpreter()
       SAFE_RELEASE_NO_RCC(m_pScript);
       SAFE_RELEASE_NO_RCC(m_pScriptParse);
       SAFE_RELEASE(m_pScriptDebug);
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_SCRIPT_DEBUGGER
       if (m_pProcessDebugManager != nullptr)
          m_pProcessDebugManager->Release();
 #endif
@@ -124,8 +122,8 @@ void ScriptInterpreter::Start(PinTable* table)
    AddItem(table, false);
    AddItem((ScriptGlobalTable*) table->m_psgt, true);
    AddItem(m_pdm, false);
-   for (int i = 0; i < table->m_vcollection.size(); i++)
-      AddItem(&table->m_vcollection[i], false);
+   for (auto pcol : table->GetCollections())
+      AddItem(pcol, false);
    for (auto editable : table->GetParts())
       if (editable->GetIScriptable())
          AddItem(editable->GetIScriptable(), false);
@@ -165,8 +163,8 @@ void ScriptInterpreter::Stop(PinTable *table, bool interruptDirectly)
    RemoveItem(table);
    RemoveItem((ScriptGlobalTable *)table->m_psgt);
    RemoveItem(m_pdm);
-   for (int i = 0; i < table->m_vcollection.size(); i++)
-      RemoveItem(&table->m_vcollection[i]);
+   for (auto pcol : table->GetCollections())
+      RemoveItem(pcol);
    for (auto editable : table->GetParts())
       if (editable->GetIScriptable())
          RemoveItem(editable->GetIScriptable());
@@ -201,7 +199,7 @@ void ScriptInterpreter::AddItem(const wstring& name, IDispatch *dispatch, const 
 void ScriptInterpreter::RemoveItem(IScriptable *const piscript)
 {
    piscript->GetIDispatch()->Release();
-   m_scriptItemMap.erase(piscript->get_Name());
+   m_scriptItemMap.erase(MakeWString(piscript->get_Name()));
 }
 
 void ScriptInterpreter::Evaluate(const string &script, bool isDebugStatement)
@@ -230,7 +228,7 @@ void ScriptInterpreter::HandleScriptError(IActiveScriptError *pScriptError, IAct
 
    // Get stack trace
    vector<string> stackDump;
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_SCRIPT_DEBUGGER
    if (pScriptDebugError)
    {
       if (IDebugStackFrame * errStackFrame; pScriptDebugError->GetStackFrame(&errStackFrame) == S_OK)
@@ -419,7 +417,7 @@ STDMETHODIMP ScriptInterpreter::GetDocumentContextFromPosition(DWORD_PTR dwSourc
 
 STDMETHODIMP ScriptInterpreter::GetApplication(IDebugApplication **ppda)
 {
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_SCRIPT_DEBUGGER
    if (m_pProcessDebugManager != nullptr)
    {
       IDebugApplication *app;
@@ -493,7 +491,7 @@ DEFINE_GUID(GUID_CUSTOM_CONFIRMOBJECTSAFETY, 0x10200490, 0xfa38, 0x11d0, 0xac, 0
 HRESULT STDMETHODCALLTYPE ScriptInterpreter::QueryCustomPolicy(
    REFGUID guidKey, BYTE __RPC_FAR *__RPC_FAR *ppPolicy, DWORD __RPC_FAR *pcbPolicy, BYTE __RPC_FAR *pContext, DWORD cbContext, DWORD dwReserved)
 {
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_ACTIVEX_SECURITY
    uint32_t *const ppolicy = (uint32_t *)CoTaskMemAlloc(sizeof(uint32_t)); // needs to use CoTaskMemAlloc because of COM model
    *ppolicy = URLPOLICY_DISALLOW;
 
@@ -558,7 +556,7 @@ void ScriptInterpreter::AddControlToOkayedList(const CONFIRMSAFETY *pcs) const
 bool ScriptInterpreter::IsControlMarkedSafe(const CONFIRMSAFETY *pcs)
 {
    bool safe = false;
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_ACTIVEX_SECURITY
    IObjectSafety *pios = nullptr;
 
    DWORD supported, enabled;
@@ -580,18 +578,11 @@ bool ScriptInterpreter::IsControlMarkedSafe(const CONFIRMSAFETY *pcs)
 
 bool ScriptInterpreter::IsUserManuallyOkaysControl(const CONFIRMSAFETY *pcs) const
 {
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_ACTIVEX_SECURITY
    OLECHAR *wzT;
    if (FAILED(OleRegGetUserType(pcs->clsid, USERCLASSTYPE_FULL, &wzT)))
       return false;
-   HWND parent = nullptr;
-   if (parent == nullptr && g_pplayer && !g_pplayer->IsVR())
-      parent = g_pplayer->m_playfieldWnd->GetNativeHWND();
-   if (parent == nullptr && g_pvp)
-      parent = g_pvp->GetHwnd();
-   const int ans = MessageBox(
-      parent, (LocalString(IDS_UNSECURECONTROL1).m_szbuffer + MakeString(wzT) + LocalString(IDS_UNSECURECONTROL2).m_szbuffer).c_str(), "Visual Pinball", MB_YESNO | MB_DEFBUTTON2);
-   return (ans == IDYES);
+   return AskUser(LocalString(IDS_UNSECURECONTROL1).m_szbuffer + MakeString(wzT) + LocalString(IDS_UNSECURECONTROL2).m_szbuffer);
 #else
    return false;
 #endif
@@ -616,7 +607,7 @@ STDMETHODIMP ScriptInterpreter::DebuggerModule::Print(VARIANT *pvar)
    if (g_pplayer->m_ptable->IsLocked())
       return S_OK;
 
-   if (!g_app->m_settings.GetEditor_EnableLog() || !g_app->m_settings.GetEditor_LogScriptOutput())
+   if (!g_settingsService.GetAppSettings().GetGlobal_EnableLog() || !g_settingsService.GetAppSettings().GetGlobal_LogScriptOutput())
       return S_OK;
 
    if (V_VT(pvar) == VT_EMPTY || V_VT(pvar) == VT_NULL || V_VT(pvar) == VT_ERROR)

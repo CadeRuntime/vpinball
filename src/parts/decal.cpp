@@ -9,8 +9,6 @@
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 
 
 #define AUTOLEADING (tm.tmAscent - tm.tmInternalLeading/4)
@@ -29,7 +27,7 @@ Decal *Decal::CopyForPlay() const
 
 HRESULT Decal::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
 {
-   m_wzName = L"Decal"sv;
+   m_name = "Decal"s;
    SetDefaults(fromMouseClick);
    m_d.m_vCenter.x = x;
    m_d.m_vCenter.y = y;
@@ -39,7 +37,7 @@ HRESULT Decal::Init(const float x, const float y, const bool fromMouseClick, con
 
 void Decal::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsDecal_##prop() : Settings::GetDefaultPropsDecal_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsDecal_##prop() : Settings::GetDefaultPropsDecal_##prop##_Default()
    LinkProp(m_d.m_width, Width);
    LinkProp(m_d.m_height, Height);
    LinkProp(m_d.m_rotation, Rotation);
@@ -69,7 +67,7 @@ void Decal::SetDefaults(const bool fromMouseClick)
 
 void Decal::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsDecal_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsDecal_##prop(field, false)
    LinkProp(m_d.m_width, Width);
    LinkProp(m_d.m_height, Height);
    LinkProp(m_d.m_rotation, Rotation);
@@ -96,71 +94,6 @@ void Decal::WriteRegDefaults()
 #undef LinkProp
 }
 
-
-void Decal::UIRenderPass1(Sur * const psur)
-{
-   if (!(m_desktopBackdrop && !GetPTable()->GetDecalsEnabled()))
-   {
-      psur->SetBorderColor(-1, false, 0);
-      psur->SetFillColor(m_ptable->RenderSolid() ? RGB(0, 0, 255) : -1);
-      psur->SetObject(this);
-
-      const float halfwidth = m_realwidth/*m_d.m_width*/ * 0.5f;
-      const float halfheight = m_realheight/*m_d.m_height*/ * 0.5f;
-
-      const float radangle = ANGTORAD(m_d.m_rotation);
-      const float sn = sinf(radangle);
-      const float cs = cosf(radangle);
-
-      const Vertex2D rgv[4] = {
-         Vertex2D(m_d.m_vCenter.x + sn*halfheight - cs*halfwidth,
-         m_d.m_vCenter.y - cs*halfheight - sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x + sn*halfheight + cs*halfwidth,
-         m_d.m_vCenter.y - cs*halfheight + sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x - sn*halfheight + cs*halfwidth,
-         m_d.m_vCenter.y + cs*halfheight + sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x - sn*halfheight - cs*halfwidth,
-         m_d.m_vCenter.y + cs*halfheight - sn*halfwidth) };
-
-      psur->Polygon(rgv, 4);
-   }
-}
-
-void Decal::UIRenderPass2(Sur * const psur)
-{
-   if (!(m_desktopBackdrop && !GetPTable()->GetDecalsEnabled()))
-   {
-      psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-      psur->SetFillColor(-1);
-      psur->SetObject(this);
-      psur->SetObject(nullptr);
-
-      const float halfwidth = m_realwidth * 0.5f;
-      const float halfheight = m_realheight * 0.5f;
-
-      const float radangle = ANGTORAD(m_d.m_rotation);
-      const float sn = sinf(radangle);
-      const float cs = cosf(radangle);
-
-      const Vertex2D rgv[4] = {
-         Vertex2D(m_d.m_vCenter.x + sn*halfheight - cs*halfwidth,
-         m_d.m_vCenter.y - cs*halfheight - sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x + sn*halfheight + cs*halfwidth,
-         m_d.m_vCenter.y - cs*halfheight + sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x - sn*halfheight + cs*halfwidth,
-         m_d.m_vCenter.y + cs*halfheight + sn*halfwidth),
-
-         Vertex2D(m_d.m_vCenter.x - sn*halfheight - cs*halfwidth,
-         m_d.m_vCenter.y + cs*halfheight - sn*halfwidth) };
-
-      psur->Polygon(rgv, 4);
-   }
-}
 
 string Decal::GetFontName() const
 {
@@ -234,14 +167,42 @@ void Decal::UpdateBounds()
    }
 }
 
-void Decal::SetObjectPos()
+void Decal::GetEditorQuad(Vertex2D rgv[4]) const
 {
-   m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
+   const float halfwidth = m_realwidth * 0.5f;
+   const float halfheight = m_realheight * 0.5f;
+
+   const float radangle = ANGTORAD(m_d.m_rotation);
+   const float sn = sinf(radangle);
+   const float cs = cosf(radangle);
+
+   rgv[0] = Vertex2D(m_d.m_vCenter.x + sn * halfheight - cs * halfwidth, m_d.m_vCenter.y - cs * halfheight - sn * halfwidth);
+   rgv[1] = Vertex2D(m_d.m_vCenter.x + sn * halfheight + cs * halfwidth, m_d.m_vCenter.y - cs * halfheight + sn * halfwidth);
+   rgv[2] = Vertex2D(m_d.m_vCenter.x - sn * halfheight + cs * halfwidth, m_d.m_vCenter.y + cs * halfheight + sn * halfwidth);
+   rgv[3] = Vertex2D(m_d.m_vCenter.x - sn * halfheight - cs * halfwidth, m_d.m_vCenter.y + cs * halfheight - sn * halfwidth);
 }
+
+void Decal::PhysicSetup(PhysicsEngine *physics, const bool isUI)
+{
+   if (isUI)
+   {
+      // UI picking quad covering the decal (decals have no playfield collider)
+      EnsureSize();
+      Vertex2D quad[4];
+      GetEditorQuad(quad);
+      const float height = m_desktopBackdrop ? 0.f : (m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y) + 0.2f);
+      Vertex3Ds *const rgv3d = new Vertex3Ds[4];
+      for (int i = 0; i < 4; i++)
+         rgv3d[i] = Vertex3Ds(quad[3 - i].x, quad[3 - i].y, height); // Reversed winding so that the quad faces up and can be picked from the top-down editor views
+      physics->AddCollider(new Hit3DPoly(this, rgv3d, 4), isUI);
+   }
+}
+
+void Decal::PhysicRelease(PhysicsEngine *physics, const bool isUI) { }
 
 void Decal::Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter)
 {
-   ISelect::Rotate(ang, pvCenter, useElementCenter);
+   IEditable::Rotate(ang, pvCenter, useElementCenter);
 
    m_d.m_rotation += ang;
 }
@@ -254,7 +215,7 @@ void Decal::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteFloat(FID(ROTA), m_d.m_rotation);
    writer.WriteString(FID(IMAG), m_d.m_szImage);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteString(FID(TEXT), m_d.m_text);
    writer.WriteInt(FID(TYPE), m_d.m_decaltype);
    writer.WriteString(FID(MATR), m_d.m_szMaterial);
@@ -281,7 +242,7 @@ void Decal::Load(IObjectReader& reader)
          case FID(ROTA): m_d.m_rotation = reader.AsFloat(); break;
          case FID(IMAG): m_d.m_szImage = reader.AsString(); break;
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(TEXT): m_d.m_text = reader.AsString(); break;
          case FID(TYPE): m_d.m_decaltype = static_cast<DecalType>(reader.AsInt()); break;
          case FID(COLR): m_d.m_color = reader.AsInt(); break;
@@ -593,10 +554,10 @@ void Decal::Render(const unsigned int renderMask)
    if (m_d.m_decaltype != DecalImage)
    {
       if (!m_desktopBackdrop)
-         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(SHADER_TECHNIQUE_basic_with_texture, *mat, false);
+         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(ShaderTechnique::basic_with_texture, *mat, false);
       else
-         m_renderer->m_renderDevice->m_basicShader->SetTechnique(SHADER_TECHNIQUE_bg_decal_with_texture);
-      m_renderer->m_renderDevice->m_basicShader->SetTexture(SHADER_tex_base_color, m_textImg.get());
+         m_renderer->m_renderDevice->m_basicShader->SetTechnique(ShaderTechnique::bg_decal_with_texture);
+      m_renderer->m_renderDevice->m_basicShader->SetTexture(ShaderUniform::tex_base_color, m_textImg.get());
    }
    else
    {
@@ -604,19 +565,19 @@ void Decal::Render(const unsigned int renderMask)
       if (pin)
       {
          if (!m_desktopBackdrop)
-            m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(SHADER_TECHNIQUE_basic_with_texture, *mat, pin->m_alphaTestValue >= 0.f && !pin->IsOpaque());
+            m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(ShaderTechnique::basic_with_texture, *mat, pin->m_alphaTestValue >= 0.f && !pin->IsOpaque());
          else
-            m_renderer->m_renderDevice->m_basicShader->SetTechnique(SHADER_TECHNIQUE_bg_decal_with_texture);
+            m_renderer->m_renderDevice->m_basicShader->SetTechnique(ShaderTechnique::bg_decal_with_texture);
          // Set texture to mirror, so the alpha state of the texture blends correctly to the outside
-         m_renderer->m_renderDevice->m_basicShader->SetTexture(SHADER_tex_base_color, pin, false, SF_TRILINEAR, SA_MIRROR, SA_MIRROR);
+         m_renderer->m_renderDevice->m_basicShader->SetTexture(ShaderUniform::tex_base_color, pin, false, SamplerFilter::SF_TRILINEAR, SamplerAddressMode::SA_MIRROR, SamplerAddressMode::SA_MIRROR);
          m_renderer->m_renderDevice->m_basicShader->SetAlphaTestValue(pin->m_alphaTestValue);
       }
       else
       {
          if (!m_desktopBackdrop)
-            m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(SHADER_TECHNIQUE_basic_without_texture, *mat);
+            m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(ShaderTechnique::basic_without_texture, *mat);
          else
-            m_renderer->m_renderDevice->m_basicShader->SetTechnique(SHADER_TECHNIQUE_bg_decal_without_texture);
+            m_renderer->m_renderDevice->m_basicShader->SetTechnique(ShaderTechnique::bg_decal_without_texture);
       }
    }
 
@@ -626,7 +587,7 @@ void Decal::Render(const unsigned int renderMask)
    {
       m_renderer->m_renderDevice->SetRenderStateDepthBias(0.0f);
       static constexpr vec4 staticColor { 1.0f, 1.0f, 1.0f, 1.0f };
-      m_renderer->m_renderDevice->m_basicShader->SetVector(SHADER_cBase_Alpha, &staticColor);
+      m_renderer->m_renderDevice->m_basicShader->SetVector(ShaderUniform::cBase_Alpha, &staticColor);
       m_renderer->UpdateDesktopBackdropShaderMatrix(true, false, false);
       m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, !m_desktopBackdrop, m_boundingSphereCenter, 0.f, m_meshBuffer, RenderDevice::TRIANGLESTRIP, 0, 4);
       m_renderer->UpdateBasicShaderMatrix();
@@ -706,9 +667,6 @@ STDMETHODIMP Decal::put_Height(float newVal)
 STDMETHODIMP Decal::get_X(float *pVal)
 {
    *pVal = m_d.m_vCenter.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 
@@ -834,7 +792,8 @@ STDMETHODIMP Decal::putref_Font(IFontDisp *pFont)
        pIFont->Release();
    }
 #endif
-   SetDirtyDraw();
+   if (PinTable *const table = GetPTable())
+      table->SetDirtyDraw();
    EnsureSize();
 
    return S_OK;

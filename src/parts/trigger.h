@@ -4,12 +4,16 @@
 
 #pragma once
 
-#include "parts/dragpoint.h"
+#include "core/resourceid.h"
+#include "math/dragpoint.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
+
+#include <memory>
+#include <span>
+
 
 class MeshBuffer;
 
@@ -37,23 +41,24 @@ class Trigger :
    public EventProxy<Trigger, &DIID_ITriggerEvents>,
    public IConnectionPointContainerImpl<Trigger>,
    public IProvideClassInfo2Impl<&CLSID_Trigger, &DIID_ITriggerEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
    public IScriptable,
-   public IHaveDragPoints,
    public IFireEvents,
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
    HRESULT FireDispID(const DISPID dispid, DISPPARAMS * const pdispparams) final;
 #endif
-   Trigger() { m_menuid = IDR_SURFACEMENU; }
+   Trigger()
+      : m_curve(this, 3)
+   {
+   }
    virtual ~Trigger();
 
    BEGIN_COM_MAP(Trigger)
@@ -73,38 +78,23 @@ public:
       CONNECTION_POINT_ENTRY(DIID_ITriggerEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Trigger, eItemTrigger, TRIGGER, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Trigger, eItemTrigger, TRIGGER)
 
    DECLARE_REGISTRY_RESOURCEID(IDR_TRIGGER)
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
-
-   void RenderBlueprint(Sur *psur, const bool solid) final;
-
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
-
-#ifndef __STANDALONE__
-   void EditMenu(CMenu &hmenu) final;
-   void DoCommand(int icmd, int x, int y) final;
-#endif
 
    // Multi-object manipulation
    void FlipY(const Vertex2D& pvCenter) final;
    void FlipX(const Vertex2D& pvCenter) final;
    void Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter) final;
    void Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter) final;
-   void Translate(const Vertex2D &pvOffset) final;
-   Vertex2D GetCenter() const final { return GetPointCenter(); }
+   void Translate(const Vertex2D &offset) final;
+   Vertex2D GetCenter() const final { return m_d.m_vCenter; }
    Vertex2D GetScale() const final { return {m_d.m_scaleX, m_d.m_scaleY}; }
    float GetRotate() const final { return m_d.m_rotation; }
 
-   void PutCenter(const Vertex2D& pv) final { PutPointCenter(pv); }
-   Vertex2D GetPointCenter() const final;
-   void PutPointCenter(const Vertex2D& pv) final;
    void ExportMesh(ObjLoader& loader) final;
-   ItemTypeEnum HitableGetItemType() const final { return eItemTrigger; }
-   void UpdateStatusBarInfo() final;
 
    void ClearForOverwrite() final;
 
@@ -113,31 +103,44 @@ public:
    void TriggerAnimationHit();
    void TriggerAnimationUnhit();
 
+   // Fills 'outline' with the 2D outline of wire-shaped triggers for editor display (empty for other shapes)
+   void GetWireOutline(vector<Vertex2D> &outline) const;
+
    TriggerData m_d;
 
-private:
-   void InitShape(float x, float y);
-   void GenerateMesh();
+   // Custom shape outline (defines the trigger shape when m_d.m_shape is a wire shape)
+   DragPointCurve m_curve;
 
+private:
+   // Regenerates the default drag point shape centered on (x, y), releasing any previously defined drag points
+   void InitShape(float x, float y);
+
+   // Non-owning views over the static mesh data matching a trigger shape
+   struct StaticMeshData
+   {
+      std::span<const Vertex3D_NoTex2> vertices;
+      std::span<const WORD> indices;
+   };
+   static StaticMeshData SetupMeshData(TriggerShape shape);
+
+   // Generates the render mesh and the mesh bounding sphere center for the current m_d
+   std::unique_ptr<std::vector<Vertex3D_NoTex2>> GenerateMesh(Vertex3Ds &boundingSphereCenter) const;
+
+   // Valid through PhysicSetup/PhysicRelease
    TriggerHitCircle *m_ptriggerhitcircle = nullptr;
    Hit3DPoly *m_ptriggerhitpoly = nullptr;
-
-   Renderer *m_renderer = nullptr;
-   std::shared_ptr<MeshBuffer> m_meshBuffer;
-   vector<Vertex3Ds> m_vertices;
-   const WORD *m_faceIndices = nullptr;
-   Vertex3D_NoTex2 *m_triggerVertices = nullptr;
-   int m_numVertices = 0;
-   int m_numIndices = 0;
-
-   float m_animHeightOffset = 0.f;
-   float m_vertexBuffer_animHeightOffset = -FLT_MAX;
    bool m_hitEvent = false;
    bool m_unhitEvent = false;
+
+   // Valid through RenderSetup/RenderRelease
+   Renderer *m_renderer = nullptr;
+   std::shared_ptr<MeshBuffer> m_meshBuffer;
+   std::unique_ptr<std::vector<Vertex3D_NoTex2>> m_triggerVertices;
+   Vertex3Ds m_boundingSphereCenter;
+   float m_animHeightOffset = 0.f;
+   float m_vertexBuffer_animHeightOffset = -FLT_MAX;
    bool m_doAnimation = false;
    bool m_moveDown = false;
-
-   Vertex3Ds m_boundingSphereCenter;
 
 // ITrigger
 public:

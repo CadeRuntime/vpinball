@@ -56,6 +56,13 @@ FlipperMoverObject::FlipperMoverObject(const Vertex2D& center, const float baser
    m_angularAcceleration = 0;
    m_angleSpeed = 0;
 
+   m_lastHitFace = false; // used to optimize hit face search order
+
+#ifdef FIX_PHYSICS
+   m_backwards_compatibility = true; //!! TODO
+
+   UpdateInertia();
+#else
    const float ratio = (baser - endr) / flipr;
 
    //const float fa = asinf(ratio); // face to centerline angle (center to center)
@@ -65,59 +72,106 @@ FlipperMoverObject::FlipperMoverObject(const Vertex2D& center, const float baser
    const float mass = (m_pflipper->m_d.m_OverridePhysics || (m_pflipper->m_ptable->m_overridePhysicsFlipper && m_pflipper->m_ptable->m_overridePhysics)) ? m_pflipper->m_d.m_OverrideMass : m_pflipper->m_d.m_mass;
    m_inertia = (float)(1.0 / 3.0) * mass * (flipr*flipr);
 
-   m_lastHitFace = false; // used to optimize hit face search order
-
    //m_faceLength = m_flipperradius * sqrtf(1.0f-ratio*ratio); // Cosine of face angle X hypotenuse // = m_flipperradius * cosf(fa)
 
    m_zeroAngNorm.x =  sqrtf(1.0f-ratio*ratio); // F2 Norm, used in Green's transform, in FPM time search  // =  sinf(faceNormOffset)
    m_zeroAngNorm.y = -ratio;                   // F1 norm, change sign of x component, i.e -zeroAngNorm.x // = -cosf(faceNormOffset)
-
-#if 0 // needs wiring of moment of inertia
-   // now calculate moment of inertia using isoceles trapizoid and two circular sections
-   // ISOSCELES TRAPEZOID, Area Moment of Inertia
-   // I(area)FF = h/(144*(a+b)*(16*h^2*a*b+4*h^2*b^2+4*h^2*a^2+3*a^4+6*a^2*b^2+6*a^3*b+6*a*b^3+3*b^4)) (centroidial axis)
-   // circular sections, Area Moment of Inertia
-   // I(area)FB = rb^4/4*(theta - sin(theta)+2/3*sin(theta)*sin(theta/2)^2), where rb is flipper base radius
-   // I(area)FE = re^4/4*(theta - sin(theta)+2/3*sin(theta)*sin(theta/2)^2),requires translation to centroidial axis
-   // then translate these using the parallel axis theorem to the flipper rotational axis
-
-   const float etheta = (float)M_PI - (fa+fa); // end radius section angle
-   const float btheta = (float)M_PI + (fa+fa); // base radius section angle
-   const float tmp1 = sinf(btheta*0.5f);
-   const float tmp2 = sinf(etheta*0.5f);
-   const float a = 2.0f*endr*tmp2; 
-   const float b = 2.0f*baser*tmp1; // face thickness at end and base radii
-
-   const float baseh = baser*cosf(btheta*0.5f);
-   const float endh = endr*cosf(etheta*0.5f);
-   const float h = flipr + baseh + endh;
-
-   float Irb_inertia = (baser*baser)*(baser*baser)*0.25f*(btheta - sinf(btheta) + (float)(2.0/3.0)*sinf(btheta)*tmp1*tmp1);//base radius
-   Irb_inertia /= baser*baser*(btheta - sinf(btheta)); // divide by area to obtain simple Inertia
-
-   float Ire_inertia = (endr*endr)*(endr*endr)*0.25f*(etheta - sinf(etheta) + (float)(2.0/3.0)*sinf(etheta)*(tmp2*tmp2));//end radius
-   Ire_inertia /= endr*endr*(etheta - sinf(etheta));   // divide by area
-
-   // translate to centroidal and then flipper axis.. subtract section radius squared then add (flipper radius + section radius) squared
-   const float tmp3 = (float)(4.0/3.0)*endr*(tmp2*tmp2)*tmp2/(etheta-sinf(etheta));
-   Ire_inertia = Ire_inertia + ((flipr+tmp3)*(flipr+tmp3)
-      -       tmp3 *       tmp3); // double parallel axis
-
-   // flipper body trapizoidal section
-   float Ifb_inertia = h/(144.0f*(a+b))*(16.0f*(h*h)*a*b + 4.0f*(h*h)*((b*b)+(a*a)) + 3.0f*(a*a)*(a*a)
-      + 6.0f*(a*a)*(b*b) + 6.0f*(a*b)*((b*b)+(a*a)) + 3.0f*(b*b)*(b*b));
-   Ifb_inertia /= h*0.5f*(a+b); // divide by area
-
-   const float tmp4 = h*(float)(1.0/3.0)*(a+(a+b))/(a+b);
-   Ifb_inertia = Ifb_inertia + tmp4*tmp4; // flipper body translated to flipper axis ...parallel axis
-
-   const float Iff = Irb_inertia + Ifb_inertia + Ire_inertia; // scalar moment of inertia ... multiply by weight next
-
-   m_inertia = Iff * mass; // mass of flipper body
-
-   //m_inertia = mass;     // stubbed to mass of flipper body
 #endif
 }
+
+#ifdef FIX_PHYSICS
+void FlipperMoverObject::UpdateInertia()
+{
+   const float baser = m_hitcircleBase.radius;
+   const float endr  = m_endradius;
+   const float flipr = m_flipperradius;
+
+   const float ratio = (baser - endr) / flipr;
+
+   //!! compute things in double??
+
+   const float fa    = asinf(ratio); // face-to-centerline angle (center to center)
+   const float sinFa = ratio;
+   const float cosFa = sqrtf(1.0f - ratio*ratio); // = cos(fa)
+
+   m_zeroAngNorm.x =  cosFa; // F2 norm, used in Green's transform, in FPM time search // = sinf(M_PI/2 - fa)
+   m_zeroAngNorm.y = -ratio; // F1 norm, change sign of x component, i.e -zeroAngNorm.x // = -cosf(M_PI/2 - fa)
+
+   // Moment of inertia: model the flipper as the convex hull of base and end
+   // circles -- an isosceles trapezoid plus two circular segments -- with
+   // uniform area mass density. Compute each section's polar second moment
+   // about the rotation axis (base-circle center, x=0; end-circle center is
+   // at x = flipr), then combine as I = (mass / A_total) * sum(I_section)
+   const float twoFa  = fa + fa;
+   const float etheta = (float)M_PI - twoFa; // end segment central angle (minor)
+   const float btheta = (float)M_PI + twoFa; // base segment central angle (major)
+   const float sin2Fa = sinf(twoFa);
+   const float sinE   =  sin2Fa;             // sin(pi - 2fa)
+   const float sinB   = -sin2Fa;             // sin(pi + 2fa)
+   const float cosFa2 = cosFa * cosFa;       // sin^2(theta/2) for both segments
+
+   // Trapezoid: parallel sides b (base end) and a (flipper end), height ht
+   //   chord b at x = baser*sinFa, width  2*baser*cosFa
+   //   chord a at x = flipr + endr*sinFa, width  2*endr*cosFa
+   const float a   = endr  * (2.0f * cosFa);
+   const float b   = baser * (2.0f * cosFa);
+   const float ht  = flipr - sinFa * (baser - endr); // = flipr * cos^2(fa)
+   const float A_t = 0.5f * ht * (a + b);
+   const float I_t_c = ht * (16.0f*(ht*ht)*(a*b) + 4.0f*(ht*ht)*(a*a + b*b)
+                          + 3.0f*(a*a)*(a*a) + 6.0f*(a*a)*(b*b)
+                          + 6.0f*(a*b)*(a*a + b*b) + 3.0f*(b*b)*(b*b))
+                     / (144.0f * (a + b));
+   const float xc_t = baser * sinFa + ht * (2.0f*a + b) / (3.0f * (a + b));
+   const float I_t  = I_t_c + A_t * xc_t * xc_t;
+
+   // Base segment (major) -- chord at x = baser*sinFa, segment wraps the back.
+   // Polar moment formula gives the answer about the base-circle center,
+   // which already coincides with the rotation axis
+   const float A_b = 0.5f * (baser*baser) * (btheta - sinB);
+   const float I_b = 0.25f * (baser*baser)*(baser*baser)
+                   * (btheta - sinB + (float)(2.0/3.0) * sinB * cosFa2);
+
+   // End segment (minor) -- chord at x = flipr + endr*sinFa, segment on the
+   // far side. Translate from end-circle center, through the segment centroid,
+   // out to the rotation axis
+   const float A_e       = 0.5f * (endr*endr) * (etheta - sinE);
+   const float I_e_local = 0.25f * (endr*endr)*(endr*endr)
+                         * (etheta - sinE + (float)(2.0/3.0) * sinE * cosFa2);
+   const float d_e       = (float)(4.0/3.0) * endr * cosFa*cosFa2 / (etheta - sinE);
+   const float I_e       = I_e_local + A_e * ((flipr + d_e)*(flipr + d_e) - d_e*d_e);
+
+   const float A_total = A_t + A_b + A_e;
+   m_inertiaShape = (I_t + I_b + I_e) / A_total;
+
+   const float mass = (m_pflipper->m_d.m_OverridePhysics || (m_pflipper->m_ptable->m_overridePhysicsFlipper && m_pflipper->m_ptable->m_overridePhysics)) ? m_pflipper->m_d.m_OverrideMass : m_pflipper->m_d.m_mass;
+   m_inertia = mass * m_inertiaShape;
+
+   // The shape-accurate inertia differs from the rod approximation
+   // (m_inertia_rod = mass * flipr^2 / 3) that pre-existing tables were
+   // tuned against -- typically smaller for tapered flippers, larger for
+   // near-uniform-width ones. Scaling coil torque by the same ratio keeps
+   // the per-Strength angular acceleration unchanged, so the flipper
+   // still swings at the speed authors expect; ball-flipper collision
+   // response continues to use the accurate inertia.
+   //
+   // What this heuristic preserves vs. what drifts:
+   //  preserved exactly: empty-swing angular velocity / acceleration,
+   //                     ramp-up time, end-of-stroke recoil torque.
+   //  drifts (small):    ball-kick velocity off an active flip
+   //                     (depends on 1 + m_ball*L^2/I, so the I ratio
+   //                     does not cancel; ~4-10% in either direction
+   //                     depending on geometry).
+   //  drifts more:       bounce off a held flipper, dead-bounce/cradle
+   //                     feel -- these are purely I-driven and shift
+   //                     in proportion to k^2_new / k^2_rod.
+
+   // No single scalar can preserve both swing and ball-kick across
+   // tapered vs. stubby flippers (the two errors flip sign with shape).
+   // If a per-table tuning knob becomes desired, expose it as an extra
+   // multiplier on top of m_torqueScale rather than replacing this
+   m_torqueScale = m_backwards_compatibility ? (3.0f * m_inertiaShape / (flipr*flipr)) : 1.0f;
+}
+#endif
 
 HitFlipper::HitFlipper(const Vertex2D& center, const float baser, const float endr, const float flipr, const float angleStart, const float angleEnd,
    const float zlow, const float zhigh, Flipper* const pflipper)
@@ -134,6 +188,9 @@ void HitFlipper::UpdatePhysicsFromFlipper()
    m_elasticity = (m_flipperMover.m_pflipper->m_d.m_OverridePhysics || (m_flipperMover.m_pflipper->m_ptable->m_overridePhysicsFlipper && m_flipperMover.m_pflipper->m_ptable->m_overridePhysics)) ? m_flipperMover.m_pflipper->m_d.m_OverrideElasticity : m_flipperMover.m_pflipper->m_d.m_elasticity;
    SetFriction((m_flipperMover.m_pflipper->m_d.m_OverridePhysics || (m_flipperMover.m_pflipper->m_ptable->m_overridePhysicsFlipper && m_flipperMover.m_pflipper->m_ptable->m_overridePhysics)) ? m_flipperMover.m_pflipper->m_d.m_OverrideFriction : m_flipperMover.m_pflipper->m_d.m_friction);
    m_scatter = ANGTORAD((m_flipperMover.m_pflipper->m_d.m_OverridePhysics || (m_flipperMover.m_pflipper->m_ptable->m_overridePhysicsFlipper && m_flipperMover.m_pflipper->m_ptable->m_overridePhysics)) ? m_flipperMover.m_pflipper->m_d.m_OverrideScatterAngle : m_flipperMover.m_pflipper->m_d.m_scatter);
+#ifdef FIX_PHYSICS
+   m_flipperMover.UpdateInertia();
+#endif
 }
 
 // helpers for BBox computation:
@@ -240,7 +297,7 @@ void HitFlipper::CalcHitBBox()
    aabb = ExtendBoundsAtPosition(aabb, c, m_flipperMover.m_flipperradius, r2, a0);
    aabb = ExtendBoundsAtPosition(aabb, c, m_flipperMover.m_flipperradius, r2, a1);
 
-   // extend with extremes (-90°, 0°, 90° and 180°)
+   // extend with extremes (-90, 0, 90 and 180)
    aabb = ExtendBoundsAtExtreme(aabb, c, m_flipperMover.m_flipperradius, r2, r3, a0, a1, -90.f);
    aabb = ExtendBoundsAtExtreme(aabb, c, m_flipperMover.m_flipperradius, r2, r3, a0, a1, 0.f);
    aabb = ExtendBoundsAtExtreme(aabb, c, m_flipperMover.m_flipperradius, r2, r3, a0, a1, 90.f);
@@ -286,12 +343,20 @@ float FlipperMoverObject::GetStrength() const
 
 float FlipperMoverObject::GetMass() const
 {
+#ifdef FIX_PHYSICS
+   return m_inertia / m_inertiaShape;
+#else
    return 3.0f * m_inertia / (m_flipperradius*m_flipperradius); //!! also change if wiring of moment of inertia happens (see ctor)
+#endif
 }
 
 void FlipperMoverObject::SetMass(const float m)
 {
+#ifdef FIX_PHYSICS
+   m_inertia = m * m_inertiaShape;
+#else
    m_inertia = (float)(1.0 / 3.0) * m * (m_flipperradius*m_flipperradius); //!! also change if wiring of moment of inertia happens (see ctor)
+#endif
 }
 
 // Ported at: VisualPinball.Unity/VisualPinball.Unity/VPT/Flipper/FlipperDisplacementSystem.cs
@@ -323,11 +388,11 @@ void FlipperMoverObject::UpdateDisplacements(const float dtime)
 #ifdef DEBUG_FLIPPERS
          if (m_startTime)
          {
-            const uint32_t dur = g_pplayer->m_time_msec - m_startTime;
+            const uint32_t dur = m_physics->GetTimeMsec() - m_startTime;
             m_startTime = 0;
             PLOGD << "Stroke duration: " << dur << " ms";
             PLOGD << "Ang. velocity: " << m_angleSpeed;
-            PLOGD << "Ball velocity: " << g_pplayer->m_vball[0]->GetVelocity().Length();
+            PLOGD << "Ball velocity: " << (!m_physics->GetBalls().empty() ? m_physics->GetBalls()[0]->m_d.m_vel.Length() : 0.f);
          }
 #endif
          handle_event = true;
@@ -361,7 +426,11 @@ void FlipperMoverObject::UpdateVelocities()
    //const float solForce = m_solState ? GetStrength() : 0.0f;
    //float force = m_dir * (solForce + springForce);
 
+#ifdef FIX_PHYSICS
+   float desiredTorque = GetStrength() * m_torqueScale;
+#else
    float desiredTorque = GetStrength();
+#endif
    if (!m_solState) // m_solState: true = button pressed, false = released
       desiredTorque *= -GetReturnRatio();
 
@@ -380,7 +449,11 @@ void FlipperMoverObject::UpdateVelocities()
    if (torqueRampupSpeed <= 0.f)
       torqueRampupSpeed = 1e6f; // set very high for instant coil response
    else
+#ifdef FIX_PHYSICS
+      torqueRampupSpeed = min(GetStrength() * m_torqueScale / torqueRampupSpeed, 1e6f);
+#else
       torqueRampupSpeed = min(GetStrength() / torqueRampupSpeed, 1e6f);
+#endif
 
    // update current torque linearly towards desired torque
    // (simple model for coil hysteresis)
@@ -422,8 +495,8 @@ void FlipperMoverObject::UpdateVelocities()
 
 void FlipperMoverObject::ApplyImpulse(const Vertex3Ds& rotI)
 {
-   m_angularMomentum += rotI.z;                  // only rotation about z axis
-   m_angleSpeed = m_angularMomentum / m_inertia; // TODO: figure out moment of inertia
+   m_angularMomentum += rotI.z; // only rotation about z axis
+   m_angleSpeed = m_angularMomentum / m_inertia;
 }
 
 void FlipperMoverObject::SetSolenoidState(const bool s) // true = button pressed, false = released
@@ -431,7 +504,7 @@ void FlipperMoverObject::SetSolenoidState(const bool s) // true = button pressed
    m_solState = s;
 #ifdef DEBUG_FLIPPERS
    if (m_angleCur == m_angleStart)
-      m_startTime = g_pplayer->m_time_msec;
+      m_startTime = m_physics->GetTimeMsec();
 #endif
 }
 
@@ -884,9 +957,10 @@ void HitFlipper::Collide(const CollisionEvent& coll)
       else return;
 #endif
    }
-   g_pplayer->m_liveUI->m_ballControl.SetDraggedBall(pball->m_pBall); // Ball control most recently collided with flipper
+   if (BallControl* const ballControl = m_physics->GetBallControl())
+      ballControl->SetDraggedBall(pball->m_pBall); // Ball control most recently collided with flipper
 
-#ifdef C_DISP_GAIN 
+#ifdef C_DISP_GAIN
    // correct displacements, mostly from low velocity blindness, an alternative to true acceleration processing
    float hdist = -C_DISP_GAIN * coll.m_hitdistance; // distance found in hit detection
    if (hdist > 1.0e-4f)
@@ -978,7 +1052,8 @@ void HitFlipper::Collide(const CollisionEvent& coll)
       kt += tangent.Dot(CrossProduct(crossF / m_flipperMover.m_inertia, rF)); // flipper only has angular response
 
       // friction impulse can't be greater than coefficient of friction times collision impulse (Coulomb friction cone)
-      const float maxFric = m_friction * impulse;
+      // (a negative friction coefficient or impulse means no friction; loading and setters already clamp the coefficient at 0)
+      const float maxFric = fmaxf(m_friction, 0.f) * fmaxf(impulse, 0.f);
       const float jt = clamp(-vt / kt, -maxFric, maxFric);
 
       pball->ApplySurfaceImpulse(jt * crossB, jt * tangent);
@@ -989,7 +1064,7 @@ void HitFlipper::Collide(const CollisionEvent& coll)
    pball->m_dynamic = C_DYNAMIC; // reactive ball if quenched
 #endif
 
-   if ((bnv < -0.25f) && (g_pplayer->m_time_msec - m_last_hittime) > 250) // limit rate to 250 milliseconds per event
+   if ((bnv < -0.25f) && (m_physics->GetTimeMsec() - m_last_hittime) > 250) // limit rate to 250 milliseconds per event
    {
       //!! unused const float distance = coll.m_hitmoment;                // moment .... and the flipper response
       const float flipperHit = /*(distance == 0.0f)*/ coll.m_hitmoment_bit ? -1.0f : -bnv; // move event processing to end of collision handler...
@@ -999,7 +1074,52 @@ void HitFlipper::Collide(const CollisionEvent& coll)
          m_flipperMover.m_pflipper->FireVoidEventParm(DISPID_FlipperEvents_Collide, flipperHit); // collision velocity (normal to face)
    }
 
-   m_last_hittime = g_pplayer->m_time_msec; // keep resetting until idle for 250 milliseconds
+   m_last_hittime = m_physics->GetTimeMsec(); // keep resetting until idle for 250 milliseconds
+
+   // Haptics use their own trigger rather than the script event gate above: that gate counts from the last
+   // contact of any kind, and a ball resting on the raised flipper touches it every few milliseconds, so the
+   // slap that follows never qualified.
+   //
+   // The impact is the impulse the flipper puts into the ball, and the physics delivers it as a run of contacts:
+   // a ball hitting a resting flipper is one contact with the full relative speed, a ball slapped or riding along
+   // the moving flipper is a dozen small ones a few milliseconds apart. The normal impact speed of a single
+   // contact therefore says little about a slap; the sum over a short window does: it follows the speed the ball
+   // leaves with far better than the strongest single contact. What is summed is the speed the ball itself brings
+   // towards the flipper face, not the speed relative to the moving face: a flipper firing at a resting ball puts
+   // everything into the contact from its own motion, and that is the solenoid the cabinet feels through the
+   // button pulse, not a ball hitting the flipper. Contacts of the last RUMBLE_WINDOW_MS are summed. The
+   // first contact of a run always plays (the ball arriving, however softly: a held ball rolling on the flipper
+   // is felt through these), later ones only when the sum exceeds what was last played by a unit, up to the
+   // saturation of the impact scale, so a hit follows to its full strength through the mixer while a resting
+   // ball stays silent.
+   const float arrival = -normal.Dot(vB); // the ball's own speed towards the face, positive when approaching
+   if (bnv < -0.25f && arrival > 0.25f)
+   {
+      const uint32_t now = m_physics->GetTimeMsec();
+      while (m_rumbleContactCount > 0 && now - m_rumbleContactMs[m_rumbleContactTail] > RUMBLE_WINDOW_MS)
+      {
+         m_rumbleContactTail = (m_rumbleContactTail + 1) % RUMBLE_CONTACTS;
+         m_rumbleContactCount--;
+      }
+      const bool firstOfRun = (m_rumbleContactCount == 0);
+      if (firstOfRun)
+         m_rumblePlayed = 0.f;
+      if (m_rumbleContactCount < RUMBLE_CONTACTS)
+      {
+         const int head = (m_rumbleContactTail + m_rumbleContactCount) % RUMBLE_CONTACTS;
+         m_rumbleContactMs[head] = now;
+         m_rumbleContactImpact[head] = arrival;
+         m_rumbleContactCount++;
+      }
+      float sum = 0.f;
+      for (int i = 0; i < m_rumbleContactCount; i++)
+         sum += m_rumbleContactImpact[(m_rumbleContactTail + i) % RUMBLE_CONTACTS];
+      if (firstOfRun || (sum > m_rumblePlayed + 1.f && m_rumblePlayed < RUMBLE_FULL_IMPACT))
+      {
+         m_rumblePlayed = sum;
+         m_physics->PlayFlipperContactRumble(-sum);
+      }
+   }
 
 #ifdef DEBUG_FLIPPERS
    PLOGD << "   ---- after collision ----\n";
@@ -1077,7 +1197,7 @@ void HitFlipper::Contact(CollisionEvent& coll, const float dtime)
       // first check for slippage
       const Vertex3Ds slip = vrel - normVel * normal; // calc the tangential slip velocity
 
-      const float maxFric = j * m_friction;
+      const float maxFric = j * fmaxf(m_friction, 0.f); // j >= 0, a negative friction coefficient means no friction
 
       const float slipspeed = slip.Length();
       Vertex3Ds slipDir,crossF;
@@ -1095,7 +1215,7 @@ void HitFlipper::Contact(CollisionEvent& coll, const float dtime)
 
          numer = -slipDir.Dot(arel);
          crossF = CrossProduct(rF, slipDir);
-         denomF = slipDir.Dot(CrossProduct(crossF / -m_flipperMover.m_inertia, rF));
+         denomF = slipDir.Dot(CrossProduct(crossF / m_flipperMover.m_inertia, rF));
       }
       else // nonzero slip speed - dynamic friction case
       {

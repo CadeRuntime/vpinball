@@ -2,11 +2,28 @@
 
 #pragma once
 
+#include "core/pinundo.h"
+#include "parts/light.h"
 #include "parts/pintable.h"
+#include "ui/win/dialogs/CollectionManagerDialog.h"
+#include "ui/win/dialogs/DimensionDialog.h"
+#include "ui/win/dialogs/ImageDialog.h"
+#include "ui/win/dialogs/MaterialDialog.h"
+#include "ui/win/dialogs/PhysicsOptionsDialog.h"
+#include "ui/win/dialogs/RenderProbeDialog.h"
+#include "ui/win/dialogs/SoundDialog.h"
+#include "ui/win/dialogs/TableInfoDialog.h"
+#include "ui/win/parts/TableWinUIPart.h"
+#include "unordered_dense.h"
+
+#include <memory>
+
+__forceinline void ListView_SetItemText_Safe(HWND hwndLV, WPARAM iItem, int iSubItem, LPCSTR pszText) { ListView_SetItemText(hwndLV, iItem, iSubItem, (LPSTR)pszText); }
 
 class PinTableMDI;
+class IWinUIPart;
 
-class PinTableWnd : public CWnd
+class PinTableWnd final : public CWnd
 {
 public:
    explicit PinTableWnd(WinEditor *vpxEditor, CComObject<PinTable> *table);
@@ -15,16 +32,72 @@ public:
    void SetMDITable(PinTableMDI *const table) { m_mdiTable = table; }
    PinTableMDI *GetMDITable() const { return m_mdiTable; }
 
-   ISelect *HitTest(const int x, const int y);
+   IWinUIPart *HitTest(const int x, const int y);
 
-   #ifndef __STANDALONE__
+   void ClearMultiSel(IWinUIPart *newSelPart = nullptr);
+   bool MultiSelIsEmpty() const;
+   IWinUIPart *GetSelectedItem() { return m_vmultisel.empty() ? GetUIPart(m_table) : m_vmultisel[0]; }
+   void AddMultiSel(IWinUIPart *pselPart, const bool add, const bool update, const bool contextClick);
+   // Live view of the selected UI parts, primary selection first (for the UI layer)
+   const vector<IWinUIPart *> &GetMultiSelParts() const { return m_vmultisel; }
+   // Number of entries in the multi-selection
+   int GetMultiSelCount() const { return (int)m_vmultisel.size(); }
+   // Snapshot of the selected UI parts, primary selection first
+   vector<IWinUIPart *> GetSelectedParts() const;
+   // Moves the entry at 'from' to position 'to' in the selection (used by the drawing-order dialog)
+   void MoveSelection(const int from, const int to);
+   void SelectItem(IScriptable *piscript);
+   void RefreshProperties();
+   void UpdatePropertyImageList();
+   void UpdatePropertyMaterialList();
+   void AssignSelectionToPartGroup(PartGroup *group);
+
+   void Copy(int x, int y);
+   void Paste(const bool atLocation, const int x, const int y);
+   void DeleteSelection();
+
+   // Undo support
+   void BeginUndo();
+   void MarkForUndo(IEditable *editable);
+   void MarkForCreate(IEditable *editable);
+   void MarkForDelete(IEditable *editable);
+   void EndUndo();
+   void DiscardUndo(); // Drop the last (ended) record, leaving no trace
+   void Undo();
+   void SetCleanPoint(SaveDirtyState sds);
+   void StartUndo();
+   void StopUndo();
+
+   // Multi-selection manipulation: applies the transform to all the selected parts at once
+   Vertex2D GetMultiSelCenter() const;
+   void FlipYMultiSel(const Vertex2D &pvCenter);
+   void FlipXMultiSel(const Vertex2D &pvCenter);
+   void RotateMultiSel(const float ang, const Vertex2D &pvCenter, const bool useElementCenter);
+   void ScaleMultiSel(const float scalex, const float scaley, const Vertex2D &pvCenter, const bool useElementCenter);
+   void TranslateMultiSel(const Vertex2D &offset);
+
+   bool FMutilSelLocked() const;
+   void LockElements();
+
+   // Returns true if the given select is a sub part (drag point, light center) whose owning part is also in the
+   // multi-selection, meaning that selection actions must not be applied to it (they reach it through its owning part)
+   bool IsSubPartOfSelectedPart(const IWinUIPart *psel) const;
+
    void SetMouseCursor();
-   #endif
+   void SetMouseCapture();
    void SetCaption(const string &caption);
    int ShowMessageBox(const char *text) const;
 
-   void FillCollectionContextMenu(CMenu &mainMenu, CMenu &colSubMenu, ISelect *psel);
-   void FillLayerContextMenu(CMenu &mainMenu, CMenu &layerSubMenu, ISelect *psel);
+   void FillCollectionContextMenu(CMenu &mainMenu, CMenu &colSubMenu, IWinUIPart *psel);
+   void FillLayerContextMenu(CMenu &mainMenu, CMenu &layerSubMenu, IWinUIPart *psel);
+
+   void NewCollection(const HWND hwndListView, const bool fFromSelection);
+   void ListCollections(HWND hwndListView);
+   int AddListCollection(HWND hwndListView, CComObject<Collection> *pcol);
+
+   void ImportFont(HWND hwndListView, const string &filename);
+   void ListFonts(HWND hwndListView);
+   int AddListBinary(HWND hwndListView, PinBinary *ppb);
 
    void Redraw();
    void SetDefaultView();
@@ -32,6 +105,10 @@ public:
    void SetMyScrollInfo();
    POINT GetScreenPoint() const;
    void ExportBlueprint();
+   void ImportBackdropPOV();
+   void ExportBackdropPOV();
+   void ImportPhysics();
+   void ExportPhysics();
    bool GetDisplayGrid() const;
    void SetDisplayGrid(const bool display);
    bool GetDisplayBackdrop() const;
@@ -41,6 +118,9 @@ public:
    float GetZoom() const;
    void SetZoom(float zoom);
 
+   // Transform editor window coordinates to table coordinates
+   Vertex2D TransformPoint(int x, int y) const;
+
    void FVerifySaveToClose();
    void BeginAutoSaveCounter();
    void EndAutoSaveCounter();
@@ -48,27 +128,55 @@ public:
 
    void ShowSearchSelectDlg();
 
+   // Destroy all the modeless/manager dialogs owned by this table editor
+   void CloseAllDialogs();
+
    void OnPartChanged(IEditable *part);
+   void OnPartAdded(IEditable *part);
+   void OnPartRemoved(IEditable *part);
+
+   // Returns the UI part owned by this editor for the given table part, i.e. an entry of m_uiParts, or m_tablePart
+   // for the table itself. nullptr if none.
+   IWinUIPart *GetUIPart(IEditable *part);
+   // Returns the UI part of the given drag point, a sub part of the UI part of its parent part. nullptr if none.
+   IWinUIPart *GetUIPart(DragPoint *point);
 
    CComObject<PinTable> *const m_table;
-   
+
+   // UI parts stacked under the mouse at the last HitTest call, front to back (used by the context menu "stacked elements" list and the drawing order dialog)
+   vector<IWinUIPart *> m_allHitElements;
+
    std::unique_ptr<class CodeViewer> m_pcv;
 
    ViewSetupID m_currentBackglassMode = ViewSetupID::BG_DESKTOP; // POV shown in the UI (not persisted)
 
+   WinEditor *const m_vpxEditor;
+
+   // UI part of the table itself. Unlike the other UI parts, it is not created through WinUIPartRegistry
+   // but is a direct member of this editor, sharing its lifecycle.
+   TableWinUIPart m_tablePart;
+
+   // Dialogs editing this table, owned by its editor (the editor grants access to the hosting WinEditor if needed)
+   ImageDialog m_imageMngDlg;
+   SoundDialog m_soundMngDlg;
+   CollectionManagerDialog m_collectionMngDlg;
+   PhysicsOptionsDialog m_physicsOptDialog;
+   TableInfoDialog m_tableInfoDialog;
+   DimensionDialog m_dimensionDialog;
+   RenderProbeDialog m_renderProbeDialog;
+   MaterialDialog m_materialDialog;
+
 protected:
-#ifndef __STANDALONE__
    // Overriden from CWnd
    void OnInitialUpdate() final;
    BOOL OnEraseBkgnd(CDC &dc) final;
    LRESULT WndProc(UINT uMsg, WPARAM wParam, LPARAM lParam) final;
-#endif
 
 private:
-#ifndef __STANDALONE__
    void OnLeftDoubleClick(int x, int y);
    void OnLeftButtonDown(const short x, const short y);
    void DoLeftButtonDown(int x, int y, bool zoomIn);
+   void UseTool(int x, int y, int tool);
    void OnLeftButtonUp(int x, int y);
    void OnRightButtonDown(int x, int y);
    void OnRightButtonUp(int x, int y);
@@ -76,14 +184,12 @@ private:
    void OnMouseWheel(const short x, const short y, const short zDelta);
    void OnKeyDown(int key);
    void OnSize();
-   void DoContextMenu(int x, int y, const int menuid, ISelect *psel);
+   void DoContextMenu(int x, int y, const int menuid, IWinUIPart *uiPart);
 
    void Paint(HDC hdc);
    void Render3DProjection(Sur *const psur);
-   void UIRenderPass2(Sur *const psur);
-#endif
+   void RenderTable(Sur *const psur);
 
-   WinEditor *const m_vpxEditor;
    PinTableMDI *m_mdiTable = nullptr;
 
    std::unique_ptr<class SearchSelectDialog> m_searchSelectDlg;
@@ -95,6 +201,27 @@ private:
 
    bool m_dirtyDraw = true; // Whether our background bitmap is up to date
    HBITMAP m_hbmOffScreen = nullptr; // Buffer for drawing the editor window
+
+   // UI parts owned by this editor: one per entry of PinTable::m_vedit (keyed by IEditable).
+   // Kept in sync by OnPartAdded/OnPartRemoved. Sub parts (drag points, light centers) are owned by their parent's UI part (see IWinUIPart::GetSubPart).
+   ankerl::unordered_dense::map<IEditable *, std::unique_ptr<IWinUIPart>> m_uiParts;
+
+   // Multi-selection: selected UI parts, primary selection first. Contains only the table's UI part when nothing is selected.
+   vector<IWinUIPart *> m_vmultisel;
+
+   // Selection snapshot stored in undo records and restored on undo. Entries are stored as (editable, sub part
+   // index) so that they stay valid when the corresponding UI parts are destroyed and recreated (undo reloads
+   // the parts and their drag points): they are resolved back to UI parts when the undo is applied.
+   struct UndoSelectionEntry
+   {
+      IEditable *editable; // Editable of the selected part (or of the part owning a selected sub part)
+      int subPartIndex = -1; // IWinUIPart::GetSubPartIndex of the selected sub part, -1 when the part itself is selected
+   };
+
+   vector<UndoSelectionEntry> CaptureUndoSelection() const;
+   void RestoreUndoSelection(const vector<UndoSelectionEntry> &selection);
+
+   PinUndo m_undo;
 
 private:
    POINT m_ptLast {}; // Last point when dragging

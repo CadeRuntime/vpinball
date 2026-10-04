@@ -1,23 +1,38 @@
 #include "core/stdafx.h"
 #include "StackTrace.h"
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include <windows.h>
 #include <dbghelp.h>
 #include <cstdlib>
 #include <strsafe.h>
 
+#if defined(_MSC_VER)
 #pragma comment(lib, "dbghelp.lib")
+#endif
+
+#if defined(__MINGW32__)
+#include <backtrace.h>
+#include <cxxabi.h>
+#include <cstdio>
+#include <cstring>
+#endif
 
 namespace
 {
+#ifdef _WIN64
+	constexpr DWORD kStackWalkMachine = IMAGE_FILE_MACHINE_AMD64;
+#else
+	constexpr DWORD kStackWalkMachine = IMAGE_FILE_MACHINE_I386;
+#endif
+
+#if defined(_MSC_VER)
 	void GetFileFromPath(const char* path, char* file, int fileNameSize)
 	{
 		char ext[_MAX_EXT] = {};
 		_splitpath_s(path, nullptr, 0, nullptr, 0, file, fileNameSize, ext, _MAX_EXT);
 		strncat_s(file, fileNameSize, ext, _MAX_EXT);
 	}
+#endif
 
 	void InitStackFrameFromContext(PCONTEXT context, STACKFRAME64& stackFrame)
 	{
@@ -51,10 +66,34 @@ namespace
 	}
 } // namespace
 
+#if defined(__MINGW32__)
+namespace
+{
+	struct backtrace_state* g_backtraceState = nullptr;
+
+	void BacktraceErrorCallback(void* /*data*/, const char* msg, int errnum)
+	{
+		char line[MAXSTRING];
+		snprintf(line, sizeof(line), "libbacktrace error: %s (%d)\n", msg ? msg : "?", errnum);
+		OutputDebugString(line);
+	}
+
+	void GetBaseName(const char* path, char* out, size_t outSize)
+	{
+		const char* base = path;
+		for (const char* p = path; *p; ++p)
+			if (*p == '/' || *p == '\\')
+				base = p + 1;
+		snprintf(out, outSize, "%s", base);
+	}
+}
+#endif
+
 namespace rde
 {
 bool StackTrace::InitSymbols()
 {
+#if defined(_MSC_VER)
 	static bool ls_initialized(false);
 	if (!ls_initialized)
 	{
@@ -63,8 +102,7 @@ bool StackTrace::InitSymbols()
 						SYMOPT_LOAD_LINES |
 						SYMOPT_UNDNAME;
 		SymSetOptions(options);
-		const char* dir = nullptr;
-		if (!SymInitialize(GetCurrentProcess(), dir, options & SYMOPT_DEFERRED_LOADS))
+		if (!SymInitialize(GetCurrentProcess(), SDL_GetBasePath(), options & SYMOPT_DEFERRED_LOADS))
 		{
 			OutputDebugString("Cannot initialize symbol engine");
 			return false;
@@ -73,6 +111,21 @@ bool StackTrace::InitSymbols()
 		ls_initialized = true;
 	}
 	return true;
+#elif defined(__MINGW32__)
+	if (g_backtraceState == nullptr)
+	{
+		char exePath[MAXSTRING];
+		if (GetModuleFileName(nullptr, exePath, (DWORD)std::size(exePath)) == 0)
+			return false;
+		g_backtraceState = backtrace_create_state(exePath, 1, BacktraceErrorCallback, nullptr);
+
+		SymSetOptions(SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_DEFERRED_LOADS);
+		SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+	}
+	return g_backtraceState != nullptr;
+#else
+	return false;
+#endif
 }
 
 int StackTrace::GetCallStack(Address* callStack, int maxDepth, int entriesToSkip)
@@ -95,7 +148,7 @@ int StackTrace::GetCallStack(Address* callStack, int maxDepth, int entriesToSkip
 	return GetCallStack(pContext, callStack,  maxDepth, entriesToSkip + 1);
 }
 
-int StackTrace::GetCallStack(void* vcontext, Address* callStack, int maxDepth, 
+int StackTrace::GetCallStack(void* vcontext, Address* callStack, int maxDepth,
 							 int entriesToSkip)
 {
 #if defined(_M_ARM64)
@@ -141,10 +194,10 @@ int StackTrace::GetCallStack(void* vcontext, Address* callStack, int maxDepth,
 	stackFrame.AddrStack.Mode	= AddrModeFlat;
 
 	HANDLE process	= GetCurrentProcess();
-    HANDLE thread	= GetCurrentThread(); 
+    HANDLE thread	= GetCurrentThread();
 
 	int numEntries(0);
-	while (::StackWalk64(IMAGE_FILE_MACHINE_I386, process, thread, 
+	while (::StackWalk64(kStackWalkMachine, process, thread,
 		&stackFrame, context, 0, SymFunctionTableAccess64, SymGetModuleBase64, nullptr) &&
 		stackFrame.AddrFrame.Offset != 0 && numEntries < maxDepth)
 	{
@@ -185,13 +238,76 @@ int StackTrace::GetCallStack_Fast(Address* callStack, int maxDepth, int entriesT
 	return numEntries;
 }
 
+#if defined(__MINGW32__)
+namespace
+{
+	struct ResolveResult
+	{
+		char* out;
+		int remaining;
+		int written;
+	};
+
+	int BacktraceFullCallback(void* data, uintptr_t pc, const char* filename, int lineno, const char* function)
+	{
+		ResolveResult* r = (ResolveResult*)data;
+
+		char nameBuf[MAXSTRING] = {};
+		const char* name = function;
+		if (function)
+		{
+			int status = 0;
+			size_t len = sizeof(nameBuf);
+			char* demangled = abi::__cxa_demangle(function, nameBuf, &len, &status);
+			if (status == 0 && demangled)
+				name = demangled;
+		}
+
+		char fileBase[MAXSTRING];
+		if (filename)
+			GetBaseName(filename, fileBase, sizeof(fileBase));
+
+		int n;
+		if (filename && lineno > 0)
+			n = snprintf(r->out, r->remaining, " %s %s(%u)", name ? name : "<unknown>", fileBase, (unsigned)lineno);
+		else
+			n = snprintf(r->out, r->remaining, " %s", name ? name : "<unknown>");
+
+		if (n > 0)
+		{
+			if (n > r->remaining - 1)
+				n = r->remaining - 1;
+			r->out += n;
+			r->remaining -= n;
+			r->written += n;
+		}
+		return 0;
+	}
+}
+
+int StackTrace::GetSymbolInfo(Address address, char* symbol, int maxSymbolLen)
+{
+	if (!InitSymbols())
+		return 0;
+
+	int charsAdded = snprintf(symbol, maxSymbolLen, "%p", address);
+	if (charsAdded < 0)
+		return 0;
+	if (charsAdded > maxSymbolLen - 1)
+		charsAdded = maxSymbolLen - 1;
+
+	ResolveResult r = { symbol + charsAdded, maxSymbolLen - charsAdded, 0 };
+	backtrace_pcinfo(g_backtraceState, (uintptr_t)address, BacktraceFullCallback, BacktraceErrorCallback, &r);
+	return charsAdded + r.written;
+}
+#else
 int StackTrace::GetSymbolInfo(Address address, char* symbol, int maxSymbolLen)
 {
 	if (!InitSymbols())
 		return 0;
 
 	// Start with address.
-	int charsAdded = 
+	int charsAdded =
 		_snprintf_s(symbol, maxSymbolLen, _TRUNCATE, "%p ", address);
 	symbol += charsAdded;
 	maxSymbolLen -= charsAdded;
@@ -245,12 +361,12 @@ int StackTrace::GetSymbolInfo(Address address, char* symbol, int maxSymbolLen)
 		int fileLineChars;
 		if (displacementLine > 0)
 		{
-			fileLineChars = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE, 
+			fileLineChars = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE,
 				" %s(%u+%04u byte(s))", fileName, lineInfo.LineNumber, displacementLine);
 		}
 		else
 		{
-			fileLineChars = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE,
+			fileLineChars = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE, 
 				" %s(%u)", fileName, lineInfo.LineNumber);
 		}
 		symbol += fileLineChars;
@@ -259,8 +375,9 @@ int StackTrace::GetSymbolInfo(Address address, char* symbol, int maxSymbolLen)
 	}
 	return charsAdded;
 }
+#endif
 
-void StackTrace::GetCallStack(void* vcontext, bool includeArguments, 
+void StackTrace::GetCallStack(void* vcontext, bool includeArguments,
 							  char* symbol, int maxSymbolLen)
 {
 	const PCONTEXT context = (PCONTEXT)vcontext;
@@ -277,7 +394,7 @@ void StackTrace::GetCallStack(void* vcontext, bool includeArguments,
 	stackFrame.AddrStack.Mode	= AddrModeFlat;
 
 	while (maxSymbolLen > 0 &&
-		::StackWalk64(IMAGE_FILE_MACHINE_I386,
+		::StackWalk64(kStackWalkMachine,
 			::GetCurrentProcess(), ::GetCurrentThread(), &stackFrame,
 			context, nullptr, /*Internal_ReadProcessMemory,*/
 			SymFunctionTableAccess64, SymGetModuleBase64, nullptr) != FALSE &&
@@ -287,14 +404,24 @@ void StackTrace::GetCallStack(void* vcontext, bool includeArguments,
 		int charsAdded = GetSymbolInfo(addr, symbol, maxSymbolLen);
 		maxSymbolLen -= charsAdded;
 		symbol += charsAdded;
+#if defined(_MSC_VER)
 		if (maxSymbolLen > 0 && includeArguments)
 		{
-			charsAdded = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE, 
+			charsAdded = _snprintf_s(symbol, maxSymbolLen, _TRUNCATE,
 				" (0x%08llX 0x%08llX 0x%08llX 0x%08llx)\n", stackFrame.Params[0],
 				stackFrame.Params[1], stackFrame.Params[2], stackFrame.Params[3]);
 			maxSymbolLen -= charsAdded;
 			symbol += charsAdded;
 		}
+#else
+		(void)includeArguments;
+		if (maxSymbolLen > 1)
+		{
+			*symbol++ = '\n';
+			*symbol = '\0';
+			--maxSymbolLen;
+		}
+#endif
 	}
 }
 

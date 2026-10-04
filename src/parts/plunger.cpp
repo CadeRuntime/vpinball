@@ -13,8 +13,7 @@
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
+
 
 Plunger::~Plunger()
 {
@@ -35,7 +34,7 @@ HRESULT Plunger::Init(const float x, const float y, const bool fromMouseClick, c
    return S_OK;
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsPlunger_##prop() : Settings::GetDefaultPropsPlunger_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsPlunger_##prop() : Settings::GetDefaultPropsPlunger_##prop##_Default()
 void Plunger::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_height, Height);
@@ -45,7 +44,6 @@ void Plunger::SetDefaults(const bool fromMouseClick)
    LinkProp(m_d.m_speedPull, PullSpeed);
    LinkProp(m_d.m_type, PlungerType);
    LinkProp(m_d.m_animFrames, AnimFrames);
-   LinkProp(m_d.m_color, Color);
    LinkProp(m_d.m_szImage, Image);
    LinkProp(m_d.m_szSurface, Surface);
    LinkProp(m_d.m_mechPlunger, MechPlunger);
@@ -78,7 +76,7 @@ void Plunger::SetDefaultPhysics(const bool fromMouseClick)
 
 void Plunger::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsPlunger_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsPlunger_##prop(field, false)
    LinkProp(m_d.m_height, Height);
    LinkProp(m_d.m_width, Width);
    LinkProp(m_d.m_zAdjust, ZAdjust);
@@ -86,7 +84,6 @@ void Plunger::WriteRegDefaults()
    LinkProp(m_d.m_speedPull, PullSpeed);
    LinkProp(m_d.m_type, PlungerType);
    LinkProp(m_d.m_animFrames, AnimFrames);
-   LinkProp(m_d.m_color, Color);
    LinkProp(m_d.m_szImage, Image);
    LinkProp(m_d.m_szSurface, Surface);
    LinkProp(m_d.m_mechPlunger, MechPlunger);
@@ -112,30 +109,6 @@ void Plunger::WriteRegDefaults()
 #undef LinkProp
 }
 
-void Plunger::UIRenderPass1(Sur * const psur)
-{
-}
-
-void Plunger::UIRenderPass2(Sur * const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(-1);
-   psur->SetObject(this);
-
-   psur->Rectangle(m_d.m_v.x - m_d.m_width, m_d.m_v.y - m_d.m_stroke,
-      m_d.m_v.x + m_d.m_width, m_d.m_v.y + m_d.m_height);
-
-   // draw a dotted line at the park position, if appropriate
-   if (m_d.m_parkPosition > 0.0f && m_d.m_parkPosition < 1.0f)
-   {
-      const float park = m_d.m_parkPosition * m_d.m_stroke;
-      psur->SetLineColor(RGB(0x80, 0x80, 0x80), true, 1);
-      psur->Line(m_d.m_v.x - m_d.m_width, m_d.m_v.y - m_d.m_stroke + park,
-         m_d.m_v.x + m_d.m_width, m_d.m_v.y - m_d.m_stroke + park);
-   }
-}
-
-
 #pragma region Physics
 
 void Plunger::PhysicSetup(PhysicsEngine* physics, const bool isUI)
@@ -145,7 +118,20 @@ void Plunger::PhysicSetup(PhysicsEngine* physics, const bool isUI)
 
    if (isUI)
    {
-      // FIXME implement UI picking
+      // Editor picking proxy: a flat quad covering the plunger lane (rod travel range and housing) at the rod's height
+      const float height = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_v.x, m_d.m_v.y) + m_d.m_zAdjust;
+      const float xMin = m_d.m_v.x - m_d.m_width;
+      const float xMax = m_d.m_v.x + m_d.m_width;
+      const float yMin = m_d.m_v.y - m_d.m_stroke; // furthest travel of the tip
+      const float yMax = m_d.m_v.y + m_d.m_height; // housing behind the plunger
+      Vertex3Ds *const rgv3D = new Vertex3Ds[4]; // CCW winding for upward facing normal
+      rgv3D[0] = Vertex3Ds(xMin, yMin, height + 2.f * m_d.m_width); // at the top of the rod
+      rgv3D[1] = Vertex3Ds(xMin, yMax, height + 2.f * m_d.m_width);
+      rgv3D[2] = Vertex3Ds(xMax, yMax, height + 2.f * m_d.m_width);
+      rgv3D[3] = Vertex3Ds(xMax, yMin, height + 2.f * m_d.m_width);
+      Hit3DPoly *const ph3dpoly = new Hit3DPoly(this, rgv3D, 4);
+      ph3dpoly->m_ObjType = ePlunger;
+      physics->AddCollider(ph3dpoly, isUI);
    }
    else
    {
@@ -168,25 +154,15 @@ void Plunger::PhysicRelease(PhysicsEngine* physics, const bool isUI)
 #pragma endregion
 
 
-void Plunger::SetObjectPos()
+void Plunger::Translate(const Vertex2D &offset)
 {
-   m_vpinball->SetObjectPosCur(m_d.m_v.x, m_d.m_v.y);
-}
-
-void Plunger::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_v.x += dx;
-   m_d.m_v.y += dy;
+   m_d.m_v.x += offset.x;
+   m_d.m_v.y += offset.y;
 }
 
 Vertex2D Plunger::GetCenter() const
 {
    return m_d.m_v;
-}
-
-void Plunger::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_v = pv;
 }
 
 
@@ -225,16 +201,16 @@ constexpr static PlungerDesc flatDesc = { 0, 0 };
 static const char *nextTipToken(const char* &p)
 {
    // skip whitespace
-   for (; isspace(*p); ++p);
+   for (; isspace(static_cast<unsigned char>(*p)); ++p);
 
    // this is the start of the token, which will be our return value
    const char *tok = p;
 
    // skip ahead to the next delimiter
-   for (; *p != ';' && *p != ',' && !isspace(*p) && *p != '\0'; ++p);
+   for (; *p != ';' && *p != ',' && !isspace(static_cast<unsigned char>(*p)) && *p != '\0'; ++p);
 
    // skip whitespace at/after the delimiter
-   for (; isspace(*p); ++p);
+   for (; isspace(static_cast<unsigned char>(*p)); ++p);
 
    // return the start of the token
    return tok;
@@ -872,7 +848,7 @@ void Plunger::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteBool(FID(VSBL), m_d.m_visible);
    writer.WriteBool(FID(REEN), m_d.m_reflectionEnabled);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
 
    writer.WriteString(FID(TIPS), m_d.m_szTipShape);
    writer.WriteFloat(FID(RODD), m_d.m_rodDiam);
@@ -889,7 +865,6 @@ void Plunger::Save(IObjectWriter& writer, const bool saveForUndo)
 
 void Plunger::Load(IObjectReader& reader)
 {
-   m_d.m_color = RGB(76, 76, 76); //initialize color for new plunger
    SetDefaults(false);
    reader.AsObject(
       [this](int tag, IObjectReader& reader)
@@ -912,7 +887,7 @@ void Plunger::Load(IObjectReader& reader)
          case FID(TMIN): m_timerInterval = reader.AsInt(); break;
          case FID(MECH): m_d.m_mechPlunger = reader.AsBool(); break;
          case FID(APLG): m_d.m_autoPlunger = reader.AsBool(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(TYPE): m_d.m_type = static_cast<PlungerType>(reader.AsInt()); break;
          case FID(ANFR): m_d.m_animFrames = reader.AsInt(); break;
          case FID(MATR): m_d.m_szMaterial = reader.AsString(); break;
@@ -965,8 +940,9 @@ return S_OK;
 }
 
 // Returns the position of the plunger as a value between 0 and 25
-// Note that g_pplayer->m_curMechPlungerPos is 0 at park position, which usually correspond to something like 4 or 5 here,
-// leading to value from 5 to 25 when pulling the plunger, with value below 5 being when the plunger pass the park position.
+// 0 = fully forward (frame end), 25 = fully retracted (frame start); the park position sits at 25 * parkPosition (~4-5).
+// This is the *simulated* plunger position. VPX <= 10.8 reported the raw mechanical sensor position when a mech
+// device was attached; scripts now observe the filtered, spring-chased virtual plunger instead.
 STDMETHODIMP Plunger::Position(float *pVal)
 {
    const PlungerMoverObject &pa = m_phitplunger->m_plungerMover;
@@ -1217,9 +1193,6 @@ STDMETHODIMP Plunger::CreateBall(IBall **pResult)
 STDMETHODIMP Plunger::get_X(float *pVal)
 {
    *pVal = m_d.m_v.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 

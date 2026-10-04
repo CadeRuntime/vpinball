@@ -12,7 +12,6 @@
 #include "core/AppCommands.h"
 #include "core/VPApp.h"
 
-#include "ui/win/resource.h"
 #include <initguid.h>
 
 #define SET_CRT_DEBUG_FIELD(a) _CrtSetDbgFlag((a) | _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG))
@@ -21,29 +20,38 @@
 #include <codecvt>
 
 #ifdef __STANDALONE__
-#include <SDL3_ttf/SDL_ttf.h>
 #include <filesystem>
 #endif
 
-#if defined(__STANDALONE__) && ((defined(__linux__) && !defined(__ANDROID__)) || defined(__MINGW32__))
+#if defined(__STANDALONE__) && ((defined(__linux__) && !defined(__ANDROID__)) || defined(__MINGW32__) || (defined(__APPLE__) && defined(TARGET_OS_OSX) && TARGET_OS_OSX))
 #include <csignal>
+#include <unistd.h>
 
 void OnSignalHandler(int signum)
 {
+   // A signal handler runs on whichever thread receives the signal, while the game loop, the emulation and
+   // the render threads keep running. exit() from here would run the atexit handlers and the static
+   // destructors of the executable and of every loaded plugin library under those running threads. So the
+   // handler only asks the player to close: the game loop then unloads the plugins and stops the emulation,
+   // and the process leaves through the normal exit.
+   // A signal repeated after a few seconds means that shutdown is stuck. Then the process ends with _exit(),
+   // which returns to the kernel at once and runs none of the above, the only way out that is safe here.
+   static volatile time_t closeRequestedAt = 0;
+   const time_t now = time(nullptr);
+   if (g_pplayer != nullptr && (closeRequestedAt == 0 || now - closeRequestedAt < 3))
+   {
+      if (closeRequestedAt == 0)
+      {
+         closeRequestedAt = now;
+         PLOGI.printf("Closing from signal: %d", signum);
+      }
+      g_pplayer->SetCloseState(Player::CloseState::CS_CLOSE_APP);
+      return;
+   }
    PLOGI.printf("Exiting from signal: %d", signum);
-   exit(-9999);
+   _exit(-9999);
 }
 #endif
-
-#ifndef OVERRIDE
-#ifndef __STANDALONE__
-   #define OVERRIDE override
-#else
-   #define OVERRIDE
-#endif
-#endif
-
-
 
 
 #if defined(ENABLE_OPENGL) && !defined(__STANDALONE__)
@@ -171,7 +179,7 @@ static void SetNVIDIAThreadOptimization(NvThreadOptimization threadedOptimizatio
 }
 #endif
 
-extern "C" int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPTSTR /*lpCmdLine*/, int /*nShowCmd*/)
+extern "C" int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/)
 {
    #if defined(ENABLE_OPENGL) && !defined(__STANDALONE__)
    static NvThreadOptimization s_OriginalNVidiaThreadOptimization = NV_THREAD_OPTIMIZATION_NO_SUPPORT;
@@ -179,6 +187,12 @@ extern "C" int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, 
 
    Logger::Init();
 
+#ifndef __STANDALONE__
+   // Default message sink for the whole application lifetime: report user messages through
+   // plain Win32 message boxes. UI contexts (Win32 editor, player) install their own sinks.
+   Win32DialogSink win32DialogSink;
+   ScopedUserMessageSink scopedMessageSink(&win32DialogSink);
+#endif
 
    int retval = 0;
    try
@@ -195,7 +209,7 @@ extern "C" int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, 
       VPApp theApp;
       CommandLineProcessor cmdLine;
       cmdLine.ProcessCommandLine();
-      theApp.InitInstance();
+      theApp.InitInstance(dynamic_cast<PlayTableCommand*>(cmdLine.m_command.get()) != nullptr);
 
       // The video subsystem is initialized lazily when a window is created (see VPX::Window), so
       // headless commands (info, script/POV export, audit, tournament validation) run without a
@@ -206,18 +220,23 @@ extern "C" int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, 
          cmdLine.m_command->Execute();
    }
 
+#ifndef __STANDALONE__
    // catch all CException types
    catch (const CException &e)
    {
       // Display the exception and quit
-      MessageBox(nullptr, e.GetText(), AtoT(e.what()), MB_ICONERROR);
+      ShowMessage(MsgSeverity::Fatal, e.GetText(), e.what());
 
       retval = -1;
    }
+#else
+   catch (const std::exception &e)
+   {
+      ShowMessage(MsgSeverity::Fatal, e.what(), "Unhandled exception");
 
-   #ifdef __STANDALONE__
-      TTF_Quit();
-   #endif
+      retval = -1;
+   }
+#endif
 
    #if defined(ENABLE_OPENGL) && !defined(__STANDALONE__) 
    if (s_OriginalNVidiaThreadOptimization != NV_THREAD_OPTIMIZATION_NO_SUPPORT && s_OriginalNVidiaThreadOptimization != NV_THREAD_OPTIMIZATION_DISABLE)

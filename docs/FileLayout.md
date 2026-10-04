@@ -17,17 +17,17 @@ Visual Pinball X installation is made of 3 parts: the application, its preferenc
   - Windows: `C:\Users\xxx\AppData\Roaming\...`
   - MacOS: `/Users/xxx/Library/Application Support/VPinballX`
   - Linux: `/home/xxx/.local/share/VPinballX`
-  - Android & Meta Quest: `/data/data/org.vpinball.app/files/`
+  - Android & Meta Quest: `/data/data/org.vpinball.vpinball_bgfx/files/`
   - iOS: preferences are stored in the app's Documents directory
 - The 'Tables' folder to store all table datas
   - Windows: in a user created folder inside `C:\Users\xxx\Documents\...`
   - MacOS: in a user created folder inside `/Users/xxx/Documents`
-  - Android & Meta Quest: `/data/data/org.vpinball.app/files/`
+  - Android & Meta Quest: `/data/data/org.vpinball.vpinball_bgfx/files/`
   - iOS: Tables are stored in the app's Documents directory
 
 Mobile platform notes:
 - To simplify file management, VPX includes a **built-in web server** on all mobile platforms. Enable it in settings to upload tables and transfer files from any browser on the same network.
-- On Android, on first launch, VPX copies required assets from the APK to the app's internal storage, typically: `/data/data/org.vpinball.app/files/assets/`
+- On Android, on first launch, VPX copies required assets from the APK to the app's internal storage, typically: `/data/data/org.vpinball.vpinball_bgfx/files/assets/`
 - On iOS, to provide additional user-friendly file access:
   - The Documents folder is accessible via the **Files app** on the device
   - When connected to a Mac, files can be transferred through **Finder**
@@ -60,6 +60,8 @@ Moreover, to simplify and unify the way things are managed between the VPX appli
 - then search along the table file, with a name matching the name of the folder containing the played table file,
 - finally, eventually search in a custom legacy folder (custom behavior is defined by each component).
 
+Game-driven content (DMD colorizations, pinup videos, ...) is bound to a controller, which advertises the game it emulates with a unique id of the form `namespace::gameId` (for example `pinmame::afm_113`). To keep several controllers for the same game id from colliding, each content plugin searches its base folder under an optional intermediate namespace folder first (`base/namespace/gameId/...`), then directly (`base/gameId/...`). This applies to the `serum`, `vni` and `pupvideos` plugins: for example a `pinmame::afm_113` controller would be served by `serum/pinmame/afm_113/` before `serum/afm_113/`. The legacy `pinmame/altcolor` folder is inherently pinmame-scoped, so it is only searched for `pinmame::` games, directly as `pinmame/altcolor/gameId/...`.
+
 
 
 The following tree is an example of this file organization:
@@ -87,13 +89,17 @@ Table Name (Manufacturer Year)/              <= We created a dedicated folder to
 ├── music/                                   <= Folder from which music are loaded when script use the PlayMusic command
 │   ├── Multiball Theme.ogg
 │   └── ...
-├── pinmame/                                 <= PinMAME plugin will look here for rom, nvram, and alias files
+├── pinmame/                                 <= PinMAME plugin will look here for rom, nvram, config, and alias files
 │   ├── roms/
 │   │   ├── xxx.zip
 │   │   └── yyy.zip
 │   ├── nvram/
 │   │   ├── xxx.nv
 │   │   └── yyy.nv
+│   ├── cfg/
+│   │   ├── default.cfg
+│   │   ├── xxx.cfg
+│   │   └── yyy.cfg
 │   └── alias.txt
 ├── pupvideos/                               <= PinUp player plugin will look here for pinup videos
 │   └── xxx/

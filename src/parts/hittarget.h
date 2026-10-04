@@ -2,26 +2,15 @@
 
 #pragma once
 
+#include "core/resourceid.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/MeshBuffer.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 #include "unordered_dense.h"
 
-
-// Indices for RotAndTra:
-//     RotX = 0
-//     RotY = 1
-//     RotZ = 2
-//     TraX = 3
-//     TraY = 4
-//     TraZ = 5
-//  ObjRotX = 6
-//  ObjRotY = 7
-//  ObjRotZ = 8
 
 class HitTargetData final : public BaseProperty
 {
@@ -52,7 +41,6 @@ class HitTarget :
    public IConnectionPointContainerImpl<HitTarget>,
    public IProvideClassInfo2Impl<&CLSID_HitTarget, &DIID_IHitTargetEvents, &LIBID_VPinballLib>,
 
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -61,7 +49,7 @@ class HitTarget :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -89,7 +77,7 @@ public:
        CONNECTION_POINT_ENTRY(DIID_IHitTargetEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(HitTarget, eItemHitTarget, TARGET, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(HitTarget, eItemHitTarget, TARGET)
 
    DECLARE_REGISTRY_RESOURCEID(IDR_HITTARGET)
 
@@ -160,16 +148,16 @@ public:
    STDMETHOD(get_HitThreshold)(/*[out, retval]*/ float *pVal);
 
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D& pv) final;
 
    void WriteRegDefaults() final;
 
    float GetDepth(const Vertex3Ds& viewDir) const final;
-   ItemTypeEnum HitableGetItemType() const final { return eItemHitTarget; }
+
+   bool IsConstCollidable() const final { return false; }
+   bool IsCollidable() const final { return !m_d.m_isDropped; }
 
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader& loader) final;
@@ -177,11 +165,13 @@ public:
    void GenerateMesh(vector<Vertex3D_NoTex2> &buf);
    void TransformVertices();
    void SetMeshType(const TargetType type);
-   void UpdateStatusBarInfo() final;
 
    HitTargetData m_d;
 
    bool m_hitEvent = false;
+
+   // Fills 'edges' with pairs of 2D vertices forming the editor wireframe of the target mesh.
+   void GetEditorWireframe(vector<Vertex2D> &edges) const;
 
 private:
    void UpdateTarget();

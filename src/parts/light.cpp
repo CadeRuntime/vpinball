@@ -4,6 +4,7 @@
 #include "light.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/bulbLightMesh.h"
 #include "meshes/bulbSocketMesh.h"
 #include "renderer/IndexBuffer.h"
@@ -12,9 +13,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/DragPointDialogs.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/bulb.h"
 #include "utils/color.h"
 
@@ -41,7 +39,7 @@ Light::~Light()
 
 Light *Light::CopyForPlay() const
 {
-   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Light, m_vdpoint)
+   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Light, m_curve)
    // Light specific copy and live data (not really needed)
    dst->m_currentIntensity = m_currentIntensity;
    dst->m_currentFilamentTemperature = m_currentFilamentTemperature;
@@ -52,7 +50,6 @@ Light *Light::CopyForPlay() const
    dst->m_finalLightState = m_finalLightState;
    dst->m_surfaceMaterial = m_surfaceMaterial;
    dst->m_surfaceTexture = m_surfaceTexture;
-   dst->m_lightcenter = m_lightcenter;
    dst->m_initSurfaceHeight = m_initSurfaceHeight;
    dst->m_maxDist = m_maxDist;
    return dst;
@@ -72,7 +69,7 @@ HRESULT Light::Init(const float x, const float y, const bool fromMouseClick, con
 
 void Light::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsLight_##prop() : Settings::GetDefaultPropsLight_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsLight_##prop() : Settings::GetDefaultPropsLight_##prop##_Default()
    LinkProp(m_d.m_falloff, Falloff);
    LinkProp(m_d.m_falloff_power, FalloffPower);
    LinkProp(m_d.m_state, LightState);
@@ -106,7 +103,7 @@ void Light::SetDefaults(const bool fromMouseClick)
 
 void Light::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsLight_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsLight_##prop(field, false)
    LinkProp(m_d.m_falloff, Falloff);
    LinkProp(m_d.m_falloff_power, FalloffPower);
    LinkProp(m_d.m_state, LightState);
@@ -134,116 +131,12 @@ void Light::WriteRegDefaults()
 #undef LinkProp
 }
 
-void Light::UIRenderPass1(Sur * const psur)
-{
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetFillColor(m_ptable->RenderSolid() ? (((m_d.m_color & 0xFEFEFE) + (m_d.m_color2 & 0xFEFEFE)) / 2) : -1);
-   psur->SetObject(this);
-
-   switch (m_d.m_shape)
-   {
-   default:
-   case ShapeCustom:
-      vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
-
-      // Check if we should display the image in the editor.
-      psur->Polygon(vvertex);
-
-      break;
-   }
-}
-
-void Light::UIRenderPass2(Sur * const psur)
-{
-   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || (m_vpinball->m_alwaysDrawDragPoints));
-
-   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
-   if (!drawDragpoints)
-   {
-      // if any of the dragpoints of this object are selected then draw all the dragpoints
-      for (size_t i = 0; i < m_vdpoint.size(); i++)
-      {
-         const CComObject<DragPoint> * const pdp = m_vdpoint[i];
-         if (pdp->m_selectstate != SelectState::NotSelected)
-         {
-            drawDragpoints = true;
-            break;
-         }
-      }
-   }
-
-   RenderOutline(psur);
-
-   if ((m_d.m_shape == ShapeCustom) && drawDragpoints)
-   {
-      for (size_t i = 0; i < m_vdpoint.size(); i++)
-      {
-         CComObject<DragPoint> * const pdp = m_vdpoint[i];
-         psur->SetFillColor(-1);
-         psur->SetBorderColor(pdp->m_dragging ? RGB(0, 255, 0) : RGB(0, 0, 200), false, 0);
-         psur->SetObject(pdp);
-
-         psur->Ellipse2(pdp->m_v.x, pdp->m_v.y, 8);
-      }
-   }
-}
-
-void Light::RenderOutline(Sur * const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(-1);
-   psur->SetObject(this);
-   psur->SetObject(nullptr);
-
-   switch (m_d.m_shape)
-   {
-   case ShapeCircle:
-   default:
-   {
-      psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_falloff /*+ m_d.m_borderwidth*/);
-      break;
-   }
-
-   case ShapeCustom:
-   {
-      vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
-      psur->SetBorderColor(RGB(255, 0, 0), false, 0);
-      psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_falloff /*+ m_d.m_borderwidth*/);
-      psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-      psur->Polygon(vvertex);
-
-      psur->SetObject((ISelect *)&m_lightcenter);
-      break;
-   }
-   }
-
-   if (m_d.m_shape == ShapeCustom || m_vpinball->m_alwaysDrawLightCenters)
-   {
-      psur->Line(m_d.m_vCenter.x - 10.0f, m_d.m_vCenter.y, m_d.m_vCenter.x + 10.0f, m_d.m_vCenter.y);
-      psur->Line(m_d.m_vCenter.x, m_d.m_vCenter.y - 10.0f, m_d.m_vCenter.x, m_d.m_vCenter.y + 10.0f);
-   }
-
-   if (m_d.m_showBulbMesh)
-   {
-      psur->SetBorderColor(RGB(0, 127, 255), false, 0);
-      psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_meshRadius * 0.5f);
-   }
-}
-
-void Light::RenderBlueprint(Sur *psur, const bool solid)
-{
-   RenderOutline(psur);
-}
-
-
 void Light::PhysicSetup(PhysicsEngine* physics, const bool isUI)
 {
    if (isUI)
    {
-      const float height = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
+      // Backdrop lights are flat, in the 2D backdrop XY plane
+      const float height = m_desktopBackdrop ? 0.f : m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
 
       switch (m_d.m_shape)
       {
@@ -258,7 +151,7 @@ void Light::PhysicSetup(PhysicsEngine* physics, const bool isUI)
       case ShapeCustom:
       {
          vector<RenderVertex> vvertex;
-         GetRgVertex(vvertex);
+         m_curve.GetRgVertex(vvertex);
          if (vvertex.empty())
             return;
 
@@ -292,10 +185,7 @@ void Light::UpdateBounds()
    m_boundingSphereCenter.Set(m_d.m_vCenter.x, m_d.m_vCenter.y, m_initSurfaceHeight);
 }
 
-void Light::ClearForOverwrite()
-{
-   ClearPointsForOverwrite();
-}
+void Light::ClearForOverwrite() { m_curve.ClearPoints(); }
 
 void Light::UpdateAnimation(const float diff_time_msec)
 {
@@ -369,9 +259,8 @@ void Light::RenderSetup(Renderer *renderer)
    m_iblinkframe = 0;
 
    m_initSurfaceHeight = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
-   const wstring wSurface = MakeWString(m_d.m_szSurface); 
-   m_surfaceMaterial = m_ptable->GetSurfaceMaterial(wSurface);
-   m_surfaceTexture = m_ptable->GetSurfaceImage(wSurface);
+   m_surfaceMaterial = m_ptable->GetSurfaceMaterial(m_d.m_szSurface);
+   m_surfaceTexture = m_ptable->GetSurfaceImage(m_d.m_szSurface);
 
    m_surfaceHeight = m_initSurfaceHeight;
 
@@ -430,7 +319,7 @@ void Light::RenderSetup(Renderer *renderer)
       bulbSocketVBuffer->Unlock();
    }
 
-   GetRgVertex(m_vvertex);
+   m_curve.GetRgVertex(m_vvertex);
 
    if (m_vvertex.empty())
       return;
@@ -457,7 +346,7 @@ void Light::RenderSetup(Renderer *renderer)
 
    if (vtri.empty())
    {
-      ShowError(MakeString(m_wzName) + " has an invalid shape! It can not be rendered!");
+      ShowError(m_name + " has an invalid shape! It can not be rendered!");
       return;
    }
 
@@ -673,7 +562,7 @@ void Light::Render(const unsigned int renderMask)
          mat.m_fThickness = 0.05f;
          mat.m_cClearcoat = 0;
          m_renderer->m_renderDevice->ResetRenderState();
-         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(SHADER_TECHNIQUE_basic_without_texture, mat);
+         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(ShaderTechnique::basic_without_texture, mat);
          m_renderer->m_renderDevice->m_basicShader->SetMaterial(&mat, false);
          m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, false, m_boundingSphereCenter, m_d.m_depthBias, m_bulbSocketMeshBuffer, RenderDevice::TRIANGLELIST, 0, bulbSocketNumFaces);
       }
@@ -692,7 +581,7 @@ void Light::Render(const unsigned int renderMask)
          mat.m_fThickness = 0.05f;
          mat.m_cClearcoat = 0xFFFFFF;
          m_renderer->m_renderDevice->ResetRenderState();
-         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(SHADER_TECHNIQUE_basic_without_texture, mat);
+         m_renderer->m_renderDevice->m_basicShader->SetTechniqueMaterial(ShaderTechnique::basic_without_texture, mat);
          m_renderer->m_renderDevice->m_basicShader->SetMaterial(&mat, false);
          const Vertex3Ds bulbPos(m_boundingSphereCenter.x, m_boundingSphereCenter.y, m_boundingSphereCenter.z + m_d.m_height);
          m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, true, bulbPos, m_d.m_depthBias, m_bulbLightMeshBuffer, RenderDevice::TRIANGLELIST, 0, bulbLightNumFaces);
@@ -766,7 +655,7 @@ void Light::Render(const unsigned int renderMask)
 
          m_renderer->m_renderDevice->m_lightShader->SetLightData(center_range);
          m_renderer->m_renderDevice->m_lightShader->SetLightColor2FalloffPower(lightColor2_falloff_power);
-         m_renderer->m_renderDevice->m_lightShader->SetTechnique(SHADER_TECHNIQUE_bulb_light);
+         m_renderer->m_renderDevice->m_lightShader->SetTechnique(ShaderTechnique::bulb_light);
 
          m_renderer->m_renderDevice->EnableAlphaBlend(false, false, false);
          //m_renderer->m_renderDevice->SetRenderState(RenderState::SRCBLEND,  RenderState::SRC_ALPHA);  // add the light contribution
@@ -778,7 +667,7 @@ void Light::Render(const unsigned int renderMask)
          if (m_d.m_BulbLight && m_renderer->IsRenderPass(Renderer::LIGHT_BUFFER))
             lightColor_intensity.w *= m_d.m_transmissionScale;
          m_renderer->m_renderDevice->m_lightShader->SetLightColorIntensity(lightColor_intensity);
-         m_renderer->m_renderDevice->m_lightShader->SetFloat(SHADER_blend_modulate_vs_add, 0.0001f); // additive, but avoid full 0, as it disables the blend
+         m_renderer->m_renderDevice->m_lightShader->SetFloat(ShaderUniform::blend_modulate_vs_add, 0.0001f); // additive, but avoid full 0, as it disables the blend
 
          const Vertex3Ds bulbPos(m_boundingSphereCenter.x, m_boundingSphereCenter.y, m_boundingSphereCenter.z + m_d.m_height);
          if (m_bulbLightMeshBuffer) // FIXME will be null if started without a bulb, then activated from the LiveUI. Prevent the crash. WOuld be nicer to actually build the buffer if needed
@@ -807,8 +696,8 @@ void Light::Render(const unsigned int renderMask)
          shader->SetMaterial(m_surfaceMaterial);
          if (offTexel != nullptr)
          {
-            shader->SetTechniqueMaterial(SHADER_TECHNIQUE_light_with_texture, *m_surfaceMaterial);
-            shader->SetTexture(SHADER_tex_light_color, offTexel, false, SF_TRILINEAR, SA_CLAMP, SA_CLAMP);
+            shader->SetTechniqueMaterial(ShaderTechnique::light_with_texture, *m_surfaceMaterial);
+            shader->SetTexture(ShaderUniform::tex_light_color, offTexel, false, SamplerFilter::SF_TRILINEAR, SamplerAddressMode::SA_CLAMP, SamplerAddressMode::SA_CLAMP);
             // TOTAN and Flintstones inserts break if alpha blending is disabled here.
             // Also see below if changing again
             if (!m_desktopBackdrop)
@@ -819,7 +708,7 @@ void Light::Render(const unsigned int renderMask)
             }
          }
          else
-            shader->SetTechniqueMaterial(SHADER_TECHNIQUE_light_without_texture, *m_surfaceMaterial);
+            shader->SetTechniqueMaterial(ShaderTechnique::light_without_texture, *m_surfaceMaterial);
       }
       else
       {
@@ -827,8 +716,8 @@ void Light::Render(const unsigned int renderMask)
          m_renderer->m_renderDevice->SetRenderState(RenderState::SRCBLEND, RenderState::SRC_ALPHA);  // add the lightcontribution
          m_renderer->m_renderDevice->SetRenderState(RenderState::DESTBLEND, RenderState::INVSRC_COLOR); // but also modulate the light first with the underlying elements by (1+lightcontribution, e.g. a very crude approximation of real lighting)
          m_renderer->m_renderDevice->SetRenderState(RenderState::BLENDOP, RenderState::BLENDOP_REVSUBTRACT);
-         shader->SetFloat(SHADER_blend_modulate_vs_add, isLightBuffer ? 0.0001f : clamp(m_d.m_modulate_vs_add, 0.0001f, 0.9999f)); // avoid 0, as it disables the blend and avoid 1 as it looks not good with day->night changes // in the separate bulb light render stage only enable additive
-         shader->SetTechnique(m_d.m_shadows == ShadowMode::RAYTRACED_BALL_SHADOWS ? SHADER_TECHNIQUE_bulb_light_with_ball_shadows : SHADER_TECHNIQUE_bulb_light);
+         shader->SetFloat(ShaderUniform::blend_modulate_vs_add, isLightBuffer ? 0.0001f : clamp(m_d.m_modulate_vs_add, 0.0001f, 0.9999f)); // avoid 0, as it disables the blend and avoid 1 as it looks not good with day->night changes // in the separate bulb light render stage only enable additive
+         shader->SetTechnique(m_d.m_shadows == ShadowMode::RAYTRACED_BALL_SHADOWS ? ShaderTechnique::bulb_light_with_ball_shadows : ShaderTechnique::bulb_light);
       }
 
       Vertex3Ds pos0(0.f, 0.f, 0.f);
@@ -845,25 +734,6 @@ void Light::Render(const unsigned int renderMask)
          m_renderer->m_renderDevice->DrawMesh(shader, m_d.m_BulbLight || (m_surfaceMaterial && m_surfaceMaterial->m_bOpacityActive), m_desktopBackdrop ? pos0 : haloPos,
             m_desktopBackdrop ? 0.f : m_d.m_depthBias, m_lightmapMeshBuffer, RenderDevice::TRIANGLELIST, 0, m_lightmapMeshBuffer->m_ib->m_count);
       }
-   }
-}
-
-void Light::SetObjectPos()
-{
-    m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
-}
-
-void Light::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_vCenter.x += dx;
-   m_d.m_vCenter.y += dy;
-
-   for (size_t i = 0; i < m_vdpoint.size(); i++)
-   {
-      CComObject<DragPoint> * const pdp = m_vdpoint[i];
-
-      pdp->m_v.x += dx;
-      pdp->m_v.y += dy;
    }
 }
 
@@ -886,7 +756,7 @@ void Light::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteFloat(FID(BWTH), m_d.m_intensity);
    writer.WriteFloat(FID(TRMS), m_d.m_transmissionScale);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteBool(FID(BGLS), m_desktopBackdrop);
    writer.WriteFloat(FID(LIDB), m_d.m_depthBias);
    writer.WriteFloat(FID(FASP), m_d.m_fadeSpeedUp);
@@ -903,7 +773,7 @@ void Light::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteInt(FID(FADE), m_d.m_fader);
    writer.WriteBool(FID(VSBL), m_d.m_visible);
    SaveSharedEditableFields(writer);
-   SavePoints(writer);
+   m_curve.SavePoints(writer);
    writer.EndObject();
 }
 
@@ -967,7 +837,7 @@ void Light::Load(IObjectReader& reader)
          case FID(BWTH): m_d.m_intensity = reader.AsFloat(); break;
          case FID(TRMS): m_d.m_transmissionScale = reader.AsFloat(); break;
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(BGLS): m_desktopBackdrop = reader.AsBool(); break;
          case FID(LIDB): m_d.m_depthBias = reader.AsFloat(); break;
          case FID(FASP): m_d.m_fadeSpeedUp = reader.AsFloat(); break;
@@ -983,7 +853,7 @@ void Light::Load(IObjectReader& reader)
          case FID(SHDW): m_d.m_shadows = static_cast<ShadowMode>(reader.AsInt()); break;
          case FID(FADE): m_d.m_fader = static_cast<Fader>(reader.AsInt()); break;
          case FID(VSBL): m_d.m_visible = reader.AsBool(); break;
-         case FID(DPNT): LoadPointToken(reader); break;
+         case FID(DPNT): m_curve.LoadPointToken(reader); break;
          default: LoadSharedEditableField(tag, reader); break;
          }
          return true;
@@ -993,34 +863,10 @@ void Light::Load(IObjectReader& reader)
       InitShape();
 }
 
-Vertex2D Light::GetPointCenter() const
+void Light::AddPoint(const Vertex2D &v, const bool smooth)
 {
-   return m_d.m_vCenter;
-}
-
-void Light::PutPointCenter(const Vertex2D& pv)
-{
-   m_d.m_vCenter = pv;
-}
-
-#ifndef __STANDALONE__
-void Light::EditMenu(CMenu &menu)
-{
-    menu.EnableMenuItem(ID_WALLMENU_FLIP, MF_BYCOMMAND | ((m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
-    menu.EnableMenuItem(ID_WALLMENU_MIRROR, MF_BYCOMMAND | ((m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
-    menu.EnableMenuItem(ID_WALLMENU_ROTATE, MF_BYCOMMAND | ((m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
-    menu.EnableMenuItem(ID_WALLMENU_SCALE, MF_BYCOMMAND | ((m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
-    menu.EnableMenuItem(ID_WALLMENU_ADDPOINT, MF_BYCOMMAND | ((m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
-}
-#endif
-
-void Light::AddPoint(int x, int y, const bool smooth)
-{
-   STARTUNDO
-   const Vertex2D v = m_ptable->TransformPoint(x, y);
-
    vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
+   m_curve.GetRgVertex(vvertex);
 
    int iSeg;
    Vertex2D vOut;
@@ -1033,53 +879,10 @@ void Light::AddPoint(int x, int y, const bool smooth)
          icp++;
 
    //if (icp == 0) // need to add point after the last point
-   //icp = m_vdpoint.size();
+   //icp = m_curve.GetPoints().size();
 
-   CComObject<DragPoint> *pdp;
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, vOut.x, vOut.y, 0.f, smooth);
-      m_vdpoint.insert(m_vdpoint.begin() + icp, pdp); // push the second point forward, and replace it with this one.  Should work when index2 wraps.
-   }
-
-   STOPUNDO
+   m_curve.InsertPoint(icp, std::make_unique<DragPoint>(&m_curve, vOut.x, vOut.y, 0.f, smooth)); // push the second point forward, and replace it with this one.  Should work when index2 wraps.
 }
-
-#ifndef __STANDALONE__
-void Light::DoCommand(int icmd, int x, int y)
-{
-   ISelect::DoCommand(icmd, x, y);
-
-   switch (icmd)
-   {
-   case ID_WALLMENU_FLIP:
-      FlipPointY(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_MIRROR:
-      FlipPointX(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_ROTATE:
-      VPX::WinUI::RotatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_SCALE:
-      VPX::WinUI::ScalePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_TRANSLATE:
-      VPX::WinUI::TranslatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_ADDPOINT:
-      AddPoint(x, y, true);
-      break;
-   }
-}
-#endif
 
 STDMETHODIMP Light::InterfaceSupportsErrorInfo(REFIID riid)
 {
@@ -1144,29 +947,53 @@ STDMETHODIMP Light::put_State(float newVal)
    return S_OK;
 }
 
-void Light::FlipY(const Vertex2D& pvCenter)
+void Light::FlipX(const Vertex2D &pvCenter)
 {
-   IHaveDragPoints::FlipPointY(pvCenter);
+   m_curve.FlipPointX(pvCenter);
+   const float deltax = m_d.m_vCenter.x - pvCenter.x;
+   m_d.m_vCenter.x -= deltax * 2.0f;
 }
 
-void Light::FlipX(const Vertex2D& pvCenter)
+void Light::FlipY(const Vertex2D &pvCenter)
 {
-   IHaveDragPoints::FlipPointX(pvCenter);
+   m_curve.FlipPointY(pvCenter);
+   const float deltay = m_d.m_vCenter.y - pvCenter.y;
+   m_d.m_vCenter.y -= deltay * 2.0f;
 }
 
-void Light::Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter)
+void Light::Rotate(const float ang, const Vertex2D &center, const bool useElementCenter)
 {
-   IHaveDragPoints::RotatePoints(ang, pvCenter, useElementCenter);
+   m_curve.RotatePoints(ang, useElementCenter ? GetCenter() : center);
+   if (!useElementCenter)
+   {
+      const float sn = sinf(ANGTORAD(ang));
+      const float cs = cosf(ANGTORAD(ang));
+      const float dx = m_d.m_vCenter.x - center.x;
+      const float dy = m_d.m_vCenter.y - center.y;
+      const float dx2 = cs * dx - sn * dy;
+      const float dy2 = cs * dy + sn * dx;
+      m_d.m_vCenter.x = center.x + dx2;
+      m_d.m_vCenter.y = center.y + dy2;
+   }
 }
 
-void Light::Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter)
+void Light::Scale(const float scalex, const float scaley, const Vertex2D &center, const bool useElementCenter)
 {
-   IHaveDragPoints::ScalePoints(scalex, scaley, pvCenter, useElementCenter);
+   m_curve.ScalePoints(scalex, scaley, useElementCenter ? GetCenter() : center);
+   if (!useElementCenter)
+   {
+      const float dx = (m_d.m_vCenter.x - center.x) * scalex;
+      const float dy = (m_d.m_vCenter.y - center.y) * scaley;
+      m_d.m_vCenter.x = center.x + dx;
+      m_d.m_vCenter.y = center.y + dy;
+   }
 }
 
-void Light::Translate(const Vertex2D &pvOffset)
+void Light::Translate(const Vertex2D &offset)
 {
-   IHaveDragPoints::TranslatePoints(pvOffset);
+   m_curve.TranslatePoints(offset);
+   m_d.m_vCenter.x += offset.x;
+   m_d.m_vCenter.y += offset.y;
 }
 
 STDMETHODIMP Light::get_Color(OLE_COLOR *pVal)
@@ -1196,9 +1023,6 @@ STDMETHODIMP Light::put_ColorFull(OLE_COLOR newVal)
 STDMETHODIMP Light::get_X(float *pVal)
 {
    *pVal = m_d.m_vCenter.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 
@@ -1222,7 +1046,7 @@ STDMETHODIMP Light::put_Y(float newVal)
 
 void Light::InitShape()
 {
-   if (m_vdpoint.empty())
+   if (m_curve.GetPoints().empty())
    {
       // First time shape has been set to custom - set up some points
       const float x = m_d.m_vCenter.x;
@@ -1233,14 +1057,7 @@ void Light::InitShape()
          const float angle = (float)(M_PI*2.0 / 8.0)*(float)i;
          const float xx = x + sinf(angle)*m_d.m_falloff;
          const float yy = y - cosf(angle)*m_d.m_falloff;
-         CComObject<DragPoint> *pdp;
-         CComObject<DragPoint>::CreateInstance(&pdp);
-         if (pdp)
-         {
-            pdp->AddRef();
-            pdp->Init(this, xx, yy, 0.f, true);
-            m_vdpoint.push_back(pdp);
-         }
+         m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, xx, yy, 0.f, true));
       }
    }
 }

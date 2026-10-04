@@ -5,10 +5,13 @@
 
 #include "parts/pintable.h"
 #include "renderer/Texture.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
-TableInfoDialog::TableInfoDialog() : CDialog(IDD_TABLEINFO)
+TableInfoDialog::TableInfoDialog(PinTableWnd *tableEditor)
+   : CDialog(IDD_TABLEINFO)
+   , m_tableEditor(tableEditor)
 {
 }
 
@@ -17,11 +20,27 @@ void TableInfoDialog::OnClose()
    CDialog::OnClose();
 }
 
+int TableInfoDialog::AddListItem(HWND hwndListView, const string& szName, const string& szValue1, LPARAM lparam)
+{
+   LVITEM lvitem;
+   lvitem.mask = LVIF_DI_SETITEM | LVIF_TEXT | LVIF_PARAM;
+   lvitem.iItem = 0;
+   lvitem.iSubItem = 0;
+   lvitem.pszText = (LPSTR)szName.c_str();
+   lvitem.lParam = lparam;
+
+   const int index = ListView_InsertItem(hwndListView, &lvitem);
+
+   ListView_SetItemText_Safe(hwndListView, index, 1, szValue1.c_str());
+
+   return index;
+}
+
 BOOL TableInfoDialog::OnInitDialog()
 {
-   CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
-/*
+   /*
    HWND hwndParent = GetParent().GetHwnd();
    CRect rcDlg;
    RECT rcMain;
@@ -86,7 +105,8 @@ BOOL TableInfoDialog::OnInitDialog()
       lvcol.cx = 100;
       m_customListView.InsertColumn(1, lvcol);
 
-      pt->ListCustomInfo(m_customListView.GetHwnd());
+      for (const auto &[tag, content] : pt->m_customInfo)
+         AddListItem(m_customListView.GetHwnd(), tag, content, NULL);
    }
 
    m_resizer.Initialize(GetHwnd(), CRect(0, 0, 650, 500));
@@ -172,7 +192,7 @@ BOOL TableInfoDialog::OnCommand(WPARAM wParam, LPARAM lParam)
    {
       case IDC_ADD:
       {
-         CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+         CCO(PinTable) *const pt = m_tableEditor->m_table;
          string szCustomName;
          VPGetDialogItemText(m_customNameEdit, szCustomName);
          if (!szCustomName.empty())
@@ -187,7 +207,7 @@ BOOL TableInfoDialog::OnCommand(WPARAM wParam, LPARAM lParam)
 
             string szCustomValue;
             VPGetDialogItemText(m_customValueEdit, szCustomValue);
-            pt->AddListItem(m_customListView.GetHwnd(), szCustomName, szCustomValue, 0);
+            AddListItem(m_customListView.GetHwnd(), szCustomName, szCustomValue, 0);
          }
          break;
       }
@@ -216,7 +236,7 @@ BOOL TableInfoDialog::OnCommand(WPARAM wParam, LPARAM lParam)
 
 void TableInfoDialog::OnOK()
 {
-   CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
    pt->m_tableName = m_tableNameEdit.GetWindowText().GetString();
    pt->m_author = m_authorEdit.GetWindowText().GetString();
@@ -236,15 +256,12 @@ void TableInfoDialog::OnOK()
       pt->m_screenShot = sshot;
 
    // Clear old custom values, read back new ones
-   pt->m_vCustomInfoTag.clear();
-   pt->m_vCustomInfoContent.clear();
+   pt->m_customInfo.clear();
 
    const int customcount = m_customListView.GetItemCount();
    for (int i = 0; i < customcount; i++)
-   {
-      pt->m_vCustomInfoTag.push_back(m_customListView.GetItemText(i, 0, MAXSTRING).GetString()); // name
-      pt->m_vCustomInfoContent.push_back(m_customListView.GetItemText(i, 1, MAXSTRING).GetString()); // value
-   }
+      pt->m_customInfo.emplace_back(m_customListView.GetItemText(i, 0, MAXSTRING).GetString(), // name
+         m_customListView.GetItemText(i, 1, MAXSTRING).GetString()); // value
 
    pt->SetNonUndoableDirty(eSaveDirty);
    CDialog::OnOK();

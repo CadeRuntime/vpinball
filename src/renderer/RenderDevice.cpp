@@ -3,7 +3,9 @@
 #include "core/stdafx.h"
 #include "renderer/Renderer.h"
 
+#include "math/matrix.h"
 #include "parts/Collection.h"
+#include "utils/denormals.h"
 
 #ifdef _MSC_VER
 #include "dwmapi.h"
@@ -117,6 +119,11 @@ void RenderDevice::tBGFXCallback::traceVargs(const char* _filePath, uint16_t _li
 void RenderDevice::tBGFXCallback::screenShot(
    const char* _filePath, uint32_t _width, uint32_t _height, uint32_t _pitch, bgfx::TextureFormat::Enum _format, const void* _data, uint32_t _size, bool _yflip)
 {
+   m_rd.OnScreenshotCaptured(_filePath, _width, _height, _pitch, _format, _data, _size, _yflip);
+}
+
+void RenderDevice::OnScreenshotCaptured(const char* _filePath, uint32_t _width, uint32_t _height, uint32_t _pitch, bgfx::TextureFormat::Enum _format, const void* _data, uint32_t _size, bool _yflip)
+{
    // Note that BGFX has a few bugs regarding screenshots:
    // - DX11 applies an image swizzle to BGRA (like the doc state) but not accounting for the real backbuffer format, hence failing on anything but a RGBA backbuffer (for example HDR)
    // - DX12 does not implement the framebuffer selection and always captures from the base swapchain and returns data on the swapchain format
@@ -127,12 +134,12 @@ void RenderDevice::tBGFXCallback::screenShot(
    bool callbackSuccess = false;
    {
       // The screenshot state is concurrently written by the logic thread in CaptureScreenshot
-      std::lock_guard lock(m_rd.m_screenshotMutex);
+      std::lock_guard lock(m_screenshotMutex);
 
-      const std::filesystem::path path(_filePath);
+      const std::filesystem::path path = PathFromUTF8(_filePath); // Screenshot requests pass the file name as UTF-8
       int index = -1;
-      for (int i = 0; i < (int)m_rd.m_screenshotFilename.size(); i++)
-         if (m_rd.m_screenshotFilename[i] == path)
+      for (int i = 0; i < (int)m_screenshotFilename.size(); i++)
+         if (m_screenshotFilename[i] == path)
          {
             index = i;
             break;
@@ -141,7 +148,7 @@ void RenderDevice::tBGFXCallback::screenShot(
       // that was already re-issued by the timeout path), instead of saving them again or double-firing.
       if (index < 0)
          return;
-      m_rd.m_screenshotFilename.erase(m_rd.m_screenshotFilename.begin() + index);
+      m_screenshotFilename.erase(m_screenshotFilename.begin() + index);
 
       bool success = false;
       if (auto tex = BaseTexture::Create(_width, _height, BaseTexture::SRGBA); tex)
@@ -183,15 +190,15 @@ void RenderDevice::tBGFXCallback::screenShot(
          {
             if (_yflip)
                tex->FlipY();
-            success = tex->Save(_filePath);
+            success = tex->Save(path);
          }
       }
-      m_rd.m_screenshotSuccess &= success;
-      if (m_rd.m_screenshotFilename.empty())
+      m_screenshotSuccess &= success;
+      if (m_screenshotFilename.empty())
       {
          fireCallback = true;
-         callbackSuccess = m_rd.m_screenshotSuccess;
-         callback = m_rd.m_screenshotCallback;
+         callbackSuccess = m_screenshotSuccess;
+         callback = m_screenshotCallback;
       }
    }
    // Fire outside the lock: the callback may take other locks (e.g. the capture mutex) or re-enter CaptureScreenshot
@@ -271,6 +278,11 @@ bgfx::TextureFormat::Enum RenderDevice::SelectBackBufferFormat(const VPX::Window
             heuristic += bgfx::TextureFormat::Enum(fmt) == defaultFormat ? 200: 0; // To avoid switching uselessly, and to favor display format
             heuristic += bimg::isCompressed(fmt) ? -1000 : 0;
             heuristic += bimg::isFloat(fmt) ? -1000 : 0;
+#if defined(__ANDROID__)
+            // Temporary: prefer RGBA8 over BGRA8 as some Android drivers reject BGRA8 Vulkan swapchains,
+            // until the swapchain format is negotiated against vkGetPhysicalDeviceSurfaceFormatsKHR in bgfx
+            heuristic += fmt == bimg::TextureFormat::RGBA8 ? 1 : 0;
+#endif
             if (allowHDR10) // This needs a display that support RGB10A2 backbuffer and the HDR10 colorspace (see DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020)
                heuristic += fmt == bimg::TextureFormat::RGB10A2 ? 50000 : 0;
             // Note that RGB16F is not supported as BGFX does not report the swapchain capability (see DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709) and we don't have a tonemapper for this colorspace
@@ -323,6 +335,7 @@ static const string& bgfxRendererName(const bgfx::RendererType::Enum type);
 void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
 {
    SetThreadName("RenderThread"s);
+   set_denormals_flush_to_zero(); // FPU mode is per thread
    g_pplayer->m_renderProfiler->SetThreadLock();
 #ifdef __LIBVPINBALL__
 #ifdef __APPLE__
@@ -360,17 +373,21 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    //   . Metal & OpenGL do not have support for swapchain latency management yet
    // - OpenXR offers its own frame display time prediction that we use when in VR mode.
 
-   init.resolution.numBackBuffers = 2; // Simple flip model with 2 buffers: one locked for the GPU (rendering), one locked for the swapchain (displayed or queued)
-   init.resolution.maxFrameLatency = clamp(g_pplayer->m_ptable->m_settings.GetPlayer_MaxPrerenderedFrames(), 1, 3); // Default to 1 (User should set swapchain queue to 1 or 2 to limit latency)
-   init.resolution.reset = 0; 
-   init.resolution.reset |= BGFX_RESET_MAXANISOTROPY;
-   //init.resolution.reset |= BGFX_RESET_FLUSH_AFTER_RENDER; // Not really needed as we are doing a present after submit which in turn triger sending the commands to the GPU
-   init.resolution.reset |= BGFX_RESET_FLIP_AFTER_RENDER;
+   init.swapChain.numBackBuffers = 2; // Simple flip model with 2 buffers: one locked for the GPU (rendering), one locked for the swapchain (displayed or queued)
+   init.swapChain.maxFrameLatency = clamp(g_settingsService.GetActiveSettings().GetPlayer_MaxPrerenderedFrames(), 1, 3); // Default to 1 (User should set swapchain queue to 1 or 2 to limit latency)
+   init.reset = 0;
+   init.reset |= BGFX_RESET_MAXANISOTROPY;
+   //init.reset |= BGFX_RESET_FLUSH_AFTER_RENDER; // Not really needed as we are doing a present after submit which in turn triger sending the commands to the GPU
+   init.reset |= BGFX_RESET_FLIP_AFTER_RENDER;
    // BGFX despite proposing a reset flag (BGFX_RESET_FULLSCREEN) does not implement exclusive fullscreen, so we do not support it on this backend (exclusive fullscreen is
    // somewhat deprecated anyway as some OS do not offer it at all, and others implement it through GPU multiplane overlay to actually achieve zero-overhead backbuffer flips)
    assert(rd->m_outputWnd[0]->GetWindowMode() != VPX::Window::WindowMode::ExclusiveFullscreen);
 
+   // Note: BGFX_CAPS_HDR10 below is a backend capability, not a display one, so the display state has to be
+   // checked as well: a 10 bit SDR display would otherwise be driven with PQ, and SDL then reports
+   // neither an SDR white point nor a headroom for the tonemapper to target, too
    const bool allowHDR10ColorSpace = true //
+      && rd->m_outputWnd[0]->IsWCGDisplay() // Display must be in HDR mode
       && g_pplayer->m_playMode != Player::PlayMode::CaptureAttract // Disable WCG colorspace as it causes issues with video recording for the time being
       && !rd->m_isAnaglyph // Anaglyph stereo requires an sRGB colorspace
       && !g_pplayer->IsVR(); // Not yet supported (not sure if there exists HDR headset)
@@ -379,14 +396,14 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    if (g_pplayer->IsVR())
    {
 #ifdef ENABLE_XR
-      assert((init.resolution.reset & BGFX_RESET_VSYNC) == 0); // Display VSync must be disabled as we are synced by OpenXR on the headset display
+      assert((init.reset & BGFX_RESET_VSYNC) == 0); // Display VSync must be disabled as we are synced by OpenXR on the headset display
       init.type = g_pplayer->m_vrDevice->GetGraphicContextType();
       init.platformData.context = g_pplayer->m_vrDevice->GetGraphicContext();
       assert(init.platformData.context != nullptr);
       // For the time being, we do not support having a desktop swapchain along the headset swapchain under Vulkan, so we run BGFX in headless mode
       // Note that this is needed for native VR (running directly on the headset)
       if (init.type == bgfx::RendererType::Vulkan)
-         init.platformData.nwh = nullptr;
+         init.swapChain.nwh = nullptr;
 #endif
    }
 
@@ -400,41 +417,41 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
 
    // We first run in headless mode to initialize the underlying backend and try to gather information to select a supported backbuffer format
    // This is needed to select a safe backbuffer format but will fail under OpenGL or Linux. For these, we start using BGRA8 which seems to be supported everywhere and adjust afterward
-   init.resolution.formatColor = bgfx::TextureFormat::BGRA8;
-   if (init.platformData.nwh && init.type != bgfx::RendererType::OpenGL && init.type != bgfx::RendererType::OpenGLES && init.type != bgfx::RendererType::Direct3D12)
+   init.swapChain.formatColor = bgfx::TextureFormat::BGRA8;
+   if (init.swapChain.nwh && init.type != bgfx::RendererType::OpenGL && init.type != bgfx::RendererType::OpenGLES && init.type != bgfx::RendererType::Direct3D12)
    {
-      const uint32_t width = init.resolution.width;
-      const uint32_t height = init.resolution.height;
-      void* nativeWindow = init.platformData.nwh;
-      void* nativeDisplayType = init.platformData.ndt;
+      const uint32_t width = init.swapChain.width;
+      const uint32_t height = init.swapChain.height;
+      void* nativeWindow = init.swapChain.nwh;
+      void* nativeDisplayType = init.swapChain.ndt;
       void* context = init.platformData.context;
-      init.resolution.width = 0;
-      init.resolution.height = 0;
-      init.resolution.reset &= ~BGFX_RESET_HDR10;
-      init.platformData.nwh = nullptr;
-      init.platformData.ndt = nullptr;
+      init.swapChain.width = 0;
+      init.swapChain.height = 0;
+      init.swapChain.flags &= ~BGFX_SWAP_CHAIN_HDR10;
+      init.swapChain.nwh = nullptr;
+      init.swapChain.ndt = nullptr;
       init.platformData.context = nullptr;
       bgfx::renderFrame();
       if (bgfx::init(init))
       {
          // Select the backbuffer color format, after initializing in headless mode to have access to the list of supported backbuffer format
          // This may fail on some backends that need a surface to report its capabilities (for example Linux/Vulkan)
-         init.resolution.formatColor = rd->SelectBackBufferFormat(rd->m_outputWnd[0], bgfx::TextureFormat::Count, allowHDR10ColorSpace && (bgfx::getCaps()->supported & BGFX_CAPS_HDR10));
+         init.swapChain.formatColor = rd->SelectBackBufferFormat(rd->m_outputWnd[0], bgfx::TextureFormat::Count, allowHDR10ColorSpace && (bgfx::getCaps()->supported & BGFX_CAPS_HDR10));
          bgfx::shutdown();
       }
       else
       {
          PLOGE << "Failed to initialize BGFX for backbuffer format selection, defaulting to BGRA8";
       }
-      init.resolution.width = width;
-      init.resolution.height = height;
-      init.platformData.nwh = nativeWindow;
-      init.platformData.ndt = nativeDisplayType;
+      init.swapChain.width = width;
+      init.swapChain.height = height;
+      init.swapChain.nwh = nativeWindow;
+      init.swapChain.ndt = nativeDisplayType;
       init.platformData.context = context;
    }
 
-   init.resolution.reset &= ~BGFX_RESET_HDR10; // Handle HDR10 color space (actually BGFX select colorspace based on the backbuffer format and discard this flag)
-   init.resolution.reset |= init.resolution.formatColor == bgfx::TextureFormat::RGB10A2 ? BGFX_RESET_HDR10 : 0;
+   init.swapChain.flags &= ~BGFX_SWAP_CHAIN_HDR10; // Handle HDR10 color space (actually BGFX select colorspace based on the backbuffer format and discard this flag)
+   init.swapChain.flags |= init.swapChain.formatColor == bgfx::TextureFormat::RGB10A2 ? BGFX_SWAP_CHAIN_HDR10 : 0;
    bgfx::renderFrame();
    if (!bgfx::init(init))
    {
@@ -450,21 +467,21 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
             << bgfx::getRendererName(bgfx::getRendererType());
    }
 
-   if (init.platformData.nwh)
+   if (init.swapChain.nwh)
    {
       // Validate the backbuffer format now that we have a swapchain (handles buggy platforms like Linux/Vulkan where capabilities of the swapchain is only reported after creation of the swapchain...)
-      const bgfx::TextureFormat::Enum initFormatColor = init.resolution.formatColor;
-      init.resolution.formatColor = rd->SelectBackBufferFormat(rd->m_outputWnd[0], initFormatColor, allowHDR10ColorSpace && (bgfx::getCaps()->supported & BGFX_CAPS_HDR10));
-      if (initFormatColor != init.resolution.formatColor)
+      const bgfx::TextureFormat::Enum initFormatColor = init.swapChain.formatColor;
+      init.swapChain.formatColor = rd->SelectBackBufferFormat(rd->m_outputWnd[0], initFormatColor, allowHDR10ColorSpace && (bgfx::getCaps()->supported & BGFX_CAPS_HDR10));
+      if (initFormatColor != init.swapChain.formatColor)
       {
-         init.resolution.reset &= ~BGFX_RESET_HDR10;
-         init.resolution.reset |= init.resolution.formatColor == bgfx::TextureFormat::RGB10A2 ? BGFX_RESET_HDR10 : 0;
-         bgfx::reset(init.resolution.width, init.resolution.height, init.resolution.reset, init.resolution.formatColor);
+         init.swapChain.flags &= ~BGFX_SWAP_CHAIN_HDR10;
+         init.swapChain.flags |= init.swapChain.formatColor == bgfx::TextureFormat::RGB10A2 ? BGFX_SWAP_CHAIN_HDR10 : 0;
+         bgfx::reset(init.reset, &init.swapChain);
       }
    }
 
-   PLOGI << "BGFX initialized using " << bgfx::getRendererName(bgfx::getRendererType()) << " backend (" << init.resolution.width << 'x' << init.resolution.height << " "
-         << bimg::getName(bimg::TextureFormat::Enum(init.resolution.formatColor)) << ')';
+   PLOGI << "BGFX initialized using " << bgfx::getRendererName(bgfx::getRendererType()) << " backend (" << init.swapChain.width << 'x' << init.swapChain.height << " "
+         << bimg::getName(bimg::TextureFormat::Enum(init.swapChain.formatColor)) << ')';
 
    const uint16_t vendorId = bgfx::getCaps()->vendorId;
    string vendorString;
@@ -494,9 +511,9 @@ void RenderDevice::RenderThread(RenderDevice* rd, bgfx::Init init)
    }
    else
    {
-      RenderTarget* backbuffer = new RenderTarget(rd, SurfaceType::RT_DEFAULT, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, init.resolution.formatColor, BGFX_INVALID_HANDLE,
-         init.resolution.formatDepthStencil, "BackBuffer", init.resolution.width, init.resolution.height, BGFXtoVPXTextureFormat(init.resolution.formatColor));
-      rd->m_outputWnd[0]->SetBackBuffer(backbuffer, (init.resolution.reset & BGFX_RESET_HDR10) != 0);
+      RenderTarget* backbuffer = new RenderTarget(rd, SurfaceType::RT_DEFAULT, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, init.swapChain.formatColor, BGFX_INVALID_HANDLE,
+         init.swapChain.formatDepthStencil, "BackBuffer", init.swapChain.width, init.swapChain.height, BGFXtoVPXTextureFormat(init.swapChain.formatColor));
+      rd->m_outputWnd[0]->SetBackBuffer(backbuffer, (init.swapChain.flags & BGFX_SWAP_CHAIN_HDR10) != 0);
       rd->m_framePending = false; // Request first frame to be prepared as soon as possible
    }
 
@@ -570,11 +587,6 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
                END_SPAN(tagSpan)
             }
 
-            // Request BGFX to submit to GPU (calls bgfx::frame())
-            BEGIN_SPAN(tagSpan, "BGFX->GPU")
-            g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_FLIP);
-            Flip();
-            m_frameIndex++;
             {
                // Screenshot state is concurrently written by the logic thread in CaptureScreenshot
                std::lock_guard lock(m_screenshotMutex);
@@ -582,10 +594,24 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
                {
                   m_screenshotFrameDelay--;
                   if (m_screenshotFrameDelay == 0)
+                  {
                      for (size_t i = 0; i < m_screenshotWindow.size(); i++)
-                        bgfx::requestScreenShot(m_screenshotWindow[i]->GetBackBuffer()->GetCoreFrameBuffer(), m_screenshotFilename[i].string().c_str());
+                     {
+                        if (m_screenshotWindow[i] == m_outputWnd[0])
+                           RequestVRScreenshot(vrRenderTarget, m_screenshotFilename[i]);
+                        else if (RenderTarget* const bb = m_screenshotWindow[i]->GetBackBuffer(); bb)
+                           bgfx::requestScreenShot(bb->GetCoreFrameBuffer(), PathToUTF8(m_screenshotFilename[i]).c_str()); // Passed back as is to OnScreenshotCaptured
+                     }
+                  }
                }
             }
+
+            // Request BGFX to submit to GPU (calls bgfx::frame())
+            BEGIN_SPAN(tagSpan, "BGFX->GPU")
+            g_pplayer->m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_FLIP);
+            Flip();
+            m_frameIndex++;
+            ProcessVRScreenshot();
             const bgfx::Stats* stats = bgfx::getStats();
             const uint64_t bgfxSubmit = (stats->cpuTimeEnd - stats->cpuTimeBegin) * 1000000ull / stats->cpuTimerFreq;
             g_pplayer->m_logicProfiler.OnPresented(usec() - bgfxSubmit);
@@ -595,6 +621,54 @@ void RenderDevice::BGFXOpenXRRenderLoop(const bgfx::Init& init)
          });
    }
    g_pplayer->m_vrDevice->ReleaseSession();
+   if (bgfx::isValid(m_vrScreenshotTex))
+   {
+      bgfx::destroy(m_vrScreenshotTex);
+      m_vrScreenshotTex = BGFX_INVALID_HANDLE;
+   }
+}
+
+void RenderDevice::RequestVRScreenshot(RenderTarget* vrRenderTarget, const std::filesystem::path& filename)
+{
+   const uint16_t width = static_cast<uint16_t>(vrRenderTarget->GetWidth());
+   const uint16_t height = static_cast<uint16_t>(vrRenderTarget->GetHeight());
+   if (bgfx::isValid(m_vrScreenshotTex) && (m_vrScreenshotWidth != width || m_vrScreenshotHeight != height))
+   {
+      bgfx::destroy(m_vrScreenshotTex);
+      m_vrScreenshotTex = BGFX_INVALID_HANDLE;
+   }
+   if (!bgfx::isValid(m_vrScreenshotTex))
+   {
+      m_vrScreenshotTex = bgfx::createTexture2D(width, height, false, 1, bgfx::TextureFormat::RGBA8, BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK);
+      m_vrScreenshotWidth = width;
+      m_vrScreenshotHeight = height;
+      m_vrScreenshotData.resize(static_cast<size_t>(width) * height * 4);
+   }
+   NextView();
+   bgfx::TextureRegion src;
+   src.init(vrRenderTarget->GetColorSampler()->GetCoreTexture(false), 0, 0, width, height);
+   src.mip = 0;
+   src.z = 0;
+   src.depth = 1;
+   bgfx::TextureRegion dst;
+   dst.init(m_vrScreenshotTex, 0, 0, width, height);
+   dst.mip = 0;
+   dst.z = 0;
+   dst.depth = 1;
+   bgfx::blit(m_activeViewId, dst, src);
+   m_vrScreenshotReadyFrame = bgfx::read(dst, m_vrScreenshotData.data());
+   m_vrScreenshotFilename = filename;
+}
+
+void RenderDevice::ProcessVRScreenshot()
+{
+   if (m_vrScreenshotFilename.empty() || m_lastPresentFrameIdx < m_vrScreenshotReadyFrame)
+      return;
+   const std::filesystem::path filename = m_vrScreenshotFilename;
+   m_vrScreenshotFilename.clear();
+   const string path = PathToUTF8(filename);
+   OnScreenshotCaptured(path.c_str(), m_vrScreenshotWidth, m_vrScreenshotHeight, m_vrScreenshotWidth * 4, bgfx::TextureFormat::RGBA8, m_vrScreenshotData.data(),
+      static_cast<uint32_t>(m_vrScreenshotData.size()), false);
 }
 #endif
 
@@ -639,6 +713,28 @@ void RenderDevice::BGFXDesktopRenderLoop(const bgfx::Init& init)
 
       if (!m_framePending)
          continue;
+
+#if defined(__ANDROID__)
+      void* nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(m_outputWnd[0]->GetCore()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+      if (nwh == nullptr)
+      {
+         std::lock_guard lock(m_frameMutex);
+         m_renderFrame->Discard();
+         m_frameNoPresent = false;
+         m_framePending = false;
+         continue;
+      }
+      static void* prevNwh = init.swapChain.nwh;
+      if (nwh != prevNwh)
+      {
+         prevNwh = nwh;
+         bgfx::SwapChain swapChain = init.swapChain;
+         swapChain.width = m_outputWnd[0]->GetBackBuffer()->GetWidth();
+         swapChain.height = m_outputWnd[0]->GetBackBuffer()->GetHeight();
+         swapChain.nwh = nwh;
+         bgfx::reset(init.reset | (bgfxVSync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE), &swapChain);
+      }
+#endif
 
       if (m_frameNoPresent)
       {
@@ -702,28 +798,16 @@ void RenderDevice::BGFXDesktopRenderLoop(const bgfx::Init& init)
          
       // Handle backbuffer resize, surface lost and VSync toggling
       {
-#if defined(__ANDROID__)
-         void* nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(m_outputWnd[0]->GetCore()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
-         static void* prevNwh = nwh;
-         if (nwh != prevNwh)
-         {
-            prevNwh = nwh;
-            if (nwh == nullptr)
-               continue;
-
-            bgfx::PlatformData pd = {};
-            pd.nwh = nwh;
-            bgfx::setPlatformData(pd);
-            bgfxVSync = !needsVSync; // Force reset by making VSync state appear changed
-         }
-         if (nwh == nullptr)
-            continue;
-#endif
          if (bgfxVSync != needsVSync)
          {
             bgfxVSync = needsVSync;
-            bgfx::reset(m_outputWnd[0]->GetBackBuffer()->GetWidth(), m_outputWnd[0]->GetBackBuffer()->GetHeight(), init.resolution.reset | (bgfxVSync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE),
-               init.resolution.formatColor);
+            bgfx::SwapChain swapChain = init.swapChain;
+            swapChain.width = m_outputWnd[0]->GetBackBuffer()->GetWidth();
+            swapChain.height = m_outputWnd[0]->GetBackBuffer()->GetHeight();
+#if defined(__ANDROID__)
+            swapChain.nwh = nwh;
+#endif
+            bgfx::reset(init.reset | (bgfxVSync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE), &swapChain);
          }
       }
 
@@ -781,7 +865,13 @@ void RenderDevice::BGFXDesktopRenderLoop(const bgfx::Init& init)
                Flip();
                if (isMainSwpachain)
                {
-                  bgfx::reset(windowWidth, windowHeight, init.resolution.reset | (bgfxVSync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE), init.resolution.formatColor);
+                  bgfx::SwapChain swapChain = init.swapChain;
+                  swapChain.width = windowWidth;
+                  swapChain.height = windowHeight;
+#if defined(__ANDROID__)
+                  swapChain.nwh = nwh;
+#endif
+                  bgfx::reset(init.reset | (bgfxVSync ? BGFX_RESET_VSYNC : BGFX_RESET_NONE), &swapChain);
                   m_outputWnd[0]->GetBackBuffer()->SetSize(windowWidth, windowHeight);
                }
                else
@@ -855,7 +945,7 @@ void RenderDevice::BGFXDesktopRenderLoop(const bgfx::Init& init)
          // Evaluate latency as the delay between when we submitted the frame data and when the swapchain has an empty slot (as this denotes that the Present operation has been performed)
          const uint64_t now = usec();
          m_renderLatency = static_cast<float>((double)(now - lastSubmitTimestamp) / 1000000.0) // Time spent since pushing data to the GPU until consumed by swapchain
-            + static_cast<float>(init.resolution.maxFrameLatency - 1) / m_outputWnd[0]->GetRefreshRate(); // Time that will be spent in the GPU queue before display (if any)
+            + static_cast<float>(init.swapChain.maxFrameLatency - 1) / m_outputWnd[0]->GetRefreshRate(); // Time that will be spent in the GPU queue before display (if any)
          END_SPAN(tagSpan)
       }
 
@@ -927,13 +1017,13 @@ void RenderDevice::BGFXDesktopRenderLoop(const bgfx::Init& init)
             m_screenshotFrameDelay--;
             if (m_screenshotFrameDelay == 0)
                for (size_t i = 0; i < m_screenshotWindow.size(); i++)
-                  bgfx::requestScreenShot(m_screenshotWindow[i]->GetBackBuffer()->GetCoreFrameBuffer(), m_screenshotFilename[i].string().c_str());
+                  bgfx::requestScreenShot(m_screenshotWindow[i]->GetBackBuffer()->GetCoreFrameBuffer(), PathToUTF8(m_screenshotFilename[i]).c_str());
             else if (m_screenshotFrameDelay < -60)
             {
                // Sadly BGFX will silently fails screenshot capture, so if after 60 frames we did not get it, we try again
                PLOGE << "Screenshot capture timed out. Requesting it again";
                for (size_t i = 0; i < m_screenshotWindow.size(); i++)
-                  bgfx::requestScreenShot(m_screenshotWindow[i]->GetBackBuffer()->GetCoreFrameBuffer(), m_screenshotFilename[i].string().c_str());
+                  bgfx::requestScreenShot(m_screenshotWindow[i]->GetBackBuffer()->GetCoreFrameBuffer(), PathToUTF8(m_screenshotFilename[i]).c_str());
             }
          }
       }
@@ -957,7 +1047,7 @@ void RenderDevice::OnInputSampled()
 #endif
 
 #elif defined(ENABLE_OPENGL)
-GLuint RenderDevice::m_samplerStateCache[3 * 3 * 5];
+GLuint RenderDevice::m_samplerStateCache[3 * 3 * 6];
 static const char* glErrorToString(const int error)
 {
    switch (error)
@@ -1162,10 +1252,6 @@ std::vector<std::string> RenderDevice::GetSelectableBackendNames()
       const bgfx::RendererType::Enum renderer = supported[i];
       if (renderer == bgfx::RendererType::Noop || renderer == bgfx::RendererType::WebGPU)
          continue; // no-op / web backend, not a usable desktop choice
-      #if !defined(_DEBUG) && !defined(ENABLE_BGFX_DX12)
-      if (renderer == bgfx::RendererType::Direct3D12)
-         continue;
-      #endif
       result.push_back(bgfxRendererName(renderer));
    }
    return result;
@@ -1190,7 +1276,7 @@ RenderDevice::RenderDevice(
    // Create preview in the render device as it holds the desktop swapchain (not really clean and should be refactored for all windows to be added/removed by the client)
    if (isVR && !g_isAndroid)
    {
-      VPX::Window* previewWnd = new VPX::Window("Visual Pinball VR Preview"s, g_pplayer->m_ptable->m_settings, VPXWindowId::VPXWINDOW_VRPreview);
+      VPX::Window* previewWnd = new VPX::Window("Visual Pinball VR Preview"s, g_settingsService.GetActiveSettings(), VPXWindowId::VPXWINDOW_VRPreview);
 #ifdef ENABLE_BGFX
       // Color and depth format are likely wrong => use the ones selected by the OpenXR backend
       RenderTarget* backbuffer = new RenderTarget(this, SurfaceType::RT_DEFAULT, BGFX_INVALID_HANDLE, BGFX_INVALID_HANDLE, bgfx::TextureFormat::RGBA8, BGFX_INVALID_HANDLE,
@@ -1222,7 +1308,7 @@ RenderDevice::RenderDevice(
    assert(g_pplayer != nullptr); // Player must be created to give access to the output window
 
    // 0 means disable limiting of draw-ahead queue
-   int maxPrerenderedFrames = isVR ? 0 : g_pplayer->m_ptable->m_settings.GetPlayer_MaxPrerenderedFrames();
+   int maxPrerenderedFrames = isVR ? 0 : g_settingsService.GetActiveSettings().GetPlayer_MaxPrerenderedFrames();
 
 #if defined(ENABLE_BGFX)
    ///////////////////////////////////
@@ -1234,7 +1320,7 @@ RenderDevice::RenderDevice(
       syncMode = VideoSyncMode::VSM_VSYNC;
    
    // Select backend
-   const string& gfxBackend = g_pplayer->m_ptable->m_settings.GetPlayer_GfxBackend();
+   const string& gfxBackend = g_settingsService.GetActiveSettings().GetPlayer_GfxBackend();
    bgfx::RendererType::Enum supportedRenderers[bgfx::RendererType::Count];
    const int nRendererSupported = bgfx::getSupportedRenderers(bgfx::RendererType::Count, supportedRenderers);
    init.type = bgfx::RendererType::Count; // Tells BGFX to select the default backend for the running platform
@@ -1255,10 +1341,6 @@ RenderDevice::RenderDevice(
    if (!backendMatched && !gfxBackend.empty() && gfxBackend != "Default"s) {
       PLOGW << "Ignoring unknown or unsupported graphics backend '" << gfxBackend << "' (case sensitive), using platform default. Valid values: " << validBackends;
    }
-#if !defined(_DEBUG) && !defined(ENABLE_BGFX_DX12)
-   if (init.type == bgfx::RendererType::Direct3D12)
-      init.type = bgfx::RendererType::Count;
-#endif
    if (init.type == bgfx::RendererType::Noop)
       init.type = bgfx::RendererType::Count;
    if (g_pplayer->m_vrDevice == nullptr)
@@ -1270,40 +1352,32 @@ RenderDevice::RenderDevice(
             << " (valid values: " << validBackends << ')';
    }
 
-   #ifndef __LIBVPINBALL__
-   m_useLowPrecision = init.type == bgfx::RendererType::OpenGLES;
-   #else
-   m_useLowPrecision = true;
-   #endif
-
    init.callback = &m_bgfxCallback;
    init.fallback = true;
-   init.resolution.width = swapchainWnd->GetPixelWidth();
-   init.resolution.height = swapchainWnd->GetPixelHeight();
+   init.swapChain.width = swapchainWnd->GetPixelWidth();
+   init.swapChain.height = swapchainWnd->GetPixelHeight();
    init.platformData.context = nullptr;
-   init.platformData.backBuffer = nullptr;
-   init.platformData.backBufferDS = nullptr;
    #if BX_PLATFORM_LINUX || BX_PLATFORM_BSD
    if (SDL_GetCurrentVideoDriver() == "x11"sv) {
-      init.platformData.ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
-      init.platformData.nwh = (void*)SDL_GetNumberProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+      init.swapChain.ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+      init.swapChain.nwh = (void*)SDL_GetNumberProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
    }
    else if (SDL_GetCurrentVideoDriver() == "wayland"sv) {
       init.platformData.type = bgfx::NativeWindowHandleType::Wayland;
-      init.platformData.ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
-      init.platformData.nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+      init.swapChain.ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
+      init.swapChain.nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
    }
    #elif BX_PLATFORM_OSX
-   init.platformData.nwh = SDL_GetRenderMetalLayer(SDL_CreateRenderer(swapchainWnd->GetCore(), "Metal"));
+   init.swapChain.nwh = SDL_GetRenderMetalLayer(SDL_CreateRenderer(swapchainWnd->GetCore(), "Metal"));
    #elif BX_PLATFORM_IOS
-   init.platformData.nwh = VPinballLib::VPinballLib::Instance().GetMetalLayer();
+   init.swapChain.nwh = VPinballLib::VPinballLib::Instance().GetMetalLayer();
    #elif BX_PLATFORM_ANDROID
-   init.platformData.nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+   init.swapChain.nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(swapchainWnd->GetCore()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
    #elif BX_PLATFORM_WINDOWS
-   init.platformData.nwh = swapchainWnd->GetNativeHWND();
+   init.swapChain.nwh = swapchainWnd->GetNativeHWND();
    #elif BX_PLATFORM_STEAMLINK
-   init.platformData.ndt = wmInfo.info.vivante.display;
-   init.platformData.nwh = wmInfo.info.vivante.window;
+   init.swapChain.ndt = wmInfo.info.vivante.display;
+   init.swapChain.nwh = wmInfo.info.vivante.window;
    #endif // BX_PLATFORM_
    #ifdef DEBUG
    // Disable Direct3D12 debug layer as it crashes on some NVIDIA drivers
@@ -1321,6 +1395,7 @@ RenderDevice::RenderDevice(
       g_pplayer->ProcessOSMessages(false);
       Sleep(0);
    }
+   m_useLowPrecision = bgfx::getRendererType() == bgfx::RendererType::OpenGLES;
 
 #elif defined(ENABLE_OPENGL)
    ///////////////////////////////////
@@ -1487,9 +1562,9 @@ RenderDevice::RenderDevice(
       binding->unit = i;
       binding->use_rank = i;
       binding->sampler = nullptr;
-      binding->filter = SF_UNDEFINED;
-      binding->clamp_u = SA_UNDEFINED;
-      binding->clamp_v = SA_UNDEFINED;
+      binding->filter = SamplerFilter::SF_UNDEFINED;
+      binding->clamp_u = SamplerAddressMode::SA_UNDEFINED;
+      binding->clamp_v = SamplerAddressMode::SA_UNDEFINED;
       m_samplerBindings.push_back(binding);
    }
 
@@ -1620,7 +1695,7 @@ RenderDevice::RenderDevice(
    else
       params.MultiSampleQuality = min(params.MultiSampleQuality, MultiSampleQualityLevels);
 
-   const bool softwareVP = g_pplayer->m_ptable->m_settings.GetPlayer_SoftwareVertexProcessing();
+   const bool softwareVP = g_settingsService.GetActiveSettings().GetPlayer_SoftwareVertexProcessing();
    const DWORD flags = softwareVP ? D3DCREATE_SOFTWARE_VERTEXPROCESSING : D3DCREATE_HARDWARE_VERTEXPROCESSING;
 
    // Create the D3Dex device. This optionally goes to the proper fullscreen mode.
@@ -1676,11 +1751,24 @@ RenderDevice::RenderDevice(
        hr = m_pD3DDevice->SetDialogBoxMode(TRUE);*/ // needs D3DPRESENTFLAG_LOCKABLE_BACKBUFFER, but makes rendering slower on some systems :/
 #endif
 
+   // Substitute for anything that has no valid texture to upload (e.g. out of mem):
+   // An 8x8 magenta checker tex to be recognizable however far it gets stretched. Should even this fail, the machine is completely out of memory
+   m_fallbackTexture = BaseTexture::Create(8, 8, BaseTexture::Format::SRGBA);
+   if (m_fallbackTexture == nullptr)
+      ReportError("Fatal Error: unable to create the fallback texture!"s, -1, __FILE__, __LINE__);
+   else
+   {
+      uint32_t* const __restrict texels = static_cast<uint32_t*>(m_fallbackTexture->data());
+      for (unsigned int i = 0; i < 8u * 8u; ++i)
+         texels[i] = ((i ^ (i >> 3u)) & 1u) ? 0xFFFF00FFu : 0xFF400040u;
+   }
+
    // Create default texture
    {
-      std::shared_ptr<BaseTexture> surf = std::shared_ptr<BaseTexture>(BaseTexture::Create(1, 1, BaseTexture::Format::RGBA));
-      memset(surf->data(), 0, 4);
-      m_nullTexture = std::make_shared<Sampler>(this, "Null"s, surf, false);
+      std::shared_ptr<BaseTexture> surf = BaseTexture::Create(1, 1, BaseTexture::Format::RGBA);
+      if (surf)
+         memset(surf->data(), 0, 4);
+      m_nullTexture = std::make_shared<Sampler>(this, "Null"s, OrFallback(surf), false);
    }
 
    // create default vertex declarations for shaders
@@ -1772,7 +1860,7 @@ RenderDevice::RenderDevice(
    m_uiShader = new Shader(this, Shader::UI_SHADER, m_nEyes == 2);
    m_basicShader = new Shader(this, Shader::BASIC_SHADER, m_nEyes == 2);
    m_ballShader = new Shader(this, Shader::BALL_SHADER, m_nEyes == 2);
-   m_DMDShader = new Shader(this, m_isVR ? Shader::DMD_VR_SHADER : Shader::DMD_SHADER, m_nEyes == 2);
+   m_DMDShader = new Shader(this, Shader::DMD_SHADER, m_nEyes == 2);
    m_flasherShader = new Shader(this, Shader::FLASHER_SHADER, m_nEyes == 2);
    m_lightShader = new Shader(this, Shader::LIGHT_SHADER, m_nEyes == 2);
    m_stereoShader = m_nEyes == 2 ? new Shader(this, Shader::STEREO_SHADER, true) : nullptr;
@@ -1790,10 +1878,10 @@ RenderDevice::RenderDevice(
    #endif
 
    // Initialize uniform to default value
-   m_basicShader->SetVector(SHADER_staticColor_Alpha, 1.0f, 1.0f, 1.0f, 1.0f); // No tinting
+   m_basicShader->SetVector(ShaderUniform::staticColor_Alpha, 1.0f, 1.0f, 1.0f, 1.0f); // No tinting
    // FIXME XR
    #ifndef ENABLE_XR
-   m_DMDShader->SetFloat(SHADER_alphaTestValue, 1.0f); // No alpha clipping
+   m_DMDShader->SetFloat(ShaderUniform::alphaTestValue, 1.0f); // No alpha clipping
    #endif
 
    #if !defined(__OPENGLES__)
@@ -1849,6 +1937,10 @@ RenderDevice::~RenderDevice()
    m_SMAAareaTexture = nullptr;
    m_SMAAsearchTexture = nullptr;
    m_texMan.UnloadAll();
+   #if defined(ENABLE_BGFX)
+      // Samplers still queued here own BGFX textures: release them before BGFX is shut down
+      m_pendingTextureUploads.clear();
+   #endif
 
    m_renderFrame = nullptr;
 
@@ -1867,8 +1959,8 @@ RenderDevice::~RenderDevice()
    delete m_pVertexTexelDeclaration;
    delete m_pVertexNormalTexelDeclaration;
 
-   for (auto prog : m_mipmapPrograms)
-      bgfx::destroy(prog);
+   if (bgfx::isValid(m_srgbMipmapProgram))
+      bgfx::destroy(m_srgbMipmapProgram);
 
    // Shutdown BGFX once all native resources have been cleaned up
    m_rendererInitialized.release();
@@ -1963,20 +2055,22 @@ void RenderDevice::AddWindow(VPX::Window* wnd)
 #if defined(ENABLE_BGFX)
    if ((bgfx::getCaps()->supported & BGFX_CAPS_SWAP_CHAIN) == 0)
       return;
+   // HDR10 is not requested here, but SelectBackBufferFormat reuses the format of any backbuffer
+   // already on this display, so the playfield window can still hand back RGB10A2 - and BGFX derives
+   // the swapchain colorspace from the format. Such a window is HDR10/BT.2100 and has to report it
    bgfx::TextureFormat::Enum bgfxFormat = SelectBackBufferFormat(wnd, bgfx::TextureFormat::Count, false);
+   const bool wcgBackBuffer = bgfxFormat == bgfx::TextureFormat::RGB10A2;
    colorFormat vpxFormat = BGFXtoVPXTextureFormat(bgfxFormat);
    PLOGD << "Creating BGFX swap chain for window " << SDL_GetWindowTitle(wnd->GetCore()) << " (" << wnd->GetPixelWidth() << 'x' << wnd->GetPixelHeight() << " "
          << bimg::getName(bimg::TextureFormat::Enum(bgfxFormat)) << ')';
    SDL_Window* sdlWnd = wnd->GetCore();
    void* nwh;
 #if BX_PLATFORM_LINUX || BX_PLATFORM_BSD
-   void* ndt;
+   // Note: swapChainDesc.ndt is left NULL so the swap chain inherits the main window's native display type
    if (SDL_GetCurrentVideoDriver() == "x11"sv) {
-      ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(sdlWnd), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
       nwh = (void*)SDL_GetNumberProperty(SDL_GetWindowProperties(sdlWnd), SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
    }
    else if (SDL_GetCurrentVideoDriver() == "wayland"sv) {
-      ndt = SDL_GetPointerProperty(SDL_GetWindowProperties(sdlWnd), SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, NULL);
       nwh = SDL_GetPointerProperty(SDL_GetWindowProperties(sdlWnd), SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
    }
 #elif BX_PLATFORM_OSX
@@ -1997,10 +2091,20 @@ void RenderDevice::AddWindow(VPX::Window* wnd)
 #else
    return;
 #endif // BX_PLATFORM_
-   bgfx::FrameBufferHandle fbh = bgfx::createFrameBuffer(nwh, uint16_t(wnd->GetPixelWidth()), uint16_t(wnd->GetPixelHeight()), bgfxFormat);
+   bgfx::SwapChain swapChainDesc;
+   swapChainDesc.nwh = nwh;
+   swapChainDesc.width = wnd->GetPixelWidth();
+   swapChainDesc.height = wnd->GetPixelHeight();
+   swapChainDesc.formatColor = bgfxFormat;
+   bgfx::FrameBufferHandle fbh = bgfx::createFrameBuffer(swapChainDesc);
    m_outputWnd.push_back(wnd);
    wnd->SetBackBuffer(new RenderTarget(this, SurfaceType::RT_DEFAULT, fbh, BGFX_INVALID_HANDLE, bgfxFormat, BGFX_INVALID_HANDLE, bgfx::TextureFormat::Count,
-      "BackBuffer #" + std::to_string(m_outputWnd.size()), wnd->GetPixelWidth(), wnd->GetPixelHeight(), vpxFormat));
+      "BackBuffer #" + std::to_string(m_outputWnd.size()), wnd->GetPixelWidth(), wnd->GetPixelHeight(), vpxFormat), wcgBackBuffer);
+   // Ancillary windows compose directly in sRGB (see Renderer::RenderAncillaryWindow), which only suits an sRGB backbuffer
+   // FIXME Correcting it needs the per window tonemapping pass, still disabled
+   if (wcgBackBuffer) {
+      PLOGW << "Window " << SDL_GetWindowTitle(wnd->GetCore()) << " shares an HDR10 display with the playfield window, its content may be too bright";
+   }
 #endif
 }
 
@@ -2129,10 +2233,10 @@ float RenderDevice::GetPredictedDisplayDelay() const
       if (delayToNextFrame < g_pplayer->m_renderProfiler->GetAvg(FrameProfiler::ProfileSection::PROFILE_RENDER_SUBMIT))
          delayToNextFrame += targetFrameLength;
       #endif
-      if (g_pplayer->GetVideoSyncMode() != VideoSyncMode::VSM_FRAME_PACING && g_pplayer->m_ptable->m_settings.GetPlayer_MaxPrerenderedFrames() > 1)
+      if (g_pplayer->GetVideoSyncMode() != VideoSyncMode::VSM_FRAME_PACING && g_settingsService.GetActiveSettings().GetPlayer_MaxPrerenderedFrames() > 1)
       {
          const uint64_t displayFrameLength = static_cast<uint64_t>(1000000. / (double)m_outputWnd[0]->GetRefreshRate());
-         delayToNextFrame += (g_pplayer->m_ptable->m_settings.GetPlayer_MaxPrerenderedFrames() - 1) * displayFrameLength;
+         delayToNextFrame += (g_settingsService.GetActiveSettings().GetPlayer_MaxPrerenderedFrames() - 1) * displayFrameLength;
       }
       // PLOGI << std::format("Display Delay: {:5.3f}ms / Now: {:5.3f}ms / VSync: {:5.3f}ms", delayToNextFrame / 1000., now / 1000., m_presentTimestampReference / 1000.);
       return static_cast<float>(static_cast<double>(delayToNextFrame) / 1000000.);
@@ -2184,6 +2288,7 @@ void RenderDevice::NextView()
    bgfx::setViewMode(m_activeViewId, bgfx::ViewMode::Sequential);
    bgfx::setViewClear(m_activeViewId, BGFX_CLEAR_NONE);
    bgfx::touch(m_activeViewId);
+   m_activeViewClearFlags = BGFX_CLEAR_NONE;
 }
 
 void RenderDevice::ResetActiveView()
@@ -2195,17 +2300,29 @@ void RenderDevice::ResetActiveView()
 void RenderDevice::SubmitAndFlipFrame(bool present)
 {
    // Process pending texture upload/mipmap generation before flipping the frame
-   for (auto it = m_pendingTextureUploads.cbegin(); it != m_pendingTextureUploads.cend();)
+   // The list is written by the logic thread under its own mutex: swap it out then process without holding the
+   // mutex, as GetCoreTexture may block on a sampler's update mutex (e.g. while a compression is in progress)
+   vector<std::shared_ptr<Sampler>> pendingUploads;
+   {
+      std::lock_guard lock(m_pendingTextureUploadsMutex);
+      pendingUploads.swap(m_pendingTextureUploads);
+   }
+   for (auto it = pendingUploads.cbegin(); it != pendingUploads.cend();)
    {
       (*it)->GetCoreTexture(true);
-      if ((*it)->IsMipMapGenerated())
+      if (!(*it)->IsUploadPending())
       {
-         it = m_pendingTextureUploads.erase(it);
+         it = pendingUploads.erase(it);
       }
       else
       {
          ++it;
       }
+   }
+   if (!pendingUploads.empty())
+   {
+      std::lock_guard lock(m_pendingTextureUploadsMutex);
+      m_pendingTextureUploads.insert(m_pendingTextureUploads.end(), pendingUploads.begin(), pendingUploads.end());
    }
    const uint32_t frameIdx = bgfx::frame(present ? BGFX_FRAME_NONE : BGFX_FRAME_FLUSH);
    if (present)
@@ -2355,8 +2472,8 @@ void RenderDevice::UploadAndSetSMAATextures()
    }
 #endif
 
-   m_FBShader->SetTexture(SHADER_areaTex, m_SMAAareaTexture);
-   m_FBShader->SetTexture(SHADER_searchTex, m_SMAAsearchTexture);
+   m_FBShader->SetTexture(ShaderUniform::areaTex, m_SMAAareaTexture);
+   m_FBShader->SetTexture(ShaderUniform::searchTex, m_SMAAsearchTexture);
 }
 
 void RenderDevice::UploadTexture(ITexManCacheable* texture, const bool linearRGB)
@@ -2364,21 +2481,30 @@ void RenderDevice::UploadTexture(ITexManCacheable* texture, const bool linearRGB
    std::shared_ptr<Sampler> sampler = m_texMan.LoadTexture(texture, linearRGB);
    #if defined(ENABLE_BGFX)
    // BGFX dispatch operations to the render thread, so the texture manager does not actually loads data to the GPU nor perform mipmap generation
-   std::lock_guard lock(m_frameMutex);
-   m_pendingTextureUploads.push_back(sampler);
+   // The frame mutex must only be acquired when no frame is pending: the render thread needs it to consume a pending frame
+   while (m_framePending || !m_frameMutex.try_lock())
+   {
+      g_pplayer->ProcessOSMessages();
+      Sleep(0);
+   }
+   {
+      std::lock_guard lock(m_pendingTextureUploadsMutex);
+      m_pendingTextureUploads.push_back(sampler);
+   }
    SubmitRenderFrame(); // Submit texture upload to render thread
    SubmitRenderFrame(); // Block until render thread has processed the pending texture uploads and mipmap generations
-   #endif
+   m_frameMutex.unlock();
+#endif
 }
 
 void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddressMode clamp_u, SamplerAddressMode clamp_v)
 {
 #if defined(ENABLE_BGFX)
 #elif defined(ENABLE_OPENGL)
-   assert(std::size(m_samplerStateCache) == 3*3*5);
-   int samplerStateId = min((int)clamp_u, 2) * 5 * 3
-                      + min((int)clamp_v, 2) * 5
-                      + min((int)filter, 4);
+   assert(std::size(m_samplerStateCache) == 3*3*6);
+   int samplerStateId = min((int)clamp_u, 2) * 6 * 3
+                      + min((int)clamp_v, 2) * 6
+                      + min((int)filter, 5);
    GLuint sampler_state = m_samplerStateCache[samplerStateId];
    if (sampler_state == 0)
    {
@@ -2386,29 +2512,34 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
       glGenSamplers(1, &sampler_state);
       m_samplerStateCache[samplerStateId] = sampler_state;
       static constexpr int glAddress[] = { GL_REPEAT, GL_CLAMP_TO_EDGE, GL_MIRRORED_REPEAT, GL_REPEAT };
-      glSamplerParameteri(sampler_state, GL_TEXTURE_WRAP_S, glAddress[clamp_u]);
-      glSamplerParameteri(sampler_state, GL_TEXTURE_WRAP_T, glAddress[clamp_v]);
+      glSamplerParameteri(sampler_state, GL_TEXTURE_WRAP_S, glAddress[static_cast<unsigned int>(clamp_u)]);
+      glSamplerParameteri(sampler_state, GL_TEXTURE_WRAP_T, glAddress[static_cast<unsigned int>(clamp_v)]);
       switch (filter)
       {
       default: assert(!"unknown filter");
-      case SF_NONE: // No mipmapping
+      case SamplerFilter::SF_NONE: // No mipmapping
          glSamplerParameteri(sampler_state, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
          glSamplerParameteri(sampler_state, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
          glSamplerParameterf(sampler_state, GL_TEXTURE_MAX_ANISOTROPY, 1.0f);
          break;
-      case SF_BILINEAR: // Bilinear texture filtering.
+      case SamplerFilter::SF_BILINEAR: // Bilinear texture filtering.
          glSamplerParameteri(sampler_state, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
          glSamplerParameteri(sampler_state, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
          glSamplerParameterf(sampler_state, GL_TEXTURE_MAX_ANISOTROPY, 1.0f);
          break;
-      case SF_TRILINEAR: // Trilinear texture filtering.
+      case SamplerFilter::SF_TRILINEAR: // Trilinear texture filtering.
          glSamplerParameteri(sampler_state, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
          glSamplerParameteri(sampler_state, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
          glSamplerParameterf(sampler_state, GL_TEXTURE_MAX_ANISOTROPY, 1.0f);
          break;
-      case SF_ANISOTROPIC: // Anisotropic texture filtering.
+      case SamplerFilter::SF_ANISOTROPIC: // Anisotropic texture filtering.
          glSamplerParameteri(sampler_state, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
          glSamplerParameteri(sampler_state, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+         glSamplerParameterf(sampler_state, GL_TEXTURE_MAX_ANISOTROPY, m_maxaniso);
+         break;
+      case SamplerFilter::SF_PIXELATED: // Point magnification, filtered (anisotropic) minification.
+         glSamplerParameteri(sampler_state, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+         glSamplerParameteri(sampler_state, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
          glSamplerParameterf(sampler_state, GL_TEXTURE_MAX_ANISOTROPY, m_maxaniso);
          break;
       }
@@ -2421,7 +2552,7 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
       switch (filter)
       {
       default:
-      case SF_NONE:
+      case SamplerFilter::SF_NONE:
          // Don't filter textures, no mipmapping.
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAGFILTER, D3DTEXF_POINT));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MINFILTER, D3DTEXF_POINT));
@@ -2429,7 +2560,7 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
          m_curStateChanges+=3;
          break;
 
-      case SF_BILINEAR:
+      case SamplerFilter::SF_BILINEAR:
          // Interpolate in 2x2 texels, no mipmapping.
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MINFILTER, D3DTEXF_LINEAR));
@@ -2437,7 +2568,7 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
          m_curStateChanges += 3;
          break;
 
-      case SF_TRILINEAR:
+      case SamplerFilter::SF_TRILINEAR:
          // Filter textures on 2 mip levels (interpolate in 2x2 texels). And filter between the 2 mip levels.
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MINFILTER, D3DTEXF_LINEAR));
@@ -2445,9 +2576,18 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
          m_curStateChanges += 3;
          break;
 
-      case SF_ANISOTROPIC:
+      case SamplerFilter::SF_ANISOTROPIC:
          // Full HQ anisotropic Filter. Should lead to driver doing whatever it thinks is best.
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAGFILTER, m_mag_aniso ? D3DTEXF_ANISOTROPIC : D3DTEXF_LINEAR));
+         CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC));
+         CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR));
+         CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAXANISOTROPY, min(m_maxaniso, (DWORD)16)));
+         m_curStateChanges += 4;
+         break;
+
+      case SamplerFilter::SF_PIXELATED:
+         // Keep crisp texels when magnified, but filter (and mipmap) when minified to avoid aliasing.
+         CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAGFILTER, D3DTEXF_POINT));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR));
          CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_MAXANISOTROPY, min(m_maxaniso, (DWORD)16)));
@@ -2460,9 +2600,9 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
    {
       switch (clamp_u)
       {
-         case SA_REPEAT: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP)); m_curStateChanges++; break;
-         case SA_CLAMP: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP)); m_curStateChanges++; break;
-         case SA_MIRROR: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_MIRROR)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_REPEAT: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_CLAMP: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_MIRROR: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSU, D3DTADDRESS_MIRROR)); m_curStateChanges++; break;
       }
       m_bound_clampu[unit] = clamp_u;
    }
@@ -2470,9 +2610,9 @@ void RenderDevice::SetSamplerState(int unit, SamplerFilter filter, SamplerAddres
    {
       switch (clamp_v)
       {
-         case SA_REPEAT: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP)); m_curStateChanges++; break;
-         case SA_CLAMP: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP)); m_curStateChanges++; break;
-         case SA_MIRROR: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_MIRROR)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_REPEAT: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_CLAMP: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP)); m_curStateChanges++; break;
+         case SamplerAddressMode::SA_MIRROR: CHECKD3D(m_pD3DDevice->SetSamplerState(unit, D3DSAMP_ADDRESSV, D3DTADDRESS_MIRROR)); m_curStateChanges++; break;
       }
       m_bound_clampv[unit] = clamp_v;
    }
@@ -2539,17 +2679,17 @@ void RenderDevice::SetClipPlane(const vec4 &plane)
    // FIXME GLES implement (or use BGFX OpenGL ES implementation)
    return;
 #elif defined(ENABLE_BGFX)
-   //m_DMDShader->SetVector(SHADER_clip_plane, &plane); // FIXME
-   m_basicShader->SetVector(SHADER_clip_plane, &plane);
-   m_lightShader->SetVector(SHADER_clip_plane, &plane);
-   m_flasherShader->SetVector(SHADER_clip_plane, &plane);
-   m_ballShader->SetVector(SHADER_clip_plane, &plane);
+   //m_DMDShader->SetVector(ShaderUniform::clip_plane, &plane); // FIXME
+   m_basicShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_lightShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_flasherShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_ballShader->SetVector(ShaderUniform::clip_plane, &plane);
 #elif defined(ENABLE_OPENGL)
-   m_DMDShader->SetVector(SHADER_clip_plane, &plane);
-   m_basicShader->SetVector(SHADER_clip_plane, &plane);
-   m_lightShader->SetVector(SHADER_clip_plane, &plane);
-   m_flasherShader->SetVector(SHADER_clip_plane, &plane);
-   m_ballShader->SetVector(SHADER_clip_plane, &plane);
+   m_DMDShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_basicShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_lightShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_flasherShader->SetVector(ShaderUniform::clip_plane, &plane);
+   m_ballShader->SetVector(ShaderUniform::clip_plane, &plane);
 #elif defined(ENABLE_DX9)
    // FIXME DX9 shouldn't we set the Model matrix to identity first ?
    Matrix3D mT = g_pplayer->m_renderer->GetMVP().GetModelViewProj(0); // = world * view * proj
@@ -2710,51 +2850,51 @@ void RenderDevice::DrawMesh(Shader* shader, const bool isTranparentPass, const V
 
 void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, RenderTarget* dest, float kernel_size, int singleLayer)
 {
-   ShaderTechniques tech_h, tech_v;
+   ShaderTechnique tech_h, tech_v;
    if (kernel_size < 8)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz7x7;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert7x7;
+      tech_h = ShaderTechnique::fb_blur_horiz7x7;
+      tech_v = ShaderTechnique::fb_blur_vert7x7;
    }
    else if (kernel_size < 10)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz9x9;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert9x9;
+      tech_h = ShaderTechnique::fb_blur_horiz9x9;
+      tech_v = ShaderTechnique::fb_blur_vert9x9;
    }
    else if (kernel_size < 12)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz11x11;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert11x11;
+      tech_h = ShaderTechnique::fb_blur_horiz11x11;
+      tech_v = ShaderTechnique::fb_blur_vert11x11;
    }
    else if (kernel_size < 14)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz13x13;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert13x13;
+      tech_h = ShaderTechnique::fb_blur_horiz13x13;
+      tech_v = ShaderTechnique::fb_blur_vert13x13;
    }
    else if (kernel_size < 17)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz15x15;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert15x15;
+      tech_h = ShaderTechnique::fb_blur_horiz15x15;
+      tech_v = ShaderTechnique::fb_blur_vert15x15;
    }
    else if (kernel_size < 21)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz19x19;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert19x19;
+      tech_h = ShaderTechnique::fb_blur_horiz19x19;
+      tech_v = ShaderTechnique::fb_blur_vert19x19;
    }
    else if (kernel_size < 25)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz23x23;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert23x23;
+      tech_h = ShaderTechnique::fb_blur_horiz23x23;
+      tech_v = ShaderTechnique::fb_blur_vert23x23;
    }
    else if (kernel_size < 31)
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz27x27;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert27x27;
+      tech_h = ShaderTechnique::fb_blur_horiz27x27;
+      tech_v = ShaderTechnique::fb_blur_vert27x27;
    }
    else
    {
-      tech_h = SHADER_TECHNIQUE_fb_blur_horiz39x39;
-      tech_v = SHADER_TECHNIQUE_fb_blur_vert39x39;
+      tech_h = ShaderTechnique::fb_blur_horiz39x39;
+      tech_v = ShaderTechnique::fb_blur_vert39x39;
    }
 
    RenderPass* const initial_rt = GetCurrentPass();
@@ -2766,22 +2906,22 @@ void RenderDevice::DrawGaussianBlur(RenderTarget* source, RenderTarget* tmp, Ren
    SetRenderState(RenderState::ZWRITEENABLE, RenderState::RS_FALSE);
    SetRenderState(RenderState::ZENABLE, RenderState::RS_FALSE);
    {
-      m_FBShader->SetTextureNull(SHADER_tex_fb_filtered);
+      m_FBShader->SetTextureNull(ShaderUniform::tex_fb_filtered);
       SetRenderTarget(initial_rt->m_name + " HBlur", tmp, false); // switch to temporary output buffer for horizontal phase of gaussian blur
       m_currentPass->m_singleLayerRendering = singleLayer; // We support blurring a single layer (for anaglyph defocusing)
       AddRenderTargetDependency(source);
-      m_FBShader->SetTexture(SHADER_tex_fb_filtered, source->GetColorSampler());
-      m_FBShader->SetVector(SHADER_w_h_height, (float)(1.0 / source->GetWidth()), (float)(1.0 / source->GetHeight()), 1.0f, 1.0f);
+      m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, source->GetColorSampler());
+      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / source->GetWidth()), (float)(1.0 / source->GetHeight()), 1.0f, 1.0f);
       m_FBShader->SetTechnique(tech_h);
       DrawFullscreenTexturedQuad(m_FBShader);
    }
    {
-      m_FBShader->SetTextureNull(SHADER_tex_fb_filtered);
+      m_FBShader->SetTextureNull(ShaderUniform::tex_fb_filtered);
       SetRenderTarget(initial_rt->m_name + " VBlur", dest, false); // switch to output buffer for vertical phase of gaussian blur
       m_currentPass->m_singleLayerRendering = singleLayer; // We support blurring a single layer (for anaglyph defocusing)
       AddRenderTargetDependency(tmp);
-      m_FBShader->SetTexture(SHADER_tex_fb_filtered, tmp->GetColorSampler());
-      m_FBShader->SetVector(SHADER_w_h_height, (float)(1.0 / tmp->GetWidth()), (float)(1.0 / tmp->GetHeight()), 1.0f, 1.0f);
+      m_FBShader->SetTexture(ShaderUniform::tex_fb_filtered, tmp->GetColorSampler());
+      m_FBShader->SetVector(ShaderUniform::w_h_height, (float)(1.0 / tmp->GetWidth()), (float)(1.0 / tmp->GetHeight()), 1.0f, 1.0f);
       m_FBShader->SetTechnique(tech_v);
       DrawFullscreenTexturedQuad(m_FBShader);
    }
@@ -2802,7 +2942,7 @@ void ReportFatalError(const HRESULT hr, const char* file, const int line)
 #elif defined(ENABLE_DX9)
    const string msg = std::format("Fatal Error {} ({:#010X}: {}) at {}:{}", DXGetErrorString(hr), (unsigned int)hr, DXGetErrorDescription(hr), file, line);
 #endif
-   ShowError(msg);
+   ShowFatalError(msg);
    assert(false);
    exit(-1);
 }

@@ -3,12 +3,13 @@
 #pragma once
 
 #include "fileio.h"
+#include "TableHash.h"
 
 class BiffWriter final :
    public IObjectWriter
 {
 public:
-   BiffWriter(IStream *pistream, const HCRYPTHASH hcrypthash);
+   BiffWriter(InMemStream* stream, TableHash* const hash);
    bool HasError() const override { return m_hasError; }
 
    void BeginObject(int objectId, bool isArray, bool isSkippable) override;
@@ -26,13 +27,15 @@ public:
    void WriteRaw(const int id, const void* pvalue, const int size) override;
    void EndObject() override;
 
-   void WriteBytes(const void *pv, const ULONG count);
+   void WriteBytes(const void* pv, const size_t count);
+   // Writes without feeding the table hash, for the few fields the *legacy) hash was never built from (see WriteFontDescriptor)
+   void WriteBytesNoHash(const void* pv, const size_t count);
    void WriteRecordSize(const int size);
 
-   IStream *m_pistream;
-   HCRYPTHASH m_hcrypthash;
+   InMemStream* m_stream;
+   TableHash* m_hash; // null to write without contributing to the table hash
 
 private:
    bool m_hasError = false;
-   vector<LARGE_INTEGER> m_subObjectRecordSizePos;
+   vector<int64_t> m_subObjectRecordSizePos;
 };

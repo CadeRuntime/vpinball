@@ -2,6 +2,7 @@
 
 #include "PUPManager.h"
 #include "PUPScreen.h"
+#include "PUPTrigger.h"
 #include "PUPCustomPos.h"
 #include "LibAv.h"
 
@@ -34,6 +35,12 @@ PUPManager::PUPManager(const MsgPluginAPI* msgApi, uint32_t endpointId, const st
    : m_szRootPath(rootPath)
    , m_endpointId(endpointId)
    , m_msgApi(msgApi)
+   , m_getVpxApiId(m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API))
+   , m_getAuxRendererId(m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER))
+   , m_onAuxRendererChgId(m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG))
+   , m_getAudioSrcId(m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_GET_SRC_MSG))
+   , m_onAudioSrcChangedId(m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_SRC_CHG_MSG))
+   , m_audioSrcDef({ .id = { endpointId, 0 }, .overrideId = { 0, 0 }, .name = "PUP Player", .desc = "PinUp Player audio stream", .target = CTLPI_AUDIO_TARGET_BACKGLASS })
 {
    msgApi->RegisterSetting(endpointId, &pupMainVolume);
    m_mainVolume = pupMainVolume_Get();
@@ -52,29 +59,41 @@ PUPManager::PUPManager(const MsgPluginAPI* msgApi, uint32_t endpointId, const st
    msgApi->RegisterSetting(endpointId, &pupTopperPadTop);
    msgApi->RegisterSetting(endpointId, &pupTopperPadBottom);
    //msgApi->RegisterSetting(endpointId, &pupTopperFrameOverlayPath);
-   m_msgApi->SubscribeMsg(m_endpointId, m_getAuxRendererId = m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER), OnGetRenderer, this);
-   m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId = m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG), nullptr);
 
-   m_msgApi->BroadcastMsg(m_endpointId, m_getVpxApiId = m_msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API), &m_vpxApi);
+   m_msgApi->SubscribeMsg(m_endpointId, m_getAudioSrcId, OnGetAudioSrc, this);
+   m_msgApi->BroadcastMsg(m_endpointId, m_onAudioSrcChangedId, nullptr);
+
+   m_msgApi->SubscribeMsg(m_endpointId, m_getAuxRendererId, OnGetRenderer, this);
+   m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
+
+   m_msgApi->BroadcastMsg(m_endpointId, m_getVpxApiId, &m_vpxApi);
 }
 
 PUPManager::~PUPManager()
 {
    Unload();
+
+   m_msgApi->UnsubscribeMsg(m_getAudioSrcId, OnGetAudioSrc, this);
+   m_msgApi->BroadcastMsg(m_endpointId, m_onAudioSrcChangedId, nullptr);
+   m_msgApi->ReleaseMsgID(m_getAudioSrcId);
+   m_msgApi->ReleaseMsgID(m_onAudioSrcChangedId);
+
    m_msgApi->UnsubscribeMsg(m_getAuxRendererId, OnGetRenderer, this);
    m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
    m_msgApi->ReleaseMsgID(m_getAuxRendererId);
    m_msgApi->ReleaseMsgID(m_onAuxRendererChgId);
-   m_msgApi->FlushPendingCallbacks(m_endpointId);
+
    m_msgApi->ReleaseMsgID(m_getVpxApiId);
+
+   m_msgApi->FlushPendingCallbacks(m_endpointId);
 }
 
 void PUPManager::Start()
 {
    LOGI("PUP Manager start"s);
    assert(!IsRunning());
-   m_dofEventStream = std::make_unique<DOFEventStream>(m_msgApi, m_endpointId, [this](char c, int id, int value) { QueueDOFEvent(c, id, value); });
-   m_dofEventStream->SetDMDHandler(
+   m_B2SPluginEventStream = std::make_unique<B2SPluginEventStream>(m_msgApi, m_endpointId, m_controller, [this](char c, int id, int value) { QueueDOFEvent(c, id, value); });
+   m_B2SPluginEventStream->SetDMDHandler(
       [](const GetDisplaySrcMsg& sources)
       {
          DisplaySrcId selected {};
@@ -90,16 +109,69 @@ void PUPManager::Start()
          return selected;
       },
       [this](const DisplaySrcId& src, const uint8_t* frame) { return ProcessDmdFrame(src, frame); });
+   m_B2SPluginEventStream->SetDmdIdentificationHandler(
+      [](bool bySerum)
+      {
+         if (bySerum)
+            LOGI("DMD frame identification provided by Serum; local matching disabled"s);
+         else
+            LOGI("DMD frame identification handled locally"s);
+      });
 }
 
 void PUPManager::Stop()
 {
    LOGI("PUP Manager stop"s);
    assert(IsRunning());
-   m_dofEventStream = nullptr;
+   m_B2SPluginEventStream = nullptr;
 }
 
-void PUPManager::SetGameDir(const string& szRomName)
+std::filesystem::path PUPManager::FindGameDir(const std::string_view& gameNs, const std::string_view& gameId) const
+{
+   if (gameId.empty())
+      return {};
+
+   // First search for pupvideos along the table file
+   if (m_vpxApi != nullptr)
+   {
+      VPXTableInfo tableInfo {};
+      m_vpxApi->GetTableInfo(&tableInfo);
+      const std::filesystem::path pupBase = PluginStrings::PathFromNative(tableInfo.path).parent_path() / "pupvideos"sv;
+      if (!gameNs.empty())
+         if (std::filesystem::path path = find_case_insensitive_directory_path(pupBase / PluginStrings::PathFromUTF8(gameNs) / PluginStrings::PathFromUTF8(gameId)); !path.empty())
+            return path;
+      if (std::filesystem::path path = find_case_insensitive_directory_path(pupBase / PluginStrings::PathFromUTF8(gameId)); !path.empty())
+         return path;
+   }
+
+   // If we did not find the pup folder along the table, search for it in the global 'pupvideos' path if defined
+   if (!m_szRootPath.empty())
+   {
+      if (!gameNs.empty())
+         if (std::filesystem::path path = find_case_insensitive_directory_path(m_szRootPath / PluginStrings::PathFromUTF8(gameNs) / PluginStrings::PathFromUTF8(gameId)); !path.empty())
+            return path;
+      return find_case_insensitive_directory_path(m_szRootPath / PluginStrings::PathFromUTF8(gameId));
+   }
+
+   return {};
+}
+
+void PUPManager::ApplyGameDir(const std::filesystem::path& path, const std::string_view& gameId, const ControllerDef& controller)
+{
+   if (path.empty() || path == m_szPath)
+      return;
+
+   m_szPath = path;
+   m_szRomName = gameId;
+   m_controllerGameId = controller.gameId != nullptr ? controller.gameId : "";
+   m_controller = { controller.endpointId, m_controllerGameId.c_str() };
+   LOGI("PUP path: " + PluginStrings::PathToUTF8(m_szPath));
+
+   // Load Fonts
+   LoadFonts();
+}
+
+void PUPManager::SetGameDir(const ControllerDef& controller)
 {
    assert(!IsRunning());
 
@@ -108,45 +180,36 @@ void PUPManager::SetGameDir(const string& szRomName)
    // With an empty component, `pupvideos` / "" resolves to the pupvideos parent directory which
    // then satisfies the directory-exists check in find_case_insensitive_directory_path and
    // wrongly becomes m_szPath.
+   const std::string_view gameId = PinballPlugin::Controller::CtrlGetGameKey(controller.gameId);
+   if (gameId.empty())
+      return;
+
+   ApplyGameDir(FindGameDir(PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId), gameId), gameId, controller);
+}
+
+void PUPManager::SetGameDir(const string& szRomName)
+{
+   assert(!IsRunning());
    if (szRomName.empty())
       return;
 
-   std::filesystem::path path;
-
-   // First search for pupvideos along the table file
-   if (m_vpxApi != nullptr)
-   {
-      VPXTableInfo tableInfo;
-      m_vpxApi->GetTableInfo(&tableInfo);
-      std::filesystem::path tablePath = tableInfo.path;
-      path = find_case_insensitive_directory_path(tablePath.parent_path() / "pupvideos"sv / szRomName);
-   }
-
-   // If we did not find the pup folder along the table, search for it in the global 'pupvideos' path if defined
-   if (path.empty() && !m_szRootPath.empty())
-      path = find_case_insensitive_directory_path(m_szRootPath / szRomName);
-
-   if (path.empty())
-      return;
-
-   if (path == m_szPath)
-      return;
-
-   m_szPath = path;
-   m_szRomName = szRomName;
-   LOGI("PUP path: " + m_szPath.string());
-
-   // Load Fonts
-   LoadFonts();
+   // The script only hands over a rom name: bind to the controller exposing it
+   // when there is one, otherwise keep the legacy folder lookup bound to none.
+   ControllerDef controller = SelectControllerForGame(szRomName);
+   if (controller.endpointId == 0)
+      controller = { 0, szRomName.c_str() };
+   SetGameDir(controller);
 }
 
-void PUPManager::LoadConfig(const string& szRomName)
+void PUPManager::LoadConfig(const ControllerDef& controller)
 {
+   const std::string_view gameId = PinballPlugin::Controller::CtrlGetGameKey(controller.gameId);
+
    // Tables commonly call B2SInit multiple times, and some tables configure PuP
    // entirely from script (PuPlayer.Init / playlistadd) before B2SInit ever fires.
    // In both cases, if we already have state for this ROM, keep it - just make
    // sure the manager is running and the initial DOF event has been queued.
-   if (!m_szPath.empty() && lowerCase(szRomName) == lowerCase(m_szRomName))
+   if (!m_szPath.empty() && lowerCase(string(gameId)) == lowerCase(m_szRomName) && m_controller.endpointId == controller.endpointId)
    {
       LOGI("Same ROM, skipping re-init"s);
       if (!IsRunning())
@@ -159,7 +222,7 @@ void PUPManager::LoadConfig(const string& szRomName)
 
    Unload();
 
-   SetGameDir(szRomName);
+   SetGameDir(controller);
 
    // Set game dir will define the path to the pup files, or empty it if not found
    if (m_szPath.empty())
@@ -182,23 +245,76 @@ void PUPManager::LoadConfig(const string& szRomName)
          while (std::getline(screensFile, line)) {
             if (++i == 1)
                continue;
-            std::unique_ptr<PUPScreen> pScreen = PUPScreen::CreateFromCSV(this, line, m_playlists);
+            std::unique_ptr<PUPScreen> pScreen = PUPScreen::CreateFromCSV(this, PluginStrings::TextFromUTF8OrCP1252(line), m_playlists);
             if (pScreen)
                AddScreen(std::move(pScreen));
          }
       }
       else {
-         LOGE("Unable to load " + szScreensPath.string());
+         LOGE("Unable to load " + PluginStrings::PathToUTF8(szScreensPath));
       }
    }
    else {
       LOGI("No screens.pup file found"s);
    }
 
+   // Triggers that only a DMD frame match can fire.
+   //
+   // Counted from the parsed conditions rather than the trigger string, which
+   // is what QueueDOFEvent matches on too: a trigger may carry several
+   // conditions, so its string is not always a single "D1234". Number 0 is
+   // excluded, being PuP's own startup event -- queued below by this code
+   // rather than matched against a frame.
+   m_dmdTriggerCount = 0;
+   for (const auto& [screenNum, pScreen] : m_screenMap)
+      for (const auto& [szTrigger, triggers] : pScreen->GetTriggers())
+         for (PUPTrigger* pTrigger : triggers)
+            if (std::ranges::any_of(pTrigger->GetTriggers(), [](const PUPTrigger::PUPTriggerCondition& condition) { return condition.m_type == 'D' && condition.m_number != 0; }))
+               ++m_dmdTriggerCount;
+
    Start();
 
    // Queue initial game event
    QueueDOFEvent('D', 0, 1);
+}
+
+void PUPManager::LoadConfig(const string& szRomName)
+{
+   if (szRomName.empty())
+      return;
+   ControllerDef controller = SelectControllerForGame(szRomName);
+   if (controller.endpointId == 0)
+      controller = { 0, szRomName.c_str() };
+   LoadConfig(controller);
+}
+
+// Select the controller exposing the given game key, a pinmame:: one winning
+// over other namespaces when several match (selection order is otherwise
+// undefined). Returns an empty ControllerDef when none does.
+ControllerDef PUPManager::SelectControllerForGame(const std::string_view& gameKey)
+{
+   const unsigned int getControllersId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_CONTROLLERS_GET_MSG);
+   const std::vector<ControllerDef> controllers = PinballPlugin::Controller::GetCtrlItems<ControllerDef>(m_msgApi, m_endpointId, getControllersId);
+   m_msgApi->ReleaseMsgID(getControllersId);
+
+   const ControllerDef* selected = nullptr;
+   for (const ControllerDef& controller : controllers)
+   {
+      if (PinballPlugin::Controller::CtrlGetGameKey(controller.gameId) != gameKey)
+         continue;
+      if (PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId) == "pinmame"sv)
+      {
+         selected = &controller;
+         break;
+      }
+      if (selected == nullptr)
+         selected = &controller;
+   }
+   if (selected == nullptr)
+      return {};
+
+   m_controllerGameId = selected->gameId;
+   return { selected->endpointId, m_controllerGameId.c_str() };
 }
 
 void PUPManager::Unload()
@@ -214,6 +330,9 @@ void PUPManager::Unload()
    m_screenMap.clear();
 
    m_dmd = nullptr;
+   m_dmdTriggerCount = 0;
+   m_dmdTriggerDataLoaded = false;
+   m_reportedMissingIdentification = false;
 
    UnloadFonts();
 
@@ -223,6 +342,8 @@ void PUPManager::Unload()
 
    m_szPath.clear();
    m_szRomName.clear();
+   m_controller = {};
+   m_controllerGameId.clear();
 }
 
 void PUPManager::UnloadFonts()
@@ -245,13 +366,13 @@ void PUPManager::LoadFonts()
             std::filesystem::path szFontPath = entry.path();
             if (lowerCase(szFontPath.extension()) == ".ttf")
             {
-               if (TTF_Font* pTTFFont = TTF_OpenFont(szFontPath.string().c_str(), 8))
+               if (TTF_Font* pTTFFont = TTF_OpenFont(PluginStrings::PathToUTF8(szFontPath).c_str(), 8))
                {
-                  AddFont(std::make_unique<PUPFont>(pTTFFont, szFontPath), entry.path().filename().string());
+                  AddFont(std::make_unique<PUPFont>(pTTFFont, szFontPath), PluginStrings::PathToUTF8(entry.path().filename()));
                }
                else
                {
-                  LOGE("Failed to load font: " + szFontPath.string() + ' ' + SDL_GetError());
+                  LOGE("Failed to load font: " + PluginStrings::PathToUTF8(szFontPath) + ' ' + SDL_GetError());
                }
             }
          }
@@ -264,10 +385,10 @@ void PUPManager::LoadFonts()
 
    if (m_vpxApi)
    {
-      VPXInfo vpxInfo;
+      VPXInfo vpxInfo {};
       m_vpxApi->GetVpxInfo(&vpxInfo);
-      std::filesystem::path fallbackPath = std::filesystem::path(vpxInfo.path) / "assets" / "LiberationSans-Regular.ttf";
-      if (TTF_Font* pTTFFont = TTF_OpenFont(fallbackPath.string().c_str(), 8))
+      std::filesystem::path fallbackPath = PluginStrings::PathFromNative(vpxInfo.path) / "assets" / "LiberationSans-Regular.ttf";
+      if (TTF_Font* pTTFFont = TTF_OpenFont(PluginStrings::PathToUTF8(fallbackPath).c_str(), 8))
          AddFont(std::make_unique<PUPFont>(pTTFFont, fallbackPath), "LiberationSans-Regular.ttf");
    }
 }
@@ -284,9 +405,9 @@ void PUPManager::LoadPlaylists()
       while (std::getline(playlistsFile, line)) {
          if (++i == 1)
             continue;
-         PUPPlaylist* pPlaylist = PUPPlaylist::CreateFromCSV(this, line);
+         PUPPlaylist* pPlaylist = PUPPlaylist::CreateFromCSV(this, PluginStrings::TextFromUTF8OrCP1252(line));
          if (pPlaylist) {
-            string folderNameLower = lowerCase(pPlaylist->GetFolder().string());
+            string folderNameLower = lowerCase(PluginStrings::PathToUTF8(pPlaylist->GetFolder()));
             if (lowerPlaylistNames.find(folderNameLower) == lowerPlaylistNames.end()) {
                m_playlists.push_back(pPlaylist);
                lowerPlaylistNames.insert(folderNameLower);
@@ -404,12 +525,15 @@ bool PUPManager::AddFont(std::unique_ptr<PUPFont> pFont, const string& szFilenam
 
    TTF_Font* const pTTFFont = pFont->GetTTFFont();
 
-   const string szFamilyName = TTF_GetFontFamilyName(pTTFFont);
+   // SDL_ttf gives nullptr for fonts without family or style name: the family falls back to the file name without extension
+   const char* const familyName = TTF_GetFontFamilyName(pTTFFont);
+   const string szFamilyName = familyName ? string(familyName) : szFilename.substr(0, szFilename.find_last_of('.'));
    const string szNormalizedFamilyName = lowerCase(string_replace_all(szFamilyName, "  "s, ' '));
    m_fontMap[szNormalizedFamilyName] = pFont.get();
 
-   const string szStyleName = TTF_GetFontStyleName(pTTFFont);
-   if (szStyleName != "Regular")
+   const char* const styleName = TTF_GetFontStyleName(pTTFFont);
+   const string szStyleName = styleName ? string(styleName) : string();
+   if (!szStyleName.empty() && szStyleName != "Regular")
    {
       const string szFullName = szFamilyName + ' ' + szStyleName;
       const string szNormalizedFullName = lowerCase(string_replace_all(szFullName, "  "s, ' '));
@@ -457,8 +581,29 @@ int PUPManager::ProcessDmdFrame(const DisplaySrcId& src, const uint8_t* frame)
             LOGD(buffer);
          },
          this);
-      m_dmd->Load(m_szPath.string().c_str(), "", src.identifyFormat == CTLPI_DISPLAY_ID_FORMAT_BITPLANE2 ? 2 : 4);
+      m_dmdTriggerDataLoaded = m_dmd->Load(PluginStrings::PathToNative(m_szPath).c_str(), "", src.identifyFormat == CTLPI_DISPLAY_ID_FORMAT_BITPLANE2 ? 2 : 4);
       memset(m_idFrame.data(), 0, m_idFrame.size());
+   }
+
+   // Being called at all means nobody else is identifying frames for this game:
+   // the event stream skips this call entirely while Serum does, and Serum
+   // claims the game before it starts reading its colorization, so the question
+   // is settled before the first frame gets here rather than however long a
+   // load takes. So if the pack has triggers that only a frame match can fire
+   // and there is no local trigger data to match against, those triggers never
+   // fire, and the pack plays with parts of it silently missing.
+   //
+   // Worth a message because the failure is otherwise invisible: the pack
+   // loads, the screens appear, and only the media behind the missing triggers
+   // is absent. A pack built against a Serum colorization is the usual way into
+   // this, its author having had no way to declare the dependency -- the PuP
+   // editor only knows "D12345" strings.
+   if (!m_dmdTriggerDataLoaded && m_dmdTriggerCount > 0 && !m_reportedMissingIdentification)
+   {
+      m_reportedMissingIdentification = true;
+      LOGE(std::format("This PuP pack has {} DMD trigger(s) but no trigger data of its own, and no Serum colorization is identifying frames for '{}'. "
+                       "Those triggers cannot fire. Install the colorization the pack was built against, or a pupdmd trigger set for it.",
+         m_dmdTriggerCount, m_szRomName));
    }
 
    if (src.width == 128 && src.height == 32)
@@ -754,6 +899,15 @@ void PUPManager::OnGetRenderer(const unsigned int eventId, void* context, void* 
       }
       msg->count++;
    }
+}
+
+void PUPManager::OnGetAudioSrc(const unsigned int eventId, void* context, void* msgData)
+{
+   auto me = static_cast<PUPManager*>(context);
+   auto msg = static_cast<GetAudioSrcMsg*>(msgData);
+   if (msg->count < msg->maxEntryCount) 
+      msg->entries[msg->count] = me->m_audioSrcDef;
+   msg->count++;
 }
 
 const string& PlayActionToString(PlayAction value)

@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <charconv>
+#include <cmath>
+#include <climits>
+#include <bit>
 
 #include <cstddef> // for size_t, ptrdiff_t
 // Define ssize_t for Windows
@@ -19,12 +22,27 @@ typedef int ssize_t;
 
 #include "base64.h"
 
+#include "plugins/PluginStrings.h"
+
 namespace B2S
 {
 
-static inline bool StrCompareNoCase(const string& strA, const string& strB)
+#ifndef __clang__
+#define double_as_int64(x) std::bit_cast<int64_t>(x)
+#else // for whatever reason apple/clang is special again
+#define double_as_int64(x) __builtin_bit_cast(int64_t, x)
+#endif
+static constexpr bool infNaN(const double a) { return ((double_as_int64(a) & 0x7FF0000000000000ULL) == 0x7FF0000000000000ULL); }
+
+string trim_string(const string& str)
 {
-   return strA.length() == strB.length() && std::equal(strA.begin(), strA.end(), strB.begin(), [](char a, char b) { return cLower(a) == cLower(b); });
+   size_t start = 0;
+   size_t end = str.length();
+   while (start < end && (str[start] == ' ' || str[start] == '\t' || str[start] == '\r' || str[start] == '\n'))
+      ++start;
+   while (end > start && (str[end - 1] == ' ' || str[end - 1] == '\t' || str[end - 1] == '\r' || str[end - 1] == '\n'))
+      --end;
+   return str.substr(start, end - start);
 }
 
 string string_to_lower(string str)
@@ -35,36 +53,12 @@ string string_to_lower(string str)
 
 std::filesystem::path find_case_insensitive_file_path(const std::filesystem::path& searchedFile)
 {
-   auto fn = [](const auto& self, std::filesystem::path path)
+   const std::filesystem::path found = PluginStrings::FindPathNoCase(searchedFile, false);
+   if (std::error_code ec; !found.empty() && !std::filesystem::exists(searchedFile, ec))
    {
-      std::error_code ec;
-      path = path.lexically_normal();
-      if (std::filesystem::exists(path, ec))
-         return path;
-
-      const auto& parent = path.parent_path();
-      std::filesystem::path base = (parent.empty() || parent == path) ? std::filesystem::path("."s) : self(self, parent);
-      if (base.empty())
-         return base;
-
-      for (const auto& ent : std::filesystem::directory_iterator(base, ec))
-      {
-         if (!ec && StrCompareNoCase(ent.path().filename().string(), path.filename().string()))
-         {
-            const auto& found = ent.path();
-            if (found != path)
-            {
-               LOGI(std::format("Case insensitive file match: requested \"{}\", actual \"{}\"", path.string(), found.string()));
-            }
-            return found;
-         }
-      }
-
-      return std::filesystem::path();
-   };
-
-   const std::filesystem::path result = fn(fn, searchedFile);
-   return result.empty() ? result : std::filesystem::absolute(result);
+      LOGI(std::format("Case insensitive file match: requested \"{}\", actual \"{}\"", PluginStrings::PathToUTF8(searchedFile), PluginStrings::PathToUTF8(found)));
+   }
+   return found;
 }
 
 // Wraps up https://github.com/czkz/base64 public domain decoder (plus extensions/optimizations)
@@ -84,6 +78,28 @@ vector<uint8_t> base64_decode(const char * const __restrict value, const size_t 
    const size_t newLen = from_base64_inplace(ret.data(), dst - ret.data());
    ret.resize(newLen);
    return ret; // will be moved
+}
+
+// trims leading whitespace or similar, this is needed as e.g. B2S reels feature leading whitespace(s)
+int string_to_int(const string& str, int defaultValue)
+{
+   int result;
+   return is_string_numeric(str, &result) ? result : defaultValue;
+}
+
+bool is_string_numeric(const string& str, int* const __restrict result)
+{
+   const string tmp = trim_string(str);
+   if (tmp.empty())
+      return false;
+   char* end = nullptr;
+   const double valued = std::nearbyint(std::strtod(tmp.c_str(), &end));
+   if (infNaN(valued) || valued < static_cast<double>(INT_MIN) || valued > static_cast<double>(INT_MAX))
+      return false;
+   const int valuei = static_cast<int>(valued);
+   if (result)
+      *result = valuei;
+   return end == tmp.c_str() + tmp.length();
 }
 
 }

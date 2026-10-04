@@ -45,13 +45,14 @@ public:
    float HitTest(const BallS& ball, const float dtime, CollisionEvent& coll) const override;
    int GetType() const override { return eBall; }
    void Collide(const CollisionEvent& coll) override;
-   void Contact(CollisionEvent& coll, const float dtime) override { }
+   // Contact() is inherited: it applies HandleStaticContact to coll.m_ball (each ball reports its own contact record)
    void CalcHitBBox() override;
 
    float HitRadiusSqr() const { return sqrf((m_hitBBox.right - m_hitBBox.left)*0.5f); } // this returns the extended (by m_vel + magic) squared radius, as needed to be used in the collision detection
    void Collide3DWall(const Vertex3Ds& hitNormal, float elasticity, const float elastFalloff, const float friction, float scatter_angle);
 
-   void ApplyFriction(const Vertex3Ds& hitnormal, const float dtime, const float fricCoeff);
+   void ApplyFriction(const Vertex3Ds& hitnormal, const float dtime, const float fricCoeff,
+      const float normalImpulse); // normalImpulse: normal Δv applied by the contact this step (only used with FIX_PHYSICS)
    void HandleStaticContact(const CollisionEvent& coll, const float friction, const float dtime);
 
    Vertex3Ds SurfaceVelocity(const Vertex3Ds& surfP) const;

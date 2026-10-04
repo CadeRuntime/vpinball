@@ -97,9 +97,9 @@ void LineSegSlingshot::Collide(const CollisionEvent& coll)
       if (dist_ls > 0.25f) //!! magic distance, must be a new place if only by a little
       {
          m_obj->FireGroupEvent(DISPID_SurfaceEvents_Slingshot);
-         m_TimeReset = g_pplayer->m_time_msec + 100;
+         m_TimeReset = m_physics->GetTimeMsec() + 100;
 
-         g_pplayer->m_pininput.PlayRumble(0.15f, 0.1f, 100);
+         m_physics->PlaySlingshotRumble();
       }
    }
 }
@@ -110,7 +110,7 @@ void LineSegSlingshot::Animate()
    {
       m_iframe = true;
    }
-   else if (m_iframe && (m_TimeReset < g_pplayer->m_time_msec))
+   else if (m_iframe && (m_TimeReset < m_physics->GetTimeMsec()))
    {
       m_iframe = false;
       m_TimeReset = 0;
@@ -196,6 +196,9 @@ void HitGate::Collide(const CollisionEvent& coll)
 
    // linear speed = ball speed
    // angular speed = linear/radius (height of hit)
+   // Same massless / no-energy-loss kinematic model as the spinner above
+   // -- see HitSpinner::Collide for why this is intentional and what an
+   // opt-in physical upgrade would look like
    float speed = fabsf(dot);
    // h is the height of the gate axis.
    if (fabsf(h) > 1.0f) // avoid divide by zero
@@ -402,6 +405,20 @@ void HitSpinner::Collide(const CollisionEvent& coll)
    // h -coll.m_radius will be moving a at linear rate of
    // 'speed'.  We can calculate the angular speed from that.
 
+   // NOTE: this is a deliberate kinematic shortcut, not an approximation
+   // worth "fixing". The spinner inherits the ball's projected velocity
+   // and the ball loses no energy on the hit -- which matches the way
+   // real pinball spinners feel (a ~1-3 g paddle has so little inertia
+   // that ball pass-through is essentially free) and matches what tables
+   // tuned over decades expect. A physically correct upgrade would be:
+   //     I = mass * (width^2 + height^2) / 12   (rectangle about its
+   //                                             central horizontal axis)
+   // and then resolve the collision via angular impulse, deducting the
+   // corresponding linear impulse from the ball. That changes ball speed
+   // through spinner lanes and shifts the timing of `Spin` events that
+   // many tables script against, so it should be opt-in (e.g. behind a
+   // per-table flag) rather than a default change
+
    m_spinnerMover.m_anglespeed = fabsf(dot); // use this until a better value comes along
 
    if (fabsf(h) > 1.0f) // avoid divide by zero
@@ -564,7 +581,7 @@ float Hit3DPoly::HitTest(const BallS& ball, const float dtime, CollisionEvent& c
 
    const bool rigid = (m_ObjType != eTrigger);
    float hittime;
-#ifdef NEW_PHYSICS
+#if defined(NEW_PHYSICS) || defined(FIX_PHYSICS) // FIX_PHYSICS: also enable the slow-touch contact path (hittime 0 + isContact)
    bool isContact = false;
 #endif
    if (rigid) //rigid polygon
@@ -573,16 +590,16 @@ float Hit3DPoly::HitTest(const BallS& ball, const float dtime, CollisionEvent& c
 
       if (bnd <= (float)PHYS_TOUCH)
       {
-#ifdef NEW_PHYSICS
-          if (fabsf(bnv) <= C_CONTACTVEL)
-          {
-              hittime = 0;
-              isContact = true;
-          }
-          else if (inside)
-              hittime = 0;                          // zero time for rigid fast bodies
-          else
-              hittime = bnd / -bnv;
+#if defined(NEW_PHYSICS) || defined(FIX_PHYSICS)
+         if (fabsf(bnv) <= C_CONTACTVEL)
+         {
+            hittime = 0;
+            isContact = true;
+         }
+         else if (inside)
+            hittime = 0; // zero time for rigid fast bodies
+         else
+            hittime = bnd / -bnv;
 #else
           if (inside || (fabsf(bnv) > C_CONTACTVEL) // fast velocity, return zero time
                                                     //zero time for rigid fast bodies
@@ -674,7 +691,7 @@ float Hit3DPoly::HitTest(const BallS& ball, const float dtime, CollisionEvent& c
       coll.m_hitdistance = bnd;   // 3dhit actual contact distance ... 
       //coll.m_hitRigid = rigid;  // collision type
 
-#ifdef NEW_PHYSICS
+#if defined(NEW_PHYSICS) || defined(FIX_PHYSICS)
       coll.m_isContact = isContact;
       if (isContact)
          coll.m_hit_org_normalvelocity = bnv;

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "ui/win/resource.h" // win32xx related IDW_*
 #include <wxx_docking.h>
 #include <wxx_treeview.h>
 
@@ -41,7 +42,7 @@ private:
 
    string m_filter;
    bool m_isCaseSensitiveFilter = false;
-   
+
    struct TreeEntry
    {
       string path;
@@ -73,6 +74,8 @@ protected:
    INT_PTR DialogProc(UINT msg, WPARAM wparam, LPARAM lparam) override;
    BOOL OnCommand(WPARAM wParam, LPARAM lParam) override;
    BOOL PreTranslateMessage(MSG& msg) override;
+   void OnOK() override;
+   void OnCancel() override;
 
 private:
    void UpdateCommands();

@@ -16,10 +16,11 @@
 namespace VPX::Physics
 {
 
-NudgeHandler::NudgeHandler(InputManager* inputManager)
+NudgeHandler::NudgeHandler(InputManager* inputManager, Settings& appSettings)
+   : m_appSettings(appSettings)
 {
-   const Settings& settings = g_app->m_settings;
-   
+   const Settings& settings = m_appSettings;
+
    SetKeyboardNudgeMode((KeyboardNudgeMode)settings.GetPlayer_KeyboardNudgeMode());
 
    const int nNudgeSensors = settings.GetInput_NudgeSensorCount();
@@ -28,7 +29,7 @@ NudgeHandler::NudgeHandler(InputManager* inputManager)
       std::unique_ptr<NudgeSensor> sensor;
       AddSensor(sensor);
       auto typePropId = Settings::GetRegistry().GetPropertyId("Input"s, std::format("Mapping.Nudge{}.Type", i));
-      switch (g_app->m_settings.GetInt(typePropId.value()))
+      switch (m_appSettings.GetInt(typePropId.value()))
       {
       case 0: sensor = std::make_unique<GamepadNudge>(inputManager); break;
       case 1: sensor = std::make_unique<CabinetNudgeSensor>(inputManager); break;
@@ -55,6 +56,8 @@ void NudgeHandler::StepOneMillisecond()
 
 const Vertex2D& NudgeHandler::GetCabinetAcceleration() const
 {
+   if (m_externalOverride)
+      return m_externalAcceleration;
    if (m_keyboardNudge->IsActive())
       return m_keyboardNudge->GetCabinetAcceleration();
    for (const auto& sensor : m_sensors)
@@ -65,6 +68,8 @@ const Vertex2D& NudgeHandler::GetCabinetAcceleration() const
 
 const Vertex2D& NudgeHandler::GetCabinetOffset() const
 {
+   if (m_externalOverride)
+      return m_externalDisplacement;
    if (m_keyboardNudge->IsActive())
       return m_keyboardNudge->GetCabinetOffset();
    for (const auto& sensor : m_sensors)
@@ -89,7 +94,7 @@ void NudgeHandler::SetKeyboardNudgeMode(KeyboardNudgeMode mode)
 {
    if (m_keyboardNudge != nullptr && m_keyboardNudgeMode == mode)
       return;
-   const float strength = m_keyboardNudge ? m_keyboardNudge->GetStrengthScale() : g_app->m_settings.GetPlayer_KeyboardNudgeStrength();
+   const float strength = m_keyboardNudge ? m_keyboardNudge->GetStrengthScale() : m_appSettings.GetPlayer_KeyboardNudgeStrength();
    m_keyboardNudgeMode = mode;
    switch (m_keyboardNudgeMode)
    {
@@ -114,7 +119,7 @@ void NudgeHandler::AddSensor(std::unique_ptr<NudgeSensor>& sensor)
 
    Settings::GetRegistry().Register(std::make_unique<VPX::Properties::EnumPropertyDef>("Input"s, std::format("Mapping.Nudge{}.Type", sensorIndex),
       "Nudge Sensor Type"s,
-      "Game controller use stick position to evaluate player nudge intent.\nIntent Sensor uses sensor to evaluate player nudge intent while Cabinet Sensor directy maps sensor to emulated nudge (only valid on a real pinball cabinet with high frequency, low latency, noise free sensor on a high speed communication port)."s,
+      "Game controller uses the stick position to evaluate the players nudge intent. Intent Sensor uses the sensor to evaluate the player nudge intent, while the Cabinet Sensor directly maps the sensor to a simulated nudge (only valid on a real pinball cabinet with a high frequency, low latency, noise free sensor on a high speed communication port)."s,
       true, 0, 0, vector { "Game Controller"s, "Intent Sensor"s, "Cabinet Sensor"s }));
 
    Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(
@@ -125,9 +130,9 @@ void NudgeHandler::AddSensor(std::unique_ptr<NudgeSensor>& sensor)
 
    if (sensor)
    {
-      sensor->Save(g_app->m_settings, sensorIndex);
-      g_app->m_settings.SetInput_NudgeSensorCount(sensorIndex + 1, false);
-      g_app->m_settings.Save();
+      sensor->Save(m_appSettings, sensorIndex);
+      m_appSettings.SetInput_NudgeSensorCount(sensorIndex + 1, false);
+      m_appSettings.Save();
    }
 
    m_sensors.push_back(std::move(sensor));
@@ -156,9 +161,9 @@ void NudgeHandler::RemoveSensor(int index) {
                   {
                      switch (Settings::GetRegistry().GetStoreType(propDef->m_type))
                      {
-                     case VPX::Properties::PropertyRegistry::StoreType::Float: g_app->m_settings.Set(idNew, g_app->m_settings.GetFloat(id), false); break;
-                     case VPX::Properties::PropertyRegistry::StoreType::Int: g_app->m_settings.Set(idNew, g_app->m_settings.GetInt(id), false); break;
-                     case VPX::Properties::PropertyRegistry::StoreType::String: g_app->m_settings.Set(idNew, g_app->m_settings.GetString(id), false); break;
+                     case VPX::Properties::PropertyRegistry::StoreType::Float: m_appSettings.Set(idNew, m_appSettings.GetFloat(id), false); break;
+                     case VPX::Properties::PropertyRegistry::StoreType::Int: m_appSettings.Set(idNew, m_appSettings.GetInt(id), false); break;
+                     case VPX::Properties::PropertyRegistry::StoreType::String: m_appSettings.Set(idNew, m_appSettings.GetString(id), false); break;
                      }
                      break;
                   }
@@ -168,8 +173,8 @@ void NudgeHandler::RemoveSensor(int index) {
       }
    }
    m_sensors.erase(m_sensors.begin() + index);
-   g_app->m_settings.SetInput_NudgeSensorCount(static_cast<int>(m_sensors.size() + 1), false);
-   g_app->m_settings.Save();
+   m_appSettings.SetInput_NudgeSensorCount(static_cast<int>(m_sensors.size()), false);
+   m_appSettings.Save();
 }
 
 bool NudgeHandler::HasSensor(const std::unique_ptr<NudgeSensor>& sensor) const
@@ -208,7 +213,9 @@ void NudgeHandler::UnmapDevice(uint16_t deviceId)
 
 void NudgeHandler::SetExternalNudge(bool enableOverride, const Vertex2D& acceleration, const Vertex2D& displacement)
 {
-   // FIXME implement
+   m_externalOverride = enableOverride;
+   m_externalAcceleration = acceleration;
+   m_externalDisplacement = displacement;
 }
 
 

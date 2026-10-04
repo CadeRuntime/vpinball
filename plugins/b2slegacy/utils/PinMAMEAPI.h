@@ -8,7 +8,7 @@ class Server;
 
 class PinMAMEAPI {
 public:
-   PinMAMEAPI(MsgPluginAPI* msgApi, uint32_t endpointId, Server* server, ScriptClassDef* serverClassDef);
+   PinMAMEAPI(const MsgPluginAPI* msgApi, uint32_t endpointId, Server* server, ScriptClassDef* serverClassDef);
    ~PinMAMEAPI();
 
    ScriptArray* GetChangedLamps();
@@ -22,8 +22,8 @@ public:
 private:
    Server* m_server = nullptr;
    ScriptClassDef* m_serverClassDef = nullptr;
-   ScriptablePlugin::ScriptClassProxy m_controllerClassProxy;
-   ScriptablePlugin::ScriptObjectProxy m_controllerProxy;
+   PinballPlugin::Scriptable::ScriptClassProxy m_controllerClassProxy;
+   PinballPlugin::Scriptable::ScriptObjectProxy m_controllerProxy;
 
    int m_changedLampsIndex = -1;
    int m_changedSolenoidsIndex = -1;

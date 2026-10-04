@@ -2,6 +2,8 @@
 
 #include "math/vector.h"
 
+class Settings;
+
 
 namespace VPX::Physics
 {
@@ -27,6 +29,9 @@ public:
 class NudgeSensor : public NudgeSource
 {
 public:
+   // Peak cabinet acceleration (in m/s^2) of a strong nudge, for the keyboard and gamepad nudge models (from real world recordings)
+   static constexpr float StrongNudgeAcceleration = 0.7f * 9.80665f;
+
    virtual ~NudgeSensor() = default;
 
    virtual void Load(const Settings& settings, int sensorIndex) = 0;
@@ -53,7 +58,7 @@ public:
 class NudgeHandler final
 {
 public:
-   NudgeHandler(InputManager* inputManager);
+   NudgeHandler(InputManager* inputManager, Settings& appSettings);
 
    void ApplyKeyboardImpulse(float angle, float force);
 
@@ -85,11 +90,17 @@ public:
    void SetExternalNudge(bool enableOverride, const Vertex2D& acceleration, const Vertex2D& displacement);
 
 private:
+   Settings& m_appSettings; // Sensor mapping is an application wide setting (not overridable per table)
    std::unique_ptr<KeyboardNudge> m_keyboardNudge;
    vector<std::unique_ptr<NudgeSensor>> m_sensors;
    Vertex2D m_noNudge = Vertex2D(0.f, 0.f);
    KeyboardNudgeMode m_keyboardNudgeMode;
    int m_keyboardNudgeIndex = 0;
+
+   // External nudge state override (e.g. remote control plugin)
+   bool m_externalOverride = false;
+   Vertex2D m_externalAcceleration = Vertex2D(0.f, 0.f);
+   Vertex2D m_externalDisplacement = Vertex2D(0.f, 0.f);
 };
 
 };

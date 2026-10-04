@@ -4,11 +4,13 @@
 
 #include "ui/win/resource.h"
 
+#include <wxx_controls.h> // Add CComboBox
 #include <wxx_dialog.h>
 #include <wxx_docking.h>
 #include <wxx_stdcontrols.h>
 
 #include "utils/vector.h"
+#include "ui/win/IWinUIPart.h"
 
 
 #pragma region BasePropertyDialog
@@ -16,13 +18,23 @@
 class EditBox;
 class ComboBox;
 class Texture;
+class WinEditor;
 
 class BasePropertyDialog: public CDialog
 {
 public:
-    BasePropertyDialog(const int id, const VectorProtected<ISelect> *pvsel) : CDialog(id), m_pvsel(pvsel)
+    BasePropertyDialog(const int id, const vector<IWinUIPart *> *pvsel) : CDialog(id), m_pvsel(pvsel)
     {
     }
+
+    IWinUIPart *SelAt(const int i) const { return (*m_pvsel)[i]; }
+    int SelCount() const { return (int)m_pvsel->size(); }
+
+    // The table editor owning the edited selection, the table it edits, and the main editor window
+    // (nullptr when the selection is empty)
+    class PinTableWnd *GetTableEditor() const;
+    CComObject<PinTable> *GetTable() const;
+    class WinEditor *GetVpxEditor() const;
 
     virtual void UpdateProperties(const int dispid) = 0;
     virtual void UpdateVisuals(const int dispid=-1) = 0;
@@ -60,14 +72,16 @@ public:
         return FALSE;
     }
 
-    void UpdateBaseProperties(ISelect *psel, BaseProperty *property, const int dispid);
-    void UpdateBaseVisuals(ISelect *psel, BaseProperty *property, const int dispid = -1);
+    void UpdateBaseProperties(IEditable *part, BaseProperty *property, const int dispid);
+    void UpdateBaseVisuals(IEditable *part, BaseProperty *property, const int dispid = -1);
 
-    const VectorProtected<ISelect>* m_pvsel;
+    const vector<IWinUIPart *>* m_pvsel;
     static bool m_disableEvents;
 
 protected:
     INT_PTR DialogProc(UINT msg, WPARAM wparam, LPARAM lparam) override;
+    void OnOK() override;
+    void OnCancel() override;
 
     EditBox   *m_baseHitThresholdEdit = nullptr;
     EditBox   *m_baseElasticityEdit = nullptr;
@@ -134,7 +148,7 @@ private:
 class TimerProperty final : public BasePropertyDialog
 {
 public:
-    TimerProperty(const VectorProtected<ISelect> *pvsel);
+    TimerProperty(const vector<IWinUIPart *> *pvsel);
     void UpdateProperties(const int dispid) override;
     void UpdateVisuals(const int dispid=-1) override;
 
@@ -252,29 +266,31 @@ public:
 class PropertyDialog final : public CDialog
 {
 public:
-    PropertyDialog();
+   PropertyDialog();
 
-    void CreateTabs(VectorProtected<ISelect> &pvsel);
-    void DeleteAllTabs();
-    void UpdateTabs(VectorProtected<ISelect> &pvsel);
-    BOOL PreTranslateMessage(MSG& msg) override;
+   void CreateTabs(const vector<IWinUIPart *> &pvsel);
+   void DeleteAllTabs();
+   void UpdateTabs(const vector<IWinUIPart *> &pvsel);
+   void ReleaseSelection(const vector<IWinUIPart *> &pvsel); // Delete the tabs if they point to this selection (about to be destroyed)
 
-    static void UpdateTextureComboBox(const vector<Texture*>& contentList, const CComboBox &combo, const string &selectName);
-    static void UpdateComboBox(const vector<string>& contentList, const CComboBox &combo, const string &selectName);
-    static void UpdateMaterialComboBox(const vector<class Material *>& contentList, const CComboBox &combo, const string &selectName);
-    static void UpdateSurfaceComboBox(const PinTable *const ptable, const CComboBox &combo, const string &selectName);
-    static void UpdateSoundComboBox(const PinTable *const ptable, const CComboBox &combo, const string &selectName);
-    static void UpdateCollectionComboBox(const PinTable *const ptable, const CComboBox &combo, const char *selectName);
+   static void UpdateTextureComboBox(const vector<Texture *> &contentList, const CComboBox &combo, const string &selectName);
+   static void UpdateComboBox(const vector<string> &contentList, const CComboBox &combo, const string &selectName);
+   static void UpdateMaterialComboBox(const vector<class Material *> &contentList, const CComboBox &combo, const string &selectName);
+   static void UpdateSurfaceComboBox(const PinTable *const ptable, const CComboBox &combo, const string &selectName);
+   static void UpdateSoundComboBox(const PinTable *const ptable, const CComboBox &combo, const string &selectName);
+   static void UpdateCollectionComboBox(const PinTable *const ptable, const CComboBox &combo, const char *selectName);
 
-    static void StartUndo(ISelect *const psel);
+   static void StartUndo(IEditable *const part);
 
-    static void EndUndo(ISelect *const psel);
+   static void EndUndo(IEditable *const part);
 
-    static bool GetCheckboxState(const HWND checkBoxHwnd)
-    {
-       const size_t selected = ::SendMessage(checkBoxHwnd, BM_GETCHECK, 0, 0);
-       return selected != 0;
-    }
+   static void UpdateStatusBarInfo(IEditable *const part);
+
+   static bool GetCheckboxState(const HWND checkBoxHwnd)
+   {
+      const size_t selected = ::SendMessage(checkBoxHwnd, BM_GETCHECK, 0, 0);
+      return selected != 0;
+   }
 
     static void SetCheckboxState(const HWND checkBoxHwnd, const bool checked)
     {
@@ -328,7 +344,6 @@ public:
        return -1;
     }
 
-    BOOL IsSubDialogMessage(MSG &msg) const;
     LRESULT OnMouseActivate(UINT msg, WPARAM wparam, LPARAM lparam);
 
 protected:
@@ -336,19 +351,22 @@ protected:
     BOOL OnCommand(WPARAM wParam, LPARAM lParam) override;
     INT_PTR DialogProc(UINT msg, WPARAM wparam, LPARAM lparam) override;
     void OnClose() override;
+    void OnOK() override;
+    void OnCancel() override;
 
 private:
-    PropertyTab  m_tab;
-    BasePropertyDialog *m_tabs[PROPERTY_TABS];
-    ItemTypeEnum m_previousType;
-    bool         m_isPlayfieldMesh;
-    bool         m_desktopBackdropView;
+   PropertyTab m_tab;
+   BasePropertyDialog *m_tabs[PROPERTY_TABS];
+   const vector<IWinUIPart *> *m_tabsSelection = nullptr; // Selection the tabs point to
+   ItemTypeEnum m_previousType;
+   bool m_isPlayfieldMesh;
+   bool m_desktopBackdropView;
 
-    int      m_curTabIndex;
-    CEdit    m_nameEdit;
-    CResizer m_resizer;
-    CStatic  m_multipleElementsStatic;
-    CStatic  m_elementTypeName;
+   int m_curTabIndex;
+   CEdit m_nameEdit;
+   CResizer m_resizer;
+   CStatic m_multipleElementsStatic;
+   CStatic m_elementTypeName;
 };
 #pragma endregion
 
@@ -404,13 +422,10 @@ private:
 class CContainProperties final : public CDockContainer
 {
 public:
-    CContainProperties();
-    ~CContainProperties() override {}
+   CContainProperties();
+   ~CContainProperties() override { }
 
-    PropertyDialog *GetPropertyDialog()
-    {
-        return &m_propertyDialog;
-    }
+   PropertyDialog *GetPropertyDialog() { return &m_propertyDialog; }
 
 private:
     PropertyDialog m_propertyDialog;
@@ -419,15 +434,12 @@ private:
 class CDockProperty final : public CDocker
 {
 public:
-    CDockProperty();
-    ~CDockProperty() override {}
+   CDockProperty();
+   ~CDockProperty() override { }
 
-    void OnClose() override;
+   void OnClose() override;
 
-    CContainProperties *GetContainProperties()
-    {
-        return &m_propContainer;
-    }
+   CContainProperties *GetContainProperties() { return &m_propContainer; }
 
 private:
     CContainProperties m_propContainer;

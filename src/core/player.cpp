@@ -20,6 +20,7 @@
 #include "plugins/VPXPlugin.h"
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
+#include "renderer/TextureCompressor.h"
 #include "renderer/trace.h"
 #include "renderer/typedefs3D.h"
 #include "renderer/VRDevice.h"
@@ -27,11 +28,14 @@
 #include "ui/live/ingameui/HomePage.h"
 #include "ThreadPool.h"
 #include "tinyxml2/tinyxml2.h"
+#ifdef VPX_ENABLE_WIN32_EDITOR
 #include "ui/win/codeview.h"
 #include "ui/win/PinTableWnd.h"
-#include "ui/win/worker.h"
 #include "ui/win/WinEditor.h"
+#include "ui/win/worker.h"
+#endif
 #include "unordered_dense.h"
+#include "utils/denormals.h"
 #include "utils/ushock_output.h"
 
 #ifdef _MSC_VER
@@ -64,39 +68,43 @@ using namespace VPX;
 
 #define RECOMPUTEBUTTONCHECK (WM_USER+100)
 
-#if (defined(_M_IX86) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386) || defined(__ia64__) || defined(__x86_64__))
+#if (defined(_M_IX86) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386) || defined(__x86_64__))
 #ifdef _MSC_VER
  #define init_cpu_detection int regs[4]; __cpuid(regs, 1);
  #define detect_no_sse (regs[3] & 0x002000000) == 0
- #define detect_sse2 (regs[3] & 0x004000000) != 0
 #else
  #define init_cpu_detection __builtin_cpu_init();
  #define detect_no_sse !__builtin_cpu_supports("sse")
- #define detect_sse2 __builtin_cpu_supports("sse2")
 #endif
 #endif
 
 // leave as-is as e.g. VPM relies on this
+#ifndef __STANDALONE__
 #define WIN32_PLAYER_WND_CLASSNAME _T("VPPlayer")
+#endif
 
 
-Player::Player(PinTable *const table, const PlayMode playMode)
+Player::Player(PinTable *const table, const PlayMode playMode, LoadProgress &loadProgress)
    : m_ptable(table)
    , m_playMode(playMode)
    , m_pluginAPI(m_pluginManager)
+   , m_loadProgress(loadProgress)
    , m_osThreadId(std::this_thread::get_id())
    , m_backglassOutput(VPXWindowId::VPXWINDOW_Backglass)
    , m_scoreViewOutput(VPXWindowId::VPXWINDOW_ScoreView)
    , m_topperOutput(VPXWindowId::VPXWINDOW_Topper)
-   , m_pininput(this)
+   , m_pininput(this, g_settingsService.GetAppSettings())
    , m_audioPlayer(std::make_unique<VPX::AudioPlayer>(
-        table->m_settings.GetPlayer_SoundDeviceBG(), table->m_settings.GetPlayer_SoundDevice(), static_cast<VPX::SoundConfigTypes>(table->m_settings.GetPlayer_Sound3D())))
-   , m_resURIResolver(m_pluginManager.GetMsgAPI(), m_pluginAPI.GetVPXEndPointId(), true, true, true, true)
+        table->GetSettings().GetPlayer_SoundDeviceBG(), table->GetSettings().GetPlayer_SoundDevice(), static_cast<VPX::SoundConfigTypes>(table->GetSettings().GetPlayer_Sound3D())))
+   , m_resURIResolver(m_pluginManager.GetMsgAPI(), m_pluginAPI.GetVPXEndPointId(), true, true, true)
 {
    // For the time being, lots of access are made through the global singleton, so ensure we are unique, and define it as soon as needed
    assert(g_pplayer == nullptr);
    g_pplayer = this;
+   g_settingsService.SetTableOverride(&m_ptable->GetSettings());
    m_ptable->AddRef();
+
+   constexpr float progressStartupLength = 5.f;
 
    // Initialize the SDL video subsystem before anything that needs a display. This is done here
    // (rather than at application startup) so headless commands, which never create a Player, run
@@ -129,9 +137,9 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       void *Link(const std::string &directory, const std::string &file) override
       {
 #if defined(_MSC_VER) || defined(__MINGW32__)
-         SetDllDirectory(directory.c_str());
+         SetDllDirectoryW(MakeWString(directory).c_str()); // The paths are UTF-8
 #endif
-         void *dynamicModule = static_cast<void *>(SDL_LoadObject(file.c_str()));
+         void *dynamicModule = static_cast<void *>(SDL_LoadObject(file.c_str())); // SDL expects UTF-8
          if (!dynamicModule)
          {
             PLOGE << "SDL_LoadObject failed for '" << file << "': " << SDL_GetError();
@@ -175,7 +183,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       else
          enableId = Settings::GetRegistry().Register(
             std::make_unique<VPX::Properties::BoolPropertyDef>("Plugin." + plugin->m_id, "Enable"s, "Enable"s, "Enable/Disable plugin '" + plugin->m_name + '\'', true, false));
-      if (m_ptable->m_settings.GetBool(enableId))
+      if (m_ptable->GetSettings().GetBool(enableId))
       {
          plugin->Load(&m_pluginManager.GetMsgAPI());
       }
@@ -185,87 +193,34 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       }
    }
 
-   // Prepare table for playing
-
-   PLOGI << "Compiling script"; // For profiling
-
-   // make sure the load directory is the active directory
-   SetCurrentDirectory(table->m_filename.parent_path().string().c_str());
-   
-   table->SetupLookUpTables(true);
-
-   // parse the (optional) override-physics-sets that can be set globally
-   if (table->m_overridePhysics)
-   {
-      table->m_fOverrideGravityConstant = GRAVITYCONST * table->m_settings.GetPlayer_TablePhysicsGravityConstant(table->m_overridePhysics - 1);
-      table->m_fOverrideContactFriction = table->m_settings.GetPlayer_TablePhysicsContactFriction(table->m_overridePhysics - 1);
-      table->m_fOverrideElasticity = table->m_settings.GetPlayer_TablePhysicsElasticity(table->m_overridePhysics - 1);
-      table->m_fOverrideElasticityFalloff = table->m_settings.GetPlayer_TablePhysicsElasticityFalloff(table->m_overridePhysics - 1);
-      table->m_fOverrideScatterAngle = table->m_settings.GetPlayer_TablePhysicsScatterAngle(table->m_overridePhysics - 1);
-      table->m_fOverrideMinSlope = table->m_settings.GetPlayer_TablePhysicsMinSlope(table->m_overridePhysics - 1);
-      table->m_fOverrideMaxSlope = table->m_settings.GetPlayer_TablePhysicsMaxSlope(table->m_overridePhysics - 1);
-      const float fOverrideContactScatterAngle = table->m_settings.GetPlayer_TablePhysicsContactScatterAngle(table->m_overridePhysics - 1);
-      c_hardScatter = ANGTORAD(table->m_overridePhysics ? fOverrideContactScatterAngle : table->m_defaultScatter);
-   }
-
-   if (!IsEditorMode())
-   {
-      for (int i = 0; i < 3; i++)
-         table->mViewSetups[i].ApplyTableOverrideSettings(table->m_settings, (ViewSetupID)i);
-   }
-
    m_logicProfiler.NewFrame(0);
    m_renderProfiler = new FrameProfiler();
    m_renderProfiler->NewFrame(0);
    g_frameProfiler = &m_logicProfiler;
 
-   // Only show the progress dialog in the not minimized Win32 editor mode
-   #ifndef __STANDALONE__
-   if (g_pvp && !g_pvp->IsIconic())
-   {
-      m_progressDialog.Create(g_pvp->GetHwnd());
-      m_progressDialog.ShowWindow(SW_SHOWNORMAL);
-   }
-   #endif
+   m_loadProgress.SetProgress("Creating Player..."s, 0.f);
 
-   m_progressDialog.SetProgress("Creating Player..."s, 1);
-
-#if !(defined(_M_IX86) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386) || defined(__ia64__) || defined(__x86_64__))
-   constexpr int denormalBitMask = 1 << 24;
-   int status_word;
-#if defined(__aarch64__)
-   asm volatile("mrs %x[status_word], FPCR" : [status_word] "=r"(status_word));
-   status_word |= denormalBitMask;
-   asm volatile("msr FPCR, %x[src]" : : [src] "r"(status_word));
-#elif defined(__arm__)
-   asm volatile("vmrs %[status_word], FPSCR" : [status_word] "=r"(status_word));
-   status_word |= denormalBitMask;
-   asm volatile("vmsr FPSCR, %[src]" : : [src] "r"(status_word));
-#else
-   #pragma message ( "Warning: No CPU float ignore denorm implemented" )
-#endif
-#else
+#if (defined(_M_IX86) || defined(_M_X64) || defined(_M_AMD64) || defined(__i386__) || defined(__i386) || defined(__i486__) || defined(__i486) || defined(i386) || defined(__x86_64__))
    {
       init_cpu_detection
       // check for SSE and exit if not available, as some code relies on it by now
       if (detect_no_sse) { // No SSE?
-         ShowError("SSE is not supported on this processor");
+         ShowFatalError("SSE is not supported on this processor");
          exit(0);
       }
-      // disable denormalized floating point numbers, can be faster on some CPUs (and VP doesn't need to rely on denormals)
-      if (detect_sse2) // SSE2?
-         _mm_setcsr(_mm_getcsr() | 0x8040); // flush denorms to zero and also treat incoming denorms as zeros
-      else
-         _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON); // only flush denorms to zero
    }
 #endif
+   // disable denormalized floating point numbers, can be faster on some CPUs (and VP shouldn't need to rely on denormals)
+   // this covers the main thread, which also runs physics, script and input; every other thread doing float work does it itself
+   set_denormals_flush_to_zero();
 
    bool useVR = false;
    #if defined(ENABLE_XR)
-      const int vrDetectionMode = m_ptable->m_settings.GetPlayerVR_AskToTurnOn();
+      // The live editor is not available in VR, so force VR off in the modes that open it (LiveEdit / FullEdit)
+      const int vrDetectionMode = (m_playMode == PlayMode::LiveEdit || m_playMode == PlayMode::FullEdit) ? 2 : m_ptable->GetSettings().GetPlayerVR_AskToTurnOn();
       if (vrDetectionMode != 2) // 2 is VR off (0 is VR on, 1 is autodetect)
       {
-         m_vrDevice = new VRDevice(m_ptable->m_settings);
+         m_vrDevice = new VRDevice(m_ptable->GetSettings());
          if (m_vrDevice->IsOpenXRReady())
          {
             m_vrDevice->SetupHMD();
@@ -273,7 +228,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
                useVR = true;
             else if (vrDetectionMode == 0) // 0 is VR on
             {
-               while (!m_vrDevice->IsOpenXRHMDReady() && (MessageBox(nullptr, "Retry connection ?", "Connection to VR headset failed", MB_YESNO) == IDYES))
+               while (!m_vrDevice->IsOpenXRHMDReady() && AskUser("Retry connection ?", "Connection to VR headset failed"))
                   m_vrDevice->SetupHMD();
                useVR = m_vrDevice->IsOpenXRHMDReady();
             }
@@ -291,12 +246,12 @@ Player::Player(PinTable *const table, const PlayMode playMode)
    #ifdef ENABLE_DX9
    const StereoMode stereo3D = STEREO_OFF;
    #else
-   const StereoMode stereo3D = useVR ? STEREO_VR : m_ptable->m_settings.GetPlayer_Stereo3D();
+   const StereoMode stereo3D = useVR ? STEREO_VR : m_ptable->GetSettings().GetPlayer_Stereo3D();
    #endif
 
-   m_detectScriptHang = m_ptable->m_settings.GetPlayer_DetectHang();
+   m_detectScriptHang = m_ptable->GetSettings().GetPlayer_DetectHang();
 
-   m_minphyslooptime = m_ptable->m_settings.GetPlayer_MinPhysLoopTime();
+   m_minphyslooptime = m_ptable->GetSettings().GetPlayer_MinPhysLoopTime();
 
    PLOGI << "Creating main window"; // For profiling
    {
@@ -315,7 +270,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          SDL_RegisterApp(WIN32_PLAYER_WND_CLASSNAME, 0, g_app->GetInstanceHandle());
       #endif
       
-      const Settings& settings = g_app->m_settings; // Always use main application settings (not overridable per table)
+      const Settings& settings = g_settingsService.GetAppSettings(); // Always use main application settings (not overridable per table)
       if (stereo3D == STEREO_VR)
       {
          m_playfieldWnd = new VPX::Window(m_vrDevice->GetEyeWidth(), m_vrDevice->GetEyeHeight());
@@ -329,14 +284,14 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          m_playfieldWnd = new VPX::Window("Visual Pinball Player"s, settings, VPXWindowId::VPXWINDOW_Playfield);
 
          const float pfRefreshRate = m_playfieldWnd->GetRefreshRate();
-         m_maxFramerate = m_ptable->m_settings.GetPlayer_MaxFramerate();
+         m_maxFramerate = m_ptable->GetSettings().GetPlayer_MaxFramerate();
          if (m_maxFramerate > 0.f && m_maxFramerate < 24.f) // at least 24 fps
             m_maxFramerate = 24.f;
          if (m_maxFramerate < 0.f) // Negative is display refresh rate
             m_maxFramerate = pfRefreshRate;
          if (m_maxFramerate == 0.f) // 0 is unbound refresh rate
             m_maxFramerate = 10000.f;
-         m_videoSyncMode = static_cast<VideoSyncMode>(m_ptable->m_settings.GetPlayer_SyncMode());
+         m_videoSyncMode = static_cast<VideoSyncMode>(m_ptable->GetSettings().GetPlayer_SyncMode());
          if (m_videoSyncMode != VideoSyncMode::VSM_NONE)
          {
             if (m_maxFramerate > pfRefreshRate)
@@ -367,20 +322,9 @@ Player::Player(PinTable *const table, const PlayMode playMode)
 
    set_lowest_possible_win_timer_resolution();
 
-   m_progressDialog.SetProgress("Initializing Visuals..."s, 10);
-
-   m_PlayMusic = m_ptable->m_settings.GetPlayer_PlayMusic();
-   m_PlaySound = m_ptable->m_settings.GetPlayer_PlaySound();
-   m_MusicVolume = m_ptable->m_settings.GetPlayer_MusicVolume();
-   m_SoundVolume = m_ptable->m_settings.GetPlayer_SoundVolume();
-   UpdateVolume();
-
-   //
+   m_loadProgress.SetProgress("Initializing Renderer..."s, m_loadProgress.GetProgress() + progressStartupLength);
 
    PLOGI << "Initializing renderer (global states & resources)"; // For profiling
-
-   if (ViewSetup &viewSetup = m_ptable->GetViewSetup(); viewSetup.mMode == VLM_WINDOW)
-      viewSetup.SetWindowModeFromSettings(m_ptable);
 
    try
    {
@@ -388,13 +332,13 @@ Player::Player(PinTable *const table, const PlayMode playMode)
    }
    catch (HRESULT hr)
    {
-      ShowError(std::format("Renderer initialization error code: {:#010X}", static_cast<unsigned int>(hr)));
+      ShowFatalError(std::format("Renderer initialization error code: {:#010X}", static_cast<unsigned int>(hr)));
       throw hr;
    }
 
-   m_backglassOutput.SetMode(m_ptable->m_settings, static_cast<RenderOutput::OutputMode>(m_ptable->m_settings.GetWindow_Mode(VPXWindowId::VPXWINDOW_Backglass)));
-   m_scoreViewOutput.SetMode(m_ptable->m_settings, static_cast<RenderOutput::OutputMode>(m_ptable->m_settings.GetWindow_Mode(VPXWindowId::VPXWINDOW_ScoreView)));
-   m_topperOutput.SetMode(m_ptable->m_settings, static_cast<RenderOutput::OutputMode>(m_ptable->m_settings.GetWindow_Mode(VPXWindowId::VPXWINDOW_Topper)));
+   m_backglassOutput.SetMode(m_ptable->GetSettings(), static_cast<RenderOutput::OutputMode>(m_ptable->GetSettings().GetWindow_Mode(VPXWindowId::VPXWINDOW_Backglass)));
+   m_scoreViewOutput.SetMode(m_ptable->GetSettings(), static_cast<RenderOutput::OutputMode>(m_ptable->GetSettings().GetWindow_Mode(VPXWindowId::VPXWINDOW_ScoreView)));
+   m_topperOutput.SetMode(m_ptable->GetSettings(), static_cast<RenderOutput::OutputMode>(m_ptable->GetSettings().GetWindow_Mode(VPXWindowId::VPXWINDOW_Topper)));
    #if defined(ENABLE_BGFX)
    if (m_vrDevice == nullptr) // Ancillary windows are not yet supported while in VR mode
    {
@@ -413,11 +357,161 @@ Player::Player(PinTable *const table, const PlayMode playMode)
 
    m_renderer->m_renderDevice->m_vsyncCount = 1;
 
+   //----------------------------------------------------------------------------------
+
+   // We need to initialize the perf counter before creating the UI which uses it
+   wintimer_init();
+   m_liveUI = new LiveUI(m_renderer->m_renderDevice);
+
+#ifdef PLAYBACK
+   if (m_playback)
+      m_fplaylog = fopen("c:\\badlog.txt", "r");
+#endif
+
+   const MsgPluginAPI *msgApi = &m_pluginManager.GetMsgAPI();
+
+   m_onPrepareFrameMsgId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_PREPARE_FRAME);
+   m_onAudioUpdatedMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_UPDATE_MSG);
+   m_onAudioSrcChangedMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_SRC_CHG_MSG);
+   m_getAudioSrcMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_GET_SRC_MSG);
+   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAudioUpdatedMsgId, OnAudioUpdated, this);
+   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAudioSrcChangedMsgId, OnAudioSrcChanged, this);
+   OnAudioSrcChanged(m_onAudioSrcChangedMsgId, this, nullptr);
+
+   m_getAuxRendererId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER);
+   m_onAuxRendererChgId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG);
+   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAuxRendererChgId, OnAuxRendererChanged, this);
+   OnAuxRendererChanged(m_onAuxRendererChgId, this, nullptr);
+
+   // Initialize the table session: physics, script, per part rendering and timers
+   InitTableSession(true);
+
+   // Open UI if requested (this also disables static prerendering, so must be done before performing it)
+   if (playMode == PlayMode::EditPOV)
+      m_liveUI->OpenInGameUI("settings/pov"s);
+   else if ((playMode == PlayMode::LiveEdit || playMode == PlayMode::FullEdit))
+   {
+      assert(m_renderer->m_stereo3D != STEREO_VR);
+      m_liveUI->OpenEditorUI();
+   }
+   if (playMode == PlayMode::FullEdit)
+   {
+      m_liveUI->PushNotification("** Saving should only be used on test tables as it may break table file **", 10000);
+      m_liveUI->PushNotification("This is a an early & unstable version of the Live Editor, only meant for testing.", 10000);
+   }
+
+   m_loadProgress.SetProgress("Starting..."s, 100);
+
+   // Perform a quick render to avoid displaying a blank screen while starting
+   m_renderer->DisableStaticPrePass(true);
+   PrepareFrame();
+   SubmitFrame();
+   FinishFrame();
+   LockRenderThread();
+   m_renderer->DisableStaticPrePass(false);
+
+   // Show the window (before rendering static part to avoid delaying too long)
+   m_playfieldWnd->Show();
+   m_playfieldWnd->RaiseAndFocus();
+
+   m_physics->StartPhysics();
+
+   PLOGI << "Startup done"; // For profiling
+
+#ifdef _MSC_VER
+   LockForegroundWindow(true);
+   // Broadcast a message to notify front-ends that it is time to reveal the playfield.
+   ::PostMessage(HWND_BROADCAST, RegisterWindowMessage(_T("VPTableStart")), NULL, NULL);
+#endif
+
+   // Popup notification on startup
+   if (m_renderer->m_stereo3D != STEREO_OFF && m_renderer->m_stereo3D != STEREO_VR && !m_renderer->m_stereo3Denabled)
+      m_liveUI->PushNotification("3D Stereo is enabled but currently toggled off"s, 4000);
+   const int numberOfTimesToShowTouchMessage = g_settingsService.GetAppSettings().GetPlayer_NumberOfTimesToShowTouchMessage();
+   if (m_pininput.HasTouchInput() && numberOfTimesToShowTouchMessage != 0) //!! visualize with real buttons or at least the areas?? Add extra buttons?
+   {
+      g_settingsService.GetAppSettings().SetPlayer_NumberOfTimesToShowTouchMessage(max(numberOfTimesToShowTouchMessage - 1, 0), false);
+      m_liveUI->PushNotification("You can use Touch controls on this display: bottom left area to Start Game, bottom right area to use the Plunger\n"
+                                 "lower left/right for Flippers, upper left/right for Magna buttons, top left for Credits and (hold) top right to Exit"s,
+         12000);
+   }
+
+   SetPlayState(true);
+}
+
+void Player::LockRenderThread()
+{
+// Wait for any pending render frame to be finished, then acquire the frame mutex on the game thread.
+// This gives the game thread exclusive access to all the render data (mutual exclusion).
+#ifdef ENABLE_BGFX
+   while (m_renderer->m_renderDevice->m_framePending || !m_renderer->m_renderDevice->m_frameMutex.try_lock())
+   {
+      ProcessOSMessages();
+      Sleep(0);
+   }
+   m_frameMutexHeld = true;
+#endif
+}
+
+void Player::UnlockRenderThread()
+{
+#ifdef ENABLE_BGFX
+   m_frameMutexHeld = false;
+   m_renderer->m_renderDevice->m_frameMutex.unlock();
+#endif
+}
+
+void Player::InitTableSession(const bool isInitial)
+{
+   constexpr float progressPhysicLength = 10.f;
+   constexpr float progressTextureLength = 40.f;
+   constexpr float progressVisualLength = 5.f;
+   constexpr float progressRendererLength = 30.f;
+
+   // Prepare table for playing
+
+   PLOGI << "Compiling script"; // For profiling
+
+   // make sure the load directory is the active directory
+   std::error_code cwdError; // Ignored, as before
+   std::filesystem::current_path(m_ptable->m_filename.parent_path(), cwdError);
+
+   m_ptable->SetupLookUpTables(true);
+
+   // parse the (optional) override-physics-sets that can be set globally
+   if (m_ptable->m_overridePhysics)
+   {
+      m_ptable->m_fOverrideGravityConstant = GRAVITYCONST * m_ptable->GetSettings().GetPlayer_TablePhysicsGravityConstant(m_ptable->m_overridePhysics - 1);
+      m_ptable->m_fOverrideContactFriction = max(m_ptable->GetSettings().GetPlayer_TablePhysicsContactFriction(m_ptable->m_overridePhysics - 1), 0.f); // The setting is unbounded, but friction can not be negative
+      m_ptable->m_fOverrideElasticity = m_ptable->GetSettings().GetPlayer_TablePhysicsElasticity(m_ptable->m_overridePhysics - 1);
+      m_ptable->m_fOverrideElasticityFalloff = m_ptable->GetSettings().GetPlayer_TablePhysicsElasticityFalloff(m_ptable->m_overridePhysics - 1);
+      m_ptable->m_fOverrideScatterAngle = m_ptable->GetSettings().GetPlayer_TablePhysicsScatterAngle(m_ptable->m_overridePhysics - 1);
+      m_ptable->m_fOverrideMinSlope = m_ptable->GetSettings().GetPlayer_TablePhysicsMinSlope(m_ptable->m_overridePhysics - 1);
+      m_ptable->m_fOverrideMaxSlope = m_ptable->GetSettings().GetPlayer_TablePhysicsMaxSlope(m_ptable->m_overridePhysics - 1);
+      const float fOverrideContactScatterAngle = m_ptable->GetSettings().GetPlayer_TablePhysicsContactScatterAngle(m_ptable->m_overridePhysics - 1);
+      c_hardScatter = ANGTORAD(m_ptable->m_overridePhysics ? fOverrideContactScatterAngle : m_ptable->m_defaultScatter);
+   }
+
+   if (!IsEditorMode())
+   {
+      for (int i = 0; i < 3; i++)
+         m_ptable->mViewSetups[i].ApplyTableOverrideSettings(m_ptable->GetSettings(), (ViewSetupID)i);
+   }
+
+   // 'playfield' windowed mode is defined in the settings (not in the table file)
+   if (ViewSetup &viewSetup = m_ptable->GetViewSetup(); viewSetup.mMode == VLM_WINDOW)
+      viewSetup.SetWindowModeFromSettings(m_ptable);
+
+   m_backglassVolume = dequantizeUnsignedPercent(m_ptable->GetSettings().GetPlayer_MusicVolume());
+   m_playfieldVolume = dequantizeUnsignedPercent(m_ptable->GetSettings().GetPlayer_SoundVolume());
+   UpdateVolume();
+
    PLOGI << "Initializing inputs & implicit objects"; // For profiling
 
    Ball::ResetBallIDCounter();
 
    // Add a playfield primitive if it is missing
+   m_implicitPlayfieldMesh = nullptr;
    bool hasExplicitPlayfield = false;
    for (const IEditable *const pedit : m_ptable->GetParts())
    {
@@ -432,7 +526,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       m_implicitPlayfieldMesh = (Primitive *)EditableRegistry::CreateAndInit(ItemTypeEnum::eItemPrimitive, m_ptable, 0, 0);
       if (m_implicitPlayfieldMesh)
       {
-         m_implicitPlayfieldMesh->SetName(L"playfield_mesh"s);
+         m_implicitPlayfieldMesh->SetName("playfield_mesh"s);
          m_implicitPlayfieldMesh->m_desktopBackdrop = false;
          m_implicitPlayfieldMesh->m_d.m_staticRendering = true;
          m_implicitPlayfieldMesh->m_d.m_reflectionEnabled = true;
@@ -443,6 +537,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          m_implicitPlayfieldMesh->m_d.m_depthBias = 100000.0f; // Draw before the other objects
          m_implicitPlayfieldMesh->m_mesh.m_vertices.resize(4);
          m_implicitPlayfieldMesh->m_d.m_disableLightingBelow = 1.0f;
+         m_implicitPlayfieldMesh->m_d.m_displayTexture = m_ptable->m_winEditorBackdrop;
          for (unsigned int y = 0; y <= 1; ++y)
             for (unsigned int x = 0; x <= 1; ++x)
             {
@@ -465,17 +560,17 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          m_implicitPlayfieldMesh->m_mesh.m_indices[5] = 3;
          m_implicitPlayfieldMesh->m_mesh.m_validBounds = false;
          m_ptable->AddPart(m_implicitPlayfieldMesh);
-         m_ptable->m_undo.Undo(true);
          m_implicitPlayfieldMesh->Release();
       }
    }
 
+   m_implicitVRBackglass = nullptr;
    if (IsVR())
    {
       m_implicitVRBackglass = (Flasher *)EditableRegistry::CreateAndInit(ItemTypeEnum::eItemFlasher, m_ptable, 0.5f * (m_ptable->m_right - m_ptable->m_left), 0.f);
       if (m_implicitVRBackglass)
       {
-         m_implicitVRBackglass->SetName(m_ptable->GetUniqueName(L"vr_backglass"s));
+         m_implicitVRBackglass->SetName(m_ptable->GetUniqueName("vr_backglass"s));
          constexpr float flasherWidth = 100.f; // We should gather this from the object instead of guessing the default size
          constexpr float flasherHeight = 100.f;
          constexpr float backglassScale = 1.2f;
@@ -487,9 +582,8 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          m_implicitVRBackglass->m_d.m_renderMode = FlasherData::EXT_RENDER;
          m_implicitVRBackglass->m_d.m_renderStyle = VPXWindowId::VPXWINDOW_Backglass;
          m_implicitVRBackglass->m_d.m_depthBias = 10000.0f; // Draw before other objects
-         m_implicitVRBackglass->m_d.m_isVisible = m_ptable->m_settings.GetPlayerVR_AddBackglass();
+         m_implicitVRBackglass->m_d.m_isVisible = m_ptable->GetSettings().GetPlayerVR_AddBackglass();
          m_ptable->AddPart(m_implicitVRBackglass);
-         m_ptable->m_undo.Undo(true);
          m_implicitVRBackglass->Release();
       }
    }
@@ -503,25 +597,31 @@ Player::Player(PinTable *const table, const PlayMode playMode)
    }
 
    PLOGI << "Initializing physics"; // For profiling
-   m_progressDialog.SetProgress("Initializing Physics..."s, 30);
+   m_loadProgress.SetProgress("Initializing Physics..."s, m_loadProgress.GetProgress() + progressRendererLength);
    // Need to set timecur here, for init functions that set timers
    m_physics = new PhysicsEngine(m_ptable);
+   m_physics->SetImplicitPlayfieldMesh(m_implicitPlayfieldMesh != nullptr);
    const float minSlope = (m_ptable->m_overridePhysics ? m_ptable->m_fOverrideMinSlope : m_ptable->m_angletiltMin);
    const float maxSlope = (m_ptable->m_overridePhysics ? m_ptable->m_fOverrideMaxSlope : m_ptable->m_angletiltMax);
    const float slope = lerp(minSlope, maxSlope, m_ptable->m_globalDifficulty);
    m_physics->SetGravity(slope, m_ptable->m_overridePhysics ? m_ptable->m_fOverrideGravityConstant : m_ptable->m_Gravity);
 
    InitFPS();
+   m_liveUI->m_ballControl.LoadSettings(m_ptable->GetSettings());
 
-   //----------------------------------------------------------------------------------
+   // Reset per session runtime state
+   m_timeUpdateTimeStamp = 0;
+   m_time_sec = 0.0;
+   m_time_msec = 0;
+   m_last_frame_time_msec = 0;
+   m_lastKnownGoodCounter = 0;
+   m_modalRefCount = 0;
+   m_nScriptErrorNotification = 0;
+   m_pauseMusicRefCount = 0;
 
-   // We need to initialize the perf counter before creating the UI which uses it
-   wintimer_init();
-   m_liveUI = new LiveUI(m_renderer->m_renderDevice);
-   m_liveUI->m_ballControl.LoadSettings(m_ptable->m_settings);
-
-   m_tblMirrorEnabled = m_ptable->m_settings.GetPlayer_Mirror();
-   #ifndef __STANDALONE__
+   m_tblMirrorEnabled = m_ptable->GetSettings().GetPlayer_Mirror();
+#ifndef __STANDALONE__
+   if (isInitial)
    {
       const int vkLeftFlip = m_pininput.GetWindowVirtualKeyForAction(m_pininput.GetLeftFlipperActionId());
       const int vkRightFlip = m_pininput.GetWindowVirtualKeyForAction(m_pininput.GetRightFlipperActionId());
@@ -547,7 +647,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
          }
       }
    }
-   #endif
+#endif
 
    if (m_tblMirrorEnabled)
    {
@@ -556,12 +656,16 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       m_renderer->SetFlip(rotation == 0 || rotation == 2 ? ModelViewProj::FLIPX : ModelViewProj::FLIPY);
    }
 
-   m_progressDialog.SetProgress("Loading Textures..."s, 50);
+   //----------------------------------------------------------------------------------
 
+   if (isInitial)
    {
+      // Preload all textures and images: upload textures that are flagged in the used textures
+      // cache, register the other ones for on demand upload (everything is shared between a base
+      // table and its live copies, so this is only needed for the first session)
       tinyxml2::XMLDocument xmlDoc;
       tinyxml2::XMLElement *preloadCache = nullptr;
-      if ((m_ptable->m_settings.GetPlayer_CacheMode() > 0) && FileExists(m_ptable->m_filename))
+      if ((m_ptable->GetSettings().GetPlayer_CacheMode() > 0) && FileExists(m_ptable->m_filename))
       {
          try
          {
@@ -585,10 +689,31 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       }
 
       std::mutex mutex;
+      int nLoadPerformed = 0;
       int nLoadInProgress = 0;
       vector<Texture *> failedPreloads;
-      const unsigned int maxTexDim = static_cast<unsigned int>(m_ptable->m_settings.GetPlayer_MaxTexDimension());
-      auto loadImage = [maxTexDim, &mutex, &nLoadInProgress, preloadCache, this, &failedPreloads](Texture *image, bool resizeOnLowMem)
+      const unsigned int maxTexDim = static_cast<unsigned int>(m_ptable->GetSettings().GetPlayer_MaxTexDimension());
+      m_texLoadStats.Reset();
+      m_texLoadStats.nImagesTotal = static_cast<int>(m_ptable->m_vimage.size());
+      for (const Texture *image : m_ptable->m_vimage)
+         m_texLoadStats.nPixelsTotal += static_cast<uint64_t>(image->m_width) * image->m_height;
+
+#ifdef ENABLE_BGFX
+      std::unique_ptr<TextureCompressor> texCompressor;
+      if (m_renderer->m_renderDevice->m_compressTextures && FileExists(m_ptable->m_filename))
+      {
+         std::filesystem::path texCacheFolder = g_app->m_fileLocator.GetTablePath(m_ptable, FileLocator::TableSubFolder::Cache, true) / "textures"sv;
+         std::error_code ec;
+         std::filesystem::create_directories(texCacheFolder, ec);
+         texCompressor = std::make_unique<TextureCompressor>(std::move(texCacheFolder), maxTexDim);
+      }
+#endif
+
+      auto loadImage = [progressPos = m_loadProgress.GetProgress() + progressPhysicLength, maxTexDim,
+#ifdef ENABLE_BGFX
+                          texCompressor = texCompressor.get(),
+#endif
+                          &mutex, &nLoadInProgress, &nLoadPerformed, preloadCache, this, &failedPreloads](Texture *image, bool resizeOnLowMem)
       {
          bool readyToLoad = false;
          while (!readyToLoad)
@@ -600,18 +725,18 @@ Player::Player(PinTable *const table, const PlayMode playMode)
                else
                {
                   size_t neededMem= image->GetEstimatedGPUSize() * 3; // 3x the estimated size is one for the image loader, one for the BaseTexture instance and one for the rendering API copy
-                  #ifdef _MSC_VER
-                     MEMORYSTATUSEX statex;
-                     statex.dwLength = sizeof(statex);
-                     GlobalMemoryStatusEx(&statex);
-                     readyToLoad = statex.ullAvailPhys > neededMem;
-                  #else
+#ifdef _MSC_VER
+                  MEMORYSTATUSEX statex;
+                  statex.dwLength = sizeof(statex);
+                  GlobalMemoryStatusEx(&statex);
+                  readyToLoad = statex.ullAvailPhys > neededMem;
+#else
                      // TODO implement for other platforms
                      // struct sysinfo memInfo;
                      // sysinfo(&memInfo);
                      // readyToLoad = memInfo.freeram > neededMem;
                      readyToLoad = true;
-                  #endif
+#endif
                }
                if (readyToLoad)
                   nLoadInProgress++;
@@ -620,12 +745,41 @@ Player::Player(PinTable *const table, const PlayMode playMode)
                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             else
             {
-               const auto buffer = image->GetRawBitmap(resizeOnLowMem, maxTexDim);
+               {
+                  const std::lock_guard<std::mutex> statsLock(m_texLoadStats.inFlightMutex);
+                  m_texLoadStats.inFlight.emplace_back(image, false);
+               }
+               std::shared_ptr<const BaseTexture> buffer;
+#ifdef ENABLE_BGFX
+               if (texCompressor)
+                  buffer = texCompressor->Load(image, resizeOnLowMem,
+                     [this, image, compressionStarted = false]() mutable
+                     {
+                        if (m_texLoadStats.skipCompression.load(std::memory_order_relaxed))
+                           return true;
+                        if (!compressionStarted)
+                        {
+                           compressionStarted = true;
+                           {
+                              const std::lock_guard<std::mutex> statsLock(m_texLoadStats.inFlightMutex);
+                              for (auto &[tex, compressing] : m_texLoadStats.inFlight)
+                                 if (tex == image)
+                                    compressing = true;
+                           }
+                           m_texLoadStats.nCompressed.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        return false;
+                     });
+#endif
+               if (buffer == nullptr)
+                  buffer = image->GetRawBitmap(resizeOnLowMem, maxTexDim);
                const std::lock_guard<std::mutex> lock(mutex);
                if (buffer)
                {
                   image->IsOpaque();
-                  bool uploaded = false;
+                  // We could upload all images, but this would need support for dynamic change of 'force linear' and would lead to load all VR textures on lower end systems
+                  // Instead we register it to the texture manager that will hold a strong reference and upload when needed
+                  m_renderer->m_renderDevice->m_texMan.AddPendingUpload(image, buffer);
                   if (preloadCache)
                      for (auto node = preloadCache->FirstChildElement("texture"); node != nullptr; node = node->NextSiblingElement())
                      {
@@ -633,21 +787,10 @@ Player::Player(PinTable *const table, const PlayMode playMode)
                         const char *name = node->GetText();
                         if (name != nullptr && image->m_name == name && node->QueryBoolAttribute("linear", &linearRGB) == tinyxml2::XML_SUCCESS)
                         {
-                           #ifdef ENABLE_OPENGL
-                           // Uploading texture in OpenGL uses the state machine which will be wrong if done concurrently
-                           const std::lock_guard<std::mutex> lock2(mutex);
-                           #endif
                            m_renderer->m_renderDevice->UploadTexture(image, linearRGB);
-                           uploaded = true;
                            break;
                         }
                      }
-                  if (!uploaded)
-                  {
-                     // We could upload all images, but this would need support for dynamic change of 'force linear' and would lead to load all VR textures on lower end systems
-                     // Instead we register it to the texture manager that will hold a strong reference and upload when needed
-                     m_renderer->m_renderDevice->m_texMan.AddPendingUpload(image);
-                  }
                   if ((image->m_width > buffer->width()) || (image->m_height > buffer->height()))
                   {
                      PLOG(buffer->m_resizedOnLowMem ? plog::Severity::error : plog::Severity::info) << "Image '" << image->m_name << "' was downsized from " << image->m_width << 'x' << image->m_height << " to " << buffer->width() << 'x' << buffer->height()
@@ -667,6 +810,14 @@ Player::Player(PinTable *const table, const PlayMode playMode)
                {
                   failedPreloads.push_back(image);
                }
+               nLoadPerformed++;
+               m_texLoadStats.nImagesDone.fetch_add(1, std::memory_order_relaxed);
+               m_texLoadStats.nPixelsDone.fetch_add(static_cast<uint64_t>(image->m_width) * image->m_height, std::memory_order_relaxed);
+               {
+                  const std::lock_guard<std::mutex> statsLock(m_texLoadStats.inFlightMutex);
+                  std::erase_if(m_texLoadStats.inFlight, [image](const std::pair<const Texture *, bool> &e) { return e.first == image; });
+               }
+               m_loadProgress.SetProgress("Loading Textures..."s, progressPos + progressTextureLength * static_cast<float>(nLoadPerformed) / (static_cast<float>(m_ptable->m_vimage.size()) - 1.f));
             }
          }
          {
@@ -676,39 +827,93 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       };
 
       // Try to load all image concurrently. Note that this dramatically increases the amount of temporary memory needed, especially if Max Texture Dimension is set (as then all the additional conversion/rescale mem is also needed 'in parallel')
-      #ifdef ENABLE_BGFX
+#ifdef ENABLE_BGFX
+      m_frameMutexHeld = false;
       m_renderer->m_renderDevice->m_frameMutex.unlock();
-      #endif
+#endif
       ThreadPool pool(g_app->GetLogicalNumberOfProcessors());
       for (auto image : m_ptable->m_vimage)
          pool.enqueue(loadImage, image, false);
-      pool.wait_until_empty();
-      pool.wait_until_nothing_in_flight();
-      #ifdef ENABLE_BGFX
-      while (!m_renderer->m_renderDevice->m_frameMutex.try_lock())
+
+      bool showLoadingUI = false;
+      while (pool.has_work_in_flight())
       {
          ProcessOSMessages();
-         Sleep(0);
+         if (showLoadingUI)
+         {
+            m_pininput.ProcessInput();
+
+            if (GetCloseState() != CS_PLAYING && GetCloseState() != CS_USER_INPUT && GetCloseState() != CS_CLOSE_CAPTURE_SCREENSHOT)
+               m_texLoadStats.skipCompression.store(true, std::memory_order_relaxed);
+
+#ifdef ENABLE_BGFX // The loading UI is only shown there (see below)
+            // If rendering thread is ready, push a new frame as soon as possible
+            if (!m_renderer->m_renderDevice->m_framePending && m_renderer->m_renderDevice->m_frameMutex.try_lock())
+            {
+               m_frameMutexHeld = true;
+               m_renderer->RenderUIScene();
+               SubmitFrame(); // Hands the recorded frame over to the render thread and releases the render frame mutex
+               m_frameMutexHeld = false;
+            }
+            else
+#endif
+            {
+               uOverSleep(100000);
+            }
+         }
+         else
+         {
+#ifdef ENABLE_BGFX
+            // Enable a dedicated loading UI while the worker threads load & compress textures, giving the user progress feedback and a way to skip compression
+            // (in VR, the UI is rendered to a dedicated OpenXR composition layer which is acquired by the render thread inside its frame callback)
+            showLoadingUI = (m_playMode != PlayMode::CaptureAttract) && (m_texLoadStats.nCompressed > 0);
+            if (showLoadingUI)
+            {
+               m_isLoading = true;
+               if (!m_liveUI->m_inGameUI.IsOpened())
+                  m_liveUI->m_inGameUI.Open("loading"s);
+               m_playfieldWnd->Show();
+               m_playfieldWnd->RaiseAndFocus();
+            }
+#endif
+            Sleep(0);
+         }
       }
-      #endif
+      if (showLoadingUI)
+      {
+         m_liveUI->m_inGameUI.Close(); // Page is erased once its closing animation completes, during the first gameplay frames
+         m_isLoading = false;
+      }
+      pool.wait_until_empty();
+      pool.wait_until_nothing_in_flight();
 
       // Due to multithreaded loading and pre-allocation, check if some images could not be loaded, and perform a retry since more memory is available now
+      // (before locking the render thread, like the parallel load, as uploading a preloaded texture acquires the frame mutex)
       for (auto image : failedPreloads)
          loadImage(image, true);
+
+      LockRenderThread();
+
+#ifdef ENABLE_BGFX
+      if (texCompressor)
+      {
+         texCompressor->LogStats();
+         texCompressor->CleanCache();
+      }
+#endif
    }
 
    //----------------------------------------------------------------------------------
 
    PLOGI << "Initializing renderer"; // For profiling
-   m_progressDialog.SetProgress("Initializing Renderer..."s, 60);
+   m_loadProgress.SetProgress("Initializing Visuals..."s);
 
    // Setup rendering and timers
    RenderState state;
    state.SetRenderState(RenderState::CULLMODE, m_tblMirrorEnabled ? RenderState::CULL_CW : RenderState::CULL_CCW);
    m_renderer->m_renderDevice->CopyRenderStates(false, state);
    m_renderer->m_renderDevice->SetDefaultRenderState();
-   m_renderer->SetAnisoFiltering(m_ptable->m_settings.GetPlayer_ForceAnisotropicFiltering());
-   m_renderer->InitLayout();
+   m_renderer->SetAnisoFiltering(m_ptable->GetSettings().GetPlayer_ForceAnisotropicFiltering());
    for (RenderProbe *probe : m_ptable->m_vrenderprobe)
       probe->RenderSetup(m_renderer.get());
    for (auto editable : m_ptable->GetParts())
@@ -725,7 +930,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
    if (!IsEditorMode())
    {
       PLOGI << "Starting script"; // For profiling
-      m_progressDialog.SetProgress("Starting Game Scripts..."s);
+      m_loadProgress.SetProgress("Starting Game Scripts..."s, m_loadProgress.GetProgress() + progressVisualLength);
 
       // Setup script interpreter and run the main script
       CComObject<ScriptInterpreter>::CreateInstance(&m_scriptInterpreter);
@@ -733,7 +938,7 @@ Player::Player(PinTable *const table, const PlayMode playMode)
       m_scriptInterpreter->SetScriptErrorHandler([this](ScriptInterpreter::ErrorType type, int line, int column, const string &description, const vector<string> &stackDump)
          { OnScriptError(type, line, column, description, stackDump); });
       m_scriptInterpreter->Start(m_ptable);
-      m_scriptInterpreter->Evaluate(m_pluginAPI.ApplyScriptCOMObjectOverrides(table->m_script_text), false);
+      m_scriptInterpreter->Evaluate(m_pluginAPI.ApplyScriptCOMObjectOverrides(m_ptable->m_script_text), false);
 
       // Fire Init event for table object itself and all table parts, also fire Animate event of parts having it, since initial setup is considered as the initial animation event
       m_ptable->FireVoidEvent(DISPID_GameEvents_Init);
@@ -746,149 +951,56 @@ Player::Player(PinTable *const table, const PlayMode playMode)
              editable->GetEventProxyBase()->FireVoidEvent(DISPID_AnimateEvents_Animate);
       }
       m_ptable->FireOptionEvent(PinTable::OptionEventType::Initialized);
-      m_ptable->FireVoidEvent(DISPID_GameEvents_Paused);
 
-#ifndef __STANDALONE__
+#ifdef VPX_ENABLE_WIN32_EDITOR
       if (m_detectScriptHang && g_pvp)
          g_pvp->PostWorkToWorkerThread(HANG_SNOOP_START, NULL);
 #endif
    }
 
+   // Suspend play if started
+   SetPlayState(false);
+
    // Apply cabinet autofit (after script startup as the script may change what is visible and therefore taken in account, like a VR cabinet model)
-   SetCabinetAutoFitMode(m_ptable->m_settings.GetPlayer_CabinetAutofitMode());
-   SetCabinetAutoFitPos(m_ptable->m_settings.GetPlayer_CabinetAutofitPos());
+   SetCabinetAutoFitMode(m_ptable->GetSettings().GetPlayer_CabinetAutofitMode());
+   SetCabinetAutoFitPos(m_ptable->GetSettings().GetPlayer_CabinetAutofitPos());
+   m_renderer->InitLayout();
 
    // Initialize stereo rendering
    m_renderer->UpdateStereoShaderState();
 
-#ifdef PLAYBACK
-   if (m_playback)
-      m_fplaylog = fopen("c:\\badlog.txt", "r");
-#endif
-
-   const MsgPluginAPI *msgApi = &m_pluginManager.GetMsgAPI();
-
-   m_onPrepareFrameMsgId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_PREPARE_FRAME);
-   m_onAudioUpdatedMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_UPDATE_MSG);
-   m_onAudioSrcChangedMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_SRC_CHG_MSG);
-   m_getAudioSrcMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_GET_SRC_MSG);
-   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAudioUpdatedMsgId, OnAudioUpdated, this);
-   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAudioSrcChangedMsgId, OnAudioSrcChanged, this);
-
-   m_getAuxRendererId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER);
-   m_onAuxRendererChgId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG);
-   msgApi->SubscribeMsg(m_pluginAPI.GetVPXEndPointId(), m_onAuxRendererChgId, OnAuxRendererChanged, this);
-   OnAuxRendererChanged(m_onAuxRendererChgId, this, nullptr);
-
-   // Signal plugins before performing static prerendering. The only thing not fully initialized is the physics (is this ok ?)
+   // Signal plugins that a game session is starting (the only thing not fully initialized is the physics)
    m_pluginAPI.OnGameStart();
-
-   // Open UI if requested (this also disables static prerendering, so must be done before performing it)
-   if (playMode == PlayMode::EditPOV)
-      m_liveUI->OpenInGameUI("settings/pov"s);
-   else if ((playMode == PlayMode::LiveEdit || playMode == PlayMode::FullEdit))
-   {
-      assert(m_renderer->m_stereo3D != STEREO_VR);
-      m_liveUI->OpenEditorUI();
-   }
-
-   // Pre-render all non-changing elements such as static walls, rails, backdrops, etc. and also static playfield reflections
-   // This is done after starting the script and firing the Init event to allow script to adjust static parts on startup
-   wintimer_init();
-   m_physics->StartPhysics();
-   m_renderer->RenderFrame();
-
-   // Reset the perf counter to start time when physics starts
-   wintimer_init();
-   m_physics->StartPhysics();
-
-   m_progressDialog.SetProgress("Starting..."s, 100);
-   if (!IsEditorMode())
-      m_ptable->FireVoidEvent(DISPID_GameEvents_UnPaused);
-
-   PLOGI << "Startup done"; // For profiling
-
-#ifdef __LIBVPINBALL__
-   VPinballLib::VPinballLib::SendEvent(VPINBALL_EVENT_PLAYER_STARTED, nullptr);
-#endif
-
-#ifndef __STANDALONE__
-   m_progressDialog.Destroy();
-   LockForegroundWindow(true);
-#endif
-
-   // Broadcast a message to notify front-ends that it is 
-   // time to reveal the playfield. 
-#ifdef _MSC_VER
-   UINT nMsgID = RegisterWindowMessage(_T("VPTableStart"));
-   ::PostMessage(HWND_BROADCAST, nMsgID, NULL, NULL);
-#endif
-
-   // Show the window 
-   m_playfieldWnd->Show();
-   m_playfieldWnd->RaiseAndFocus();
-
-   // Popup notification on startup
-   if (m_renderer->m_stereo3D != STEREO_OFF && m_renderer->m_stereo3D != STEREO_VR && !m_renderer->m_stereo3Denabled)
-      m_liveUI->PushNotification("3D Stereo is enabled but currently toggled off"s, 4000);
-   const int numberOfTimesToShowTouchMessage = g_app->m_settings.GetPlayer_NumberOfTimesToShowTouchMessage();
-   if (m_pininput.HasTouchInput() && numberOfTimesToShowTouchMessage != 0) //!! visualize with real buttons or at least the areas?? Add extra buttons?
-   {
-      g_app->m_settings.SetPlayer_NumberOfTimesToShowTouchMessage(max(numberOfTimesToShowTouchMessage - 1, 0), false);
-      m_liveUI->PushNotification("You can use Touch controls on this display: bottom left area to Start Game, bottom right area to use the Plunger\n"
-                                 "lower left/right for Flippers, upper left/right for Magna buttons, top left for Credits and (hold) top right to Exit"s, 12000);
-   }
 }
 
-Player::~Player()
+void Player::ShutdownTableSession()
 {
-   assert(g_pplayer == this && g_pplayer->m_closing != CS_CLOSED);
-
-   // note if application exit was requested, and set the new closing state to CLOSED
-   const bool appExitRequested = (m_closing == CS_CLOSE_APP);
-   m_closing = CS_CLOSED;
-   PLOGI << "Closing player...";
-
-   // Signal plugins early since most fields will become invalid
+   // Signal plugins that the game session is ended
    m_pluginAPI.OnGameEnd();
 
    // signal the script that the game is now exited to allow any cleanup
    if (!IsEditorMode())
    {
       m_ptable->FireVoidEvent(DISPID_GameEvents_Exit);
+#ifdef VPX_ENABLE_WIN32_EDITOR
       if (m_detectScriptHang && g_pvp)
          g_pvp->PostWorkToWorkerThread(HANG_SNOOP_STOP, NULL);
+#endif
    }
-
-   delete m_liveUI;
-   m_liveUI = nullptr;
 
    if (m_scriptInterpreter)
    {
       m_scriptInterpreter->Stop(m_ptable);
       ULONG refCount = m_scriptInterpreter->Release();
-      assert(refCount == 0);
+      assert(refCount == 0); // Script objects are expected to be released at this point
+      m_scriptInterpreter = nullptr;
    }
 
-   // Release plugin message Ids
-   const MsgPluginAPI *msgApi = &m_pluginManager.GetMsgAPI();
-   msgApi->UnsubscribeMsg(m_onAudioUpdatedMsgId, OnAudioUpdated, this);
-   msgApi->ReleaseMsgID(m_onAudioUpdatedMsgId);
-   msgApi->UnsubscribeMsg(m_onAudioSrcChangedMsgId, OnAudioSrcChanged, this);
-   msgApi->ReleaseMsgID(m_onAudioSrcChangedMsgId);
-   msgApi->ReleaseMsgID(m_getAudioSrcMsgId);
-   msgApi->ReleaseMsgID(m_onPrepareFrameMsgId);
-   msgApi->UnsubscribeMsg(m_onAuxRendererChgId, OnAuxRendererChanged, this);
-   msgApi->ReleaseMsgID(m_getAuxRendererId);
-   msgApi->ReleaseMsgID(m_onAuxRendererChgId);
-
-   m_pluginManager.UnloadPlugins();
-
    // Save modified settings if any
-   m_ptable->m_settings.Save();
+   m_ptable->GetSettings().Save();
 
    // Save list of used textures to avoid stuttering in next play
-   if ((m_ptable->m_settings.GetPlayer_CacheMode() > 0) && FileExists(m_ptable->m_filename))
+   if ((m_ptable->GetSettings().GetPlayer_CacheMode() > 0) && FileExists(m_ptable->m_filename))
    {
       try
       {
@@ -987,24 +1099,26 @@ Player::~Player()
       }
    }
 
-   // Save adjusted VR settings
-   if (m_renderer->m_stereo3D == STEREO_VR)
-      m_vrDevice->SaveVRSettings(g_app->m_settings);
-
-   // FIXME remove or at least move legacy ushock to a plugin
-   ushock_output_shutdown();
+   // Stop all sounds started during the session (on the default device, mirrored audio is stopped with the master)
+   for (VPX::Sound *sound : m_ptable->m_vsound)
+      m_audioPlayer->StopSound(sound);
+   m_audioPlayer->PauseMusic();
+   m_pauseMusicRefCount = 0;
+   m_audioLanes.clear();
 
    delete m_physics;
    m_physics = nullptr;
 
-   #ifdef ENABLE_DX9
-      m_renderer->m_renderDevice->m_basicShader->UnbindSamplers();
-      m_renderer->m_renderDevice->m_DMDShader->UnbindSamplers();
-      m_renderer->m_renderDevice->m_FBShader->UnbindSamplers();
-      m_renderer->m_renderDevice->m_flasherShader->UnbindSamplers();
-      m_renderer->m_renderDevice->m_lightShader->UnbindSamplers();
-      m_renderer->m_renderDevice->m_ballShader->UnbindSamplers();
-   #endif
+   // Release all per session runtime state
+   m_pauseTimeTarget = 0;
+   m_step = false;
+   m_deferTimerChanges = false;
+   m_changed_vht.clear();
+   m_pactiveball = nullptr;
+   m_pactiveballDebug = nullptr;
+   m_vballDelete.clear();
+   if (m_liveUI)
+      m_liveUI->m_ballControl.EndBallDrag();
 
    for (auto probe : m_ptable->m_vrenderprobe)
       probe->RenderRelease();
@@ -1014,27 +1128,273 @@ Player::~Player()
          ph->RenderRelease();
       editable->TimerRelease(m_vht);
    }
-   assert(m_vballDelete.empty());
+   m_vht.clear();
    m_vball.clear();
 
-   if (m_implicitPlayfieldMesh && FindIndexOf(m_ptable->GetParts(), (IEditable *)m_implicitPlayfieldMesh) != -1)
+   if (m_implicitPlayfieldMesh)
    {
-      m_ptable->RemovePart(m_implicitPlayfieldMesh);
+      if (FindIndexOf(m_ptable->GetParts(), (IEditable *)m_implicitPlayfieldMesh) != -1)
+         m_ptable->RemovePart(m_implicitPlayfieldMesh);
       m_implicitPlayfieldMesh = nullptr;
    }
 
-   if (m_implicitVRBackglass && FindIndexOf(m_ptable->GetParts(), (IEditable *)m_implicitVRBackglass) != -1)
+   if (m_implicitVRBackglass)
    {
-      m_ptable->RemovePart(m_implicitVRBackglass);
+      if (FindIndexOf(m_ptable->GetParts(), (IEditable *)m_implicitVRBackglass) != -1)
+         m_ptable->RemovePart(m_implicitVRBackglass);
       m_implicitVRBackglass = nullptr;
    }
 
-   m_renderer->m_renderDevice->m_DMDShader->SetTextureNull(SHADER_tex_dmd);
+   m_renderer->m_renderDevice->m_DMDShader->SetTextureNull(ShaderUniform::tex_dmd);
    if (m_dmdFrame)
    {
       m_renderer->m_renderDevice->m_texMan.UnloadTexture(m_dmdFrame.get());
       m_dmdFrame = nullptr;
    }
+   m_dmdSize = int2(0, 0);
+   m_dmdFrameId = 0;
+}
+
+void Player::SetTable(PinTable *const table, const TableTransition transition)
+{
+   if (table == nullptr)
+      return;
+   PinTable *const baseTable = m_ptable->m_liveBaseTable ? m_ptable->m_liveBaseTable : m_ptable;
+   if (table != baseTable && table->m_liveBaseTable != baseTable)
+   {
+      // Switching to a table of a different base table can not be done in-place: record the request and
+      // end this session, then the host takes it over (see TakeTableSwitch) and creates a new player
+      if (transition == TableTransition::Stack)
+      {
+         PLOGE << "Player::SetTable: stacking a session is not supported for tables of a different base table";
+         table->Release(); // Release the adopted reference
+         return;
+      }
+      if (m_pendingSwitchTable != nullptr)
+      {
+         PLOGE << "Player::SetTable: a table switch is already pending, dropping the new request";
+         table->Release(); // Release the adopted reference
+         return;
+      }
+      if (m_closing != CS_PLAYING && m_closing != CS_USER_INPUT)
+      {
+         // The session is already ending: the request can not be honored, drop it
+         table->Release(); // Release the adopted reference
+         return;
+      }
+      if (m_pendingTable != nullptr) // A pending in-place transition is superseded by the session switch
+      {
+         m_pendingTable->Release();
+         m_pendingTable = nullptr;
+         m_pendingTableStack = false;
+      }
+      m_pendingTablePop = false; // A pending stacked session pop is superseded as well (the stack is released with the player)
+      m_pendingSwitchTable = table;
+      m_pendingSwitchMode = m_playMode;
+      // Set the closing state directly, bypassing SetCloseState's stacked session handling which would
+      // pop back to the previous table instead of ending the session
+      m_closing = CS_STOP_PLAY;
+      return;
+   }
+   if (m_pendingTable != nullptr || m_pendingSwitchTable != nullptr)
+   {
+      PLOGE << "Player::SetTable: a table switch is already pending, dropping the new request";
+      table->Release(); // Release the adopted reference
+      return;
+   }
+   m_pendingTable = table;
+   m_pendingTableStack = (transition == TableTransition::Stack);
+}
+
+PinTable *Player::TakeTableSwitch(PlayMode &playMode)
+{
+   playMode = m_pendingSwitchMode;
+   PinTable *const table = m_pendingSwitchTable;
+   m_pendingSwitchTable = nullptr;
+   if (table == nullptr)
+      return nullptr;
+   // Only honor the request if the session was ended for it: a later close request (e.g. QuitPlayer
+   // with CS_CLOSE_APP) overrides it and the table is released here
+   if (m_closing != CS_STOP_PLAY)
+   {
+      table->Release();
+      return nullptr;
+   }
+   return table;
+}
+
+void Player::RequestCloseFromOS()
+{
+   // Let an open editor ask to discard its unsaved changes first
+   if (m_liveUI && m_liveUI->IsEditorUIOpened())
+      m_liveUI->m_editorUI.RequestClose(CS_STOP_PLAY);
+   else
+      SetCloseState(CS_STOP_PLAY);
+}
+
+void Player::SetCloseState(const CloseState state)
+{
+   if (m_closing == CS_CLOSED)
+      return;
+   // Ending a stacked table session pops back to the previous table instead of closing the player
+   if (state == CS_STOP_PLAY && !m_tableStack.empty())
+      m_pendingTablePop = true;
+   else
+      m_closing = state;
+}
+
+void Player::ProcessTableTransitions()
+{
+   // Transitions cannot be applied while the game thread owns the render frame mutex (e.g. when UpdateGameLogic
+   // is called from inside a frame section like PrepareFrame): defer to the next update cycle
+   if (m_frameMutexHeld)
+      return;
+
+   if (m_pendingTablePop)
+   {
+      m_pendingTablePop = false;
+      if (!m_tableStack.empty())
+      {
+         StackedTable previous = m_tableStack.back();
+         m_tableStack.pop_back();
+         ApplyTableTransition(previous.table, false, &previous); // The stack's reference is adopted by the player
+      }
+   }
+   if (m_pendingTable)
+   {
+      PinTable *const table = m_pendingTable;
+      const bool stack = m_pendingTableStack;
+      m_pendingTable = nullptr;
+      m_pendingTableStack = false;
+      ApplyTableTransition(table, stack, nullptr);
+   }
+}
+
+void Player::ApplyTableTransition(PinTable *const newTable, const bool stackTable, const StackedTable *const restore)
+{
+   assert(newTable != nullptr);
+   assert(newTable != m_ptable); // Switching to the same table is pointless and would break the reference handling below
+   PinTable *const oldTable = m_ptable;
+   PinTable *const baseTable = oldTable->m_liveBaseTable ? oldTable->m_liveBaseTable : oldTable;
+   // For the time being, only tables of a same base table / live copy pair can be swapped
+   if (newTable != baseTable && newTable->m_liveBaseTable != baseTable)
+   {
+      PLOGE << "Player::SetTable is limited to tables of a same base table / live copy pair";
+      newTable->Release(); // Release the adopted reference
+      return;
+   }
+
+   // Close the UIs before ending the session so that pending events are still dispatched to the script
+   const bool editorWasOpened = m_liveUI->IsEditorUIOpened();
+   if (m_liveUI->IsInGameUIOpened())
+      m_liveUI->m_inGameUI.Close();
+   if (editorWasOpened)
+      m_liveUI->m_editorUI.Close();
+   if (m_closing == CS_USER_INPUT) // The in-game UI requesting user input was closed by the transition
+      m_closing = CS_PLAYING;
+
+   // Wait for the render thread to be idle and take render frame ownership for the whole transition
+   LockRenderThread();
+
+   // When leaving a live copy, copy back the settings edited during play to the base table (as the Win32 editor does)
+   if (oldTable->m_liveBaseTable)
+   {
+      oldTable->m_liveBaseTable->GetSettings().Load(oldTable->GetSettings());
+      oldTable->m_liveBaseTable->GetSettings().SetModified(oldTable->GetSettings().IsModified());
+   }
+
+   if (stackTable)
+   {
+      oldTable->AddRef(); // Reference owned by the stack
+      m_tableStack.push_back({ oldTable, m_playMode, editorWasOpened });
+   }
+
+   ShutdownTableSession();
+
+   m_ptable = newTable; // The adopted reference becomes the player's one
+   g_settingsService.SetTableOverride(&m_ptable->GetSettings());
+   m_playMode = restore ? restore->playMode : (newTable->m_liveBaseTable ? PlayMode::Play : PlayMode::FullEdit);
+   m_renderer->SetTable(newTable);
+   m_liveUI->m_editorUI.SetTable(newTable);
+
+   InitTableSession(false);
+
+   // Restore the editor UI if it was opened in the restored/previous session, except on a play tested
+   // live copy which runs without the editor (it may still be opened manually in inspect mode)
+   if (restore ? restore->editorWasOpened : (editorWasOpened && newTable->m_liveBaseTable == nullptr))
+      m_liveUI->OpenEditorUI();
+
+   // Starting a new table session may have let ancillary windows (B2S, DMD, score view,...) take the
+   // input focus, which would prevent the game from playing: restore focus on the playfield window
+   m_playfieldWnd->RaiseAndFocus();
+
+   m_physics->StartPhysics();
+   SetPlayState(true);
+
+   UnlockRenderThread();
+
+   oldTable->Release();
+}
+
+Player::~Player()
+{
+   assert(g_pplayer == this && g_pplayer->m_closing != CS_CLOSED);
+
+   // note if application exit was requested, and set the new closing state to CLOSED
+   const bool appExitRequested = (m_closing == CS_CLOSE_APP);
+   m_closing = CS_CLOSED;
+   PLOGI << "Closing player...";
+
+   // Release the UI first so that its teardown still sees a live script interpreter (option events,...)
+   delete m_liveUI;
+   m_liveUI = nullptr;
+
+   ShutdownTableSession();
+
+   // Release any stacked table session and pending table switch
+   for (StackedTable &stacked : m_tableStack)
+      stacked.table->Release();
+   m_tableStack.clear();
+   if (m_pendingTable)
+   {
+      m_pendingTable->Release();
+      m_pendingTable = nullptr;
+   }
+   if (m_pendingSwitchTable)
+   {
+      m_pendingSwitchTable->Release();
+      m_pendingSwitchTable = nullptr;
+   }
+
+   // Release plugin message Ids
+   const MsgPluginAPI *msgApi = &m_pluginManager.GetMsgAPI();
+   msgApi->UnsubscribeMsg(m_onAudioUpdatedMsgId, OnAudioUpdated, this);
+   msgApi->ReleaseMsgID(m_onAudioUpdatedMsgId);
+   msgApi->UnsubscribeMsg(m_onAudioSrcChangedMsgId, OnAudioSrcChanged, this);
+   msgApi->ReleaseMsgID(m_onAudioSrcChangedMsgId);
+   msgApi->ReleaseMsgID(m_getAudioSrcMsgId);
+   msgApi->ReleaseMsgID(m_onPrepareFrameMsgId);
+   msgApi->UnsubscribeMsg(m_onAuxRendererChgId, OnAuxRendererChanged, this);
+   msgApi->ReleaseMsgID(m_getAuxRendererId);
+   msgApi->ReleaseMsgID(m_onAuxRendererChgId);
+
+   m_pluginManager.UnloadPlugins();
+
+   // Save adjusted VR settings
+   if (m_renderer->m_stereo3D == STEREO_VR)
+      m_vrDevice->SaveVRSettings(g_settingsService.GetAppSettings());
+
+   // FIXME remove or at least move legacy ushock to a plugin
+   ushock_output_shutdown();
+
+#ifdef ENABLE_DX9
+   m_renderer->m_renderDevice->m_basicShader->UnbindSamplers();
+   m_renderer->m_renderDevice->m_DMDShader->UnbindSamplers();
+   m_renderer->m_renderDevice->m_FBShader->UnbindSamplers();
+   m_renderer->m_renderDevice->m_flasherShader->UnbindSamplers();
+   m_renderer->m_renderDevice->m_lightShader->UnbindSamplers();
+   m_renderer->m_renderDevice->m_ballShader->UnbindSamplers();
+#endif
 
 #ifdef PLAYBACK
    if (m_fplaylog)
@@ -1047,10 +1407,7 @@ Player::~Player()
 
    m_changed_vht.clear();
 
-#ifndef __STANDALONE__
-   if (m_progressDialog.IsWindow())
-      m_progressDialog.Destroy();
-
+#ifdef VPX_ENABLE_WIN32_EDITOR
    // Close application if requested
    if (appExitRequested && g_pvp)
       g_pvp->PostMessage(WM_CLOSE, 0, 0);
@@ -1064,6 +1421,7 @@ Player::~Player()
       m_vrDevice->DiscardVisibilityMask();
    #endif
    m_renderer = nullptr;
+   m_pluginManager.GetMsgAPI().FlushPendingCallbacks(m_pluginAPI.GetVPXEndPointId());
    LockForegroundWindow(false);
    delete m_playfieldWnd;
    m_playfieldWnd = nullptr;
@@ -1082,6 +1440,7 @@ Player::~Player()
    }
    g_frameProfiler = nullptr;
 
+   g_settingsService.ClearTableOverride(&m_ptable->GetSettings());
    g_pplayer = nullptr;
 
    restore_win_timer_resolution();
@@ -1090,10 +1449,6 @@ Player::~Player()
 
    SDL_ShowCursor();
    PLOGI << "Player closed.";
-
-#ifdef __LIBVPINBALL__
-   VPinballLib::VPinballLib::SendEvent(VPINBALL_EVENT_PLAYER_CLOSED, nullptr);
-#endif
 }
 
 void Player::InitFPS()
@@ -1132,92 +1487,81 @@ bool Player::ShowStats() const
    return mode == IF_FPS || mode == IF_PROFILING;
 }
 
-void Player::SetPlayState(const bool isPlaying, const uint32_t delayBeforePauseMs)
-{
-   const bool wasPlaying = IsPlaying();
-   if (isPlaying || delayBeforePauseMs == 0)
-   {
-      m_pauseTimeTarget = 0;
-      const bool willPlay = isPlaying && m_playfieldWnd->IsFocused();
-      if (wasPlaying != willPlay)
-      {
-         ApplyPlayingState(willPlay);
-         m_playing = isPlaying;
-      }
-   }
-   else if (wasPlaying)
-      m_pauseTimeTarget = m_time_msec + delayBeforePauseMs;
-}
-
 void Player::OnFocusChanged()
 {
    // A lost focus event happens during player destruction when the main window is destroyed
    if (m_closing == CS_CLOSED)
       return;
-   const bool wasPlaying = IsPlaying();
-   const bool willPlay = m_playing && m_playfieldWnd->IsFocused();
-   if (wasPlaying != willPlay)
-   {
-      ApplyPlayingState(willPlay);
-      if (m_playfieldWnd->IsFocused())
-      {
-         PLOGI << "Playfield window gained focus";
-      }
-      else
-      {
-#ifdef _MSC_VER
-         HWND foregroundWnd = GetForegroundWindow();
-         if (foregroundWnd)
-         {
-            string focusedWnd = "undefined"s;
-            DWORD foregroundProcessId;
-            const DWORD foregroundThreadId = GetWindowThreadProcessId(foregroundWnd, &foregroundProcessId);
-            char tmp[MAXSTRING];
-            if (foregroundProcessId)
-            {
-               HANDLE foregroundProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION /* PROCESS_QUERY_INFORMATION | PROCESS_VM_READ */, FALSE, foregroundProcessId);
-               if (foregroundProcess)
-               {
-                  if (GetProcessImageFileName(foregroundProcess, tmp, std::size(tmp)))
-                     focusedWnd = tmp;
-               }
-            }
-            GetWindowText(foregroundWnd, tmp, std::size(tmp));
-            PLOGI << "Playfield window lost focus to window with title: '" << tmp << "' created by application: " << focusedWnd;
-         }
-         else
-         {
-            PLOGI << "Playfield window lost focus.";
-         }
 
-#else
-         PLOGI << "Playfield window lost focus.";
-#endif
-      }
-   }
-}
+   SetPlayState(m_wantsToPlay);
 
-void Player::ApplyPlayingState(const bool play)
-{
-   #ifndef __STANDALONE__
-   if(m_debuggerDialog.IsWindow())
-      m_debuggerDialog.SendMessage(RECOMPUTEBUTTONCHECK, 0, 0);
-   #endif
-   if (play)
+   if (m_playfieldWnd->IsFocused())
    {
-      m_lastKnownGoodCounter++; // Reset hang script detection
-      m_noTimeCorrect = true;   // Disable physics engine time correction on next physic update
-      UnpauseMusic();
-      PLOGI << "Unpausing Game";
-      if (!IsEditorMode())
-         m_ptable->FireVoidEvent(DISPID_GameEvents_UnPaused); // signal the script that the game is now running again
+      PLOGI << "Playfield window gained focus";
    }
    else
    {
-      PauseMusic();
-      PLOGI << "Pausing Game";
-      if (!IsEditorMode())
-         m_ptable->FireVoidEvent(DISPID_GameEvents_Paused); // signal the script that the game is now paused
+#ifdef _MSC_VER
+      HWND foregroundWnd = GetForegroundWindow();
+      if (foregroundWnd)
+      {
+         string focusedWnd = "undefined"s;
+         DWORD foregroundProcessId;
+         const DWORD foregroundThreadId = GetWindowThreadProcessId(foregroundWnd, &foregroundProcessId);
+         char tmp[MAXSTRING];
+         if (foregroundProcessId)
+         {
+            HANDLE foregroundProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION /* PROCESS_QUERY_INFORMATION | PROCESS_VM_READ */, FALSE, foregroundProcessId);
+            if (foregroundProcess)
+            {
+               if (GetProcessImageFileName(foregroundProcess, tmp, std::size(tmp)))
+                  focusedWnd = tmp;
+            }
+         }
+         GetWindowText(foregroundWnd, tmp, std::size(tmp));
+         PLOGI << "Playfield window lost focus to window with title: '" << tmp << "' created by application: " << focusedWnd;
+      }
+      else
+      {
+         PLOGI << "Playfield window lost focus.";
+      }
+#else
+      PLOGI << "Playfield window lost focus.";
+#endif
+   }
+}
+
+void Player::SetPlayState(const bool isPlaying, const uint32_t delayBeforePauseMs)
+{
+   m_wantsToPlay = isPlaying;
+   m_pauseTimeTarget = (!isPlaying || delayBeforePauseMs == 0.f) ? 0 : (m_time_msec + delayBeforePauseMs);
+
+   const bool willPlay = IsPlaying(m_playfieldWnd->IsVisible());
+   if (m_playing != willPlay)
+   {
+      m_playing = willPlay;
+
+#ifdef VPX_ENABLE_WIN32_EDITOR
+      if (m_debuggerDialog.IsWindow())
+         m_debuggerDialog.SendMessage(RECOMPUTEBUTTONCHECK, 0, 0);
+#endif
+
+      if (m_playing)
+      {
+         m_lastKnownGoodCounter++; // Reset hang script detection
+         m_noTimeCorrect = true; // Disable physics engine time correction on next physic update
+         UnpauseMusic();
+         PLOGI << "Unpausing Game";
+         if (!IsEditorMode())
+            m_ptable->FireVoidEvent(DISPID_GameEvents_UnPaused); // signal the script that the game is now running again
+      }
+      else
+      {
+         PauseMusic();
+         PLOGI << "Pausing Game";
+         if (!IsEditorMode())
+            m_ptable->FireVoidEvent(DISPID_GameEvents_Paused); // signal the script that the game is now paused
+      }
    }
 }
 
@@ -1227,7 +1571,7 @@ void Player::OnScriptError(ScriptInterpreter::ErrorType type, int line, int colu
       SetCloseState(Player::CloseState::CS_STOP_PLAY);
 
    const string errorType = (type == ScriptInterpreter::ErrorType::Runtime) ? "Runtime" : "Compile";
-   const string desc = string_from_utf8_or_iso8859_1(description.c_str(), description.length());
+   const string desc = string_from_utf8_or_cp1252(description.c_str(), description.length());
    PLOGE << errorType << " error on line " << line << ", col " << column << ": " << desc;
    if (m_liveUI && m_nScriptErrorNotification < 200)
    {
@@ -1235,10 +1579,12 @@ void Player::OnScriptError(ScriptInterpreter::ErrorType type, int line, int colu
       m_nScriptErrorNotification++;
    }
 
+#ifdef VPX_ENABLE_WIN32_EDITOR // report to the script editor
    if (m_ptable->m_tableEditor)
       m_ptable->m_tableEditor->m_pcv->OnScriptError(type, line ,column, description, stackDump);
    else if (m_ptable->m_liveBaseTable && m_ptable->m_liveBaseTable->m_tableEditor)
       m_ptable->m_liveBaseTable->m_tableEditor->m_pcv->OnScriptError(type, line, column, description, stackDump);
+#endif
 }
 
 Ball *Player::CreateBall(const float x, const float y, const float z, const float vx, const float vy, const float vz, const float radius, const float mass)
@@ -1279,8 +1625,7 @@ void Player::DestroyBall(Ball *pBall)
       m_pactiveball = m_vball.empty() ? nullptr : m_vball.front();
    if (m_pactiveballDebug == pBall)
       m_pactiveballDebug = m_vball.empty() ? nullptr : m_vball.front();
-   if (m_liveUI->m_ballControl.GetDraggedBall() == pBall)
-      m_liveUI->m_ballControl.SetDraggedBall(nullptr);
+   m_liveUI->m_ballControl.ClearDraggedBall(pBall);
 }
 
 void Player::SetCabinetAutoFitMode(int mode)
@@ -1288,7 +1633,7 @@ void Player::SetCabinetAutoFitMode(int mode)
    m_cabinetAutoFitMode = mode;
    if (m_cabinetAutoFitMode != 0 && m_ptable->GetViewMode() == ViewSetupID::BG_FULLSCREEN)
    {
-      Vertex3Ds playerPos(m_ptable->m_settings.GetPlayer_ScreenPlayerX(), m_ptable->m_settings.GetPlayer_ScreenPlayerY(), m_ptable->m_settings.GetPlayer_ScreenPlayerZ());
+      Vertex3Ds playerPos(m_ptable->GetSettings().GetPlayer_ScreenPlayerX(), m_ptable->GetSettings().GetPlayer_ScreenPlayerY(), m_ptable->GetSettings().GetPlayer_ScreenPlayerZ());
       m_ptable->GetViewSetup().SetWindowAutofit(m_ptable, playerPos, m_renderer->GetDisplayAspectRatio(), m_cabinetAutoFitPos, m_cabinetAutoFitMode == 2, [](string) { });
    }
 }
@@ -1298,7 +1643,7 @@ void Player::SetCabinetAutoFitPos(float pos)
    m_cabinetAutoFitPos = pos;
    if (m_cabinetAutoFitMode == 1 && m_ptable->GetViewMode() == ViewSetupID::BG_FULLSCREEN)
    {
-      Vertex3Ds playerPos(m_ptable->m_settings.GetPlayer_ScreenPlayerX(), m_ptable->m_settings.GetPlayer_ScreenPlayerY(), m_ptable->m_settings.GetPlayer_ScreenPlayerZ());
+      Vertex3Ds playerPos(m_ptable->GetSettings().GetPlayer_ScreenPlayerX(), m_ptable->GetSettings().GetPlayer_ScreenPlayerY(), m_ptable->GetSettings().GetPlayer_ScreenPlayerZ());
       m_ptable->GetViewSetup().SetWindowAutofit(m_ptable, playerPos, m_renderer->GetDisplayAspectRatio(), m_cabinetAutoFitPos, m_cabinetAutoFitMode == 2, [](string) { });
    }
 }
@@ -1370,6 +1715,10 @@ void Player::TimerStateChange(HitTimer * const hittimer, bool enabled)
       m_vht.erase(it);
    }
 }
+
+void Player::TimerSetup(IEditable *editable) { editable->TimerSetup(m_vht); }
+
+void Player::TimerRelease(IEditable *editable) { editable->TimerRelease(m_vht); }
 
 
 string Player::GetPerfInfo()
@@ -1479,7 +1828,7 @@ void Player::ProcessOSMessages(const bool isInitialized)
       switch (e.type)
       {
       case SDL_EVENT_QUIT:
-         SetCloseState(Player::CloseState::CS_STOP_PLAY);
+         RequestCloseFromOS();
          break;
 
       case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -1490,7 +1839,7 @@ void Player::ProcessOSMessages(const bool isInitialized)
 
       case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
          isPFWnd = (SDL_GetWindowFromID(e.window.windowID) == m_playfieldWnd->GetCore()) || IsVR();
-         SetCloseState(Player::CloseState::CS_STOP_PLAY);
+         RequestCloseFromOS();
          break;
 
       case SDL_EVENT_WINDOW_RESIZED:
@@ -1569,8 +1918,9 @@ void Player::ProcessOSMessages(const bool isInitialized)
                   {
                      SDL_Rect bounds;
                      SDL_GetDisplayBounds(display, &bounds);
-                     point.x = clamp(point.x, bounds.x, bounds.x + bounds.w - wnd->GetWidth());
-                     point.y = clamp(point.y, bounds.y, bounds.y + bounds.h - wnd->GetHeight());
+                     // A window larger than the display stays aligned to its top left corner
+                     point.x = clamp(point.x, bounds.x, max(bounds.x, bounds.x + bounds.w - wnd->GetWidth()));
+                     point.y = clamp(point.y, bounds.y, max(bounds.y, bounds.y + bounds.h - wnd->GetHeight()));
                   }
                   if (dragging > 1)
                      wnd->SetPos(point.x, point.y);
@@ -1828,6 +2178,10 @@ void Player::UpdateGameLogic()
 
    ProcessOSMessages();
 
+   // Apply pending table switches (requested through SetTable, or ending a stacked table session)
+   if (m_closing == CS_PLAYING || m_closing == CS_USER_INPUT)
+      ProcessTableTransitions();
+
    if (m_playMode == PlayMode::CaptureAttract && m_nFrameToCapture > 0)
    {
       static std::unique_ptr<AttractCapture> capture;
@@ -1838,9 +2192,13 @@ void Player::UpdateGameLogic()
    else if (!IsEditorMode())
    {
       m_pininput.ProcessInput(); // Trigger key events to sync with controller
-      m_physics->UpdatePhysics(usec()); // Update physics (also triggering events, syncing with controller)
-      // TODO These updates should also be done directly in the physics engine after collision events
-      FireTimers(-2); // Trigger script sync event (to sync solenoids back)
+      if (IsPlaying())
+      {
+         m_physics->UpdatePhysics(usec()); // Update physics (also triggering events, syncing with controller)
+         m_pininput.UpdateRumble(); // Send the rumble triggered by the physics update
+         // TODO These updates should also be done directly in the physics engine after collision events
+         FireTimers(-2); // Trigger script sync event (to sync solenoids back)
+      }
    }
 
    m_pluginManager.ProcessAsyncCallbacks();
@@ -1863,6 +2221,7 @@ void Player::GameLoop()
       // Flush any pending frame
       m_renderer->m_renderDevice->m_frameReadySem.release();
 
+      m_frameMutexHeld = false;
       m_renderer->m_renderDevice->m_frameMutex.unlock();
       m_logicProfiler.SetThreadLock();
 
@@ -1894,13 +2253,13 @@ bool Player::CallbackSteppedGameLoop()
    // If rendering thread is ready, push a new frame as soon as possible
    if (!m_renderer->m_renderDevice->m_framePending && m_renderer->m_renderDevice->m_frameMutex.try_lock())
    {
+      m_frameMutexHeld = true;
       FinishFrame();
       m_lastFrameSyncOnFPS
          = (m_videoSyncMode != VideoSyncMode::VSM_NONE) && ((m_renderProfiler->GetSlidingAvg(FrameProfiler::PROFILE_FRAME) - 100) * m_playfieldWnd->GetRefreshRate() < 1000000);
       PrepareFrame();
-      m_renderer->m_renderDevice->m_framePending = true;
-      m_renderer->m_renderDevice->m_frameReadySem.release();
-      m_renderer->m_renderDevice->m_frameMutex.unlock();
+      SubmitFrame();
+      m_frameMutexHeld = false;
       return true;
    }
 
@@ -2128,7 +2487,7 @@ void Player::PrepareFrame()
    FireTimers(-1);
 
    // Check if we should turn animate the plunger light.
-   ushock_output_set(HID_OUTPUT_PLUNGER, ((m_time_msec - m_LastPlungerHit) < 512) && ((m_time_msec & 512) > 0));
+   ushock_output_set(HID_OUTPUT_PLUNGER, ((m_time_msec - m_physics->GetLastPlungerHit()) < 512) && ((m_time_msec & 512) > 0));
 
    #if defined(ENABLE_DX9)
    // Kill the profiler so that it does not affect performance
@@ -2152,7 +2511,7 @@ void Player::PrepareFrame()
    #endif
 
    // Prepare main 3D scene frame, then apply screenspace transforms, including ancillary window rendering (MSAA, AO, AA, stereo, ball motion blur, tonemapping, dithering, bloom,...)
-   m_renderer->RenderFrame();
+   m_renderer->Render3DScene();
 
    m_physics->ResetPerFrameStats();
 
@@ -2165,15 +2524,21 @@ void Player::PrepareFrame()
 
 void Player::SubmitFrame()
 {
-   #ifdef MSVC_CONCURRENCY_VIEWER
-   span* tagSpan = new span(series, 1, _T("Submit"));
-   #endif
-   m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_SUBMIT);
-   m_renderer->m_renderDevice->SubmitRenderFrame();
-   m_renderProfiler->ExitProfileSection();
-
-   #ifdef MSVC_CONCURRENCY_VIEWER
-   delete tagSpan;
+   #ifdef ENABLE_BGFX
+      // We must own m_renderer->m_renderDevice->m_frameMutex
+      m_renderer->m_renderDevice->m_framePending = true;
+      m_renderer->m_renderDevice->m_frameReadySem.release();
+      m_renderer->m_renderDevice->m_frameMutex.unlock();
+   #else
+      #ifdef MSVC_CONCURRENCY_VIEWER
+         span *tagSpan = new span(series, 1, _T("Submit"));
+      #endif
+      m_renderProfiler->EnterProfileSection(FrameProfiler::PROFILE_RENDER_SUBMIT);
+      m_renderer->m_renderDevice->SubmitRenderFrame();
+      m_renderProfiler->ExitProfileSection();
+      #ifdef MSVC_CONCURRENCY_VIEWER
+         delete tagSpan;
+      #endif
    #endif
 }
 
@@ -2212,9 +2577,11 @@ void Player::FinishFrame()
    // Close requested with user input
    if (m_closing == CS_USER_INPUT)
    {
+#ifdef VPX_ENABLE_WIN32_EDITOR
       if (g_pvp && g_pvp->m_disable_pause_menu)
-         m_closing = CS_STOP_PLAY;
+         SetCloseState(CS_STOP_PLAY);
       else
+#endif
       {
          m_closing = CS_PLAYING;
          m_liveUI->OpenInGameUI();
@@ -2225,13 +2592,13 @@ void Player::FinishFrame()
    if (m_closing == CS_FORCE_STOP)
       exit(-9999); 
 
+#ifdef VPX_ENABLE_WIN32_EDITOR
    // Open debugger window
    if (g_pvp && m_showDebugger && !m_ptable->IsLocked() && !g_pvp->m_disable_pause_menu)
    {
       m_debugMode = true;
       m_showDebugger = false;
 
-#ifndef __STANDALONE__
       if (!m_debuggerDialog.IsWindow())
       {
          m_debuggerDialog.Create(m_playfieldWnd->GetNativeHWND());
@@ -2241,8 +2608,8 @@ void Player::FinishFrame()
          m_debuggerDialog.SetForegroundWindow();
 
       EndDialog( g_pvp->GetHwnd(), ID_DEBUGWINDOW );
-#endif
    }
+#endif
 
    #ifdef _MSC_VER
       // Legacy hacky Win32 focus management: keep VPX focused & overlayed by the ancillary COM created window
@@ -2306,10 +2673,10 @@ void Player::OnAuxRendererChanged(const unsigned int msgId, void* userData, void
       for (const auto& renderer : me->m_ancillaryWndRenderers[window])
       {
          Settings::GetRegistry().Register(std::make_unique<VPX::Properties::IntPropertyDef>(section, "Priority."s.append(renderer.id), renderer.name,
-            "A value that will be used to select if the '"s + renderer.name + "' renderer should be used on the "s + section + " display. Higher values are priorized other lower ones."s,
+            "A value that will be used to select if the '"s + renderer.name + "' renderer should be used on the " + section + " display. Higher values are priorized other lower ones.",
             false, 0, 100, 0));
          // Seed the live priority from settings, keeping any live (unsaved) adjustment made through the in game UI
-         priorities.try_emplace(renderer.id, me->m_ptable->m_settings.GetInt(Settings::GetRegistry().GetPropertyId(section, "Priority."s.append(renderer.id)).value()));
+         priorities.try_emplace(renderer.id, g_settingsService.GetActiveSettings().GetInt(Settings::GetRegistry().GetPropertyId(section, "Priority."s.append(renderer.id)).value()));
       }
       std::ranges::stable_sort(me->m_ancillaryWndRenderers[window],
          [&](const AncillaryRendererDef &a, const AncillaryRendererDef &b)
@@ -2334,114 +2701,125 @@ void Player::SetAncillaryRendererPriority(VPXWindowId window, const string& id, 
    OnAuxRendererChanged(0, this, nullptr);
 }
 
-void Player::UpdateVolume()
+void Player::OnAudioSrcChanged(const unsigned int msgId, void *userData, void *msgData)
 {
-   m_audioPlayer->SetMainVolume(m_PlayMusic ? dequantizeSignedPercent(m_MusicVolume) : 0.f, m_PlaySound ? dequantizeSignedPercent(m_SoundVolume) : 0.f);
+   Player *me = static_cast<Player *>(userData);
+   me->m_pluginManager.AssertAPIThread();
+   std::lock_guard lock(me->m_audioSourceMutex);
+
+   ankerl::unordered_dense::set<uint64_t> seenIds;
+   for (const auto &audioSrc : PinballPlugin::Controller::GetCtrlItems<AudioSrcId>(&me->m_pluginManager.GetMsgAPI(), me->m_pluginAPI.GetVPXEndPointId(), me->m_getAudioSrcMsgId))
+   {
+      if (audioSrc.target != CTLPI_AUDIO_TARGET_BACKGLASS)
+         continue;
+      seenIds.insert(audioSrc.id.id);
+      if (!me->m_audioLanes.contains(audioSrc.id.id))
+      {
+         MsgEndpointInfo info { };
+         me->m_pluginManager.GetMsgAPI().GetEndpointInfo(audioSrc.id.endpointId, &info);
+         const string endpointId = info.id ? info.id : std::to_string(audioSrc.id.endpointId);
+         const string endpointName = audioSrc.name ? audioSrc.name : info.name ? info.name : endpointId;
+         const string propId = std::format("AudioSource.{}.Gain", endpointId);
+         const auto propPropId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(
+            "Player"s, propId, std::format("{} Gain", endpointName), std::format("Volume gain applied to audio from '{}'.", endpointName), true, 0.f, 2.f, 0.f, 1.f));
+         const float persistedVolume = g_settingsService.GetActiveSettings().GetFloat(propPropId);
+         me->m_audioLanes[audioSrc.id.id] = { audioSrc, false, persistedVolume };
+      }
+
+   }
+   for (auto it = me->m_audioLanes.begin(); it != me->m_audioLanes.end();)
+   {
+      if (!seenIds.contains(it->first))
+      {
+         for (const auto &[streamId, stream] : it->second.streams)
+            me->m_audioPlayer->CloseAudioStream(stream, false);
+         it->second.streams.clear();
+         it = me->m_audioLanes.erase(it);
+      }
+      else
+      {
+         ++it;
+      }
+   }
+
+   // Note that we do not handle the seldom situations where a source would be overriden twice (needs user interaction)
+   for (auto &[_, source] : me->m_audioLanes)
+      source.overriden = false;
+   for (const auto &[_, source] : me->m_audioLanes)
+      if (source.source.overrideId.id != 0)
+         if (auto laneIt = me->m_audioLanes.find(source.source.overrideId.id); laneIt != me->m_audioLanes.end())
+            laneIt->second.overriden = true;
 }
 
-void Player::OnAudioUpdated(const unsigned int msgId, void* userData, void* msgData)
+void Player::OnAudioUpdated(const unsigned int msgId, void *userData, void *msgData)
 {
    Player *me = static_cast<Player *>(userData);
    AudioUpdateMsg &msg = *static_cast<AudioUpdateMsg *>(msgData);
+   std::lock_guard lock(me->m_audioSourceMutex);
 
-   if (me->m_activeAudioSourceId == 0)
-      me->UpdateActiveAudioSource();
-
-   if (me->m_activeAudioSourceId != 0 && msg.id.id != me->m_activeAudioSourceId)
+   auto laneIt = me->m_audioLanes.find(msg.sourceId.id);
+   if (laneIt == me->m_audioLanes.end() || laneIt->second.overriden)
       return;
+   AudioLane &lane = laneIt->second;
 
-   const auto &entry = me->m_audioStreams.find(msg.id.id);
-   if (entry != me->m_audioStreams.end() && me->m_audioPlayer->IsOpened(entry->second))
+   auto entry = lane.streams.find(msg.streamId.id);
+   if (entry != lane.streams.end() && me->m_audioPlayer->IsOpened(entry->second))
    {
       VPX::AudioPlayer::AudioStreamID const stream = entry->second;
       if (msg.buffer != nullptr && msg.bufferSize != 0)
       {
-         me->m_audioPlayer->SetStreamVolume(stream, msg.volume);
+         me->m_audioPlayer->SetStreamVolume(stream, msg.volume * laneIt->second.mixerVolume);
          me->m_audioPlayer->EnqueueStream(stream, msg.buffer, msg.bufferSize);
       }
       else
       {
          me->m_audioPlayer->CloseAudioStream(stream, false);
-         me->m_audioStreams.erase(entry);
+         lane.streams.erase(entry);
       }
    }
    else if (msg.buffer != nullptr)
    {
-      MsgEndpointInfo info;
-      me->m_pluginManager.GetMsgAPI().GetEndpointInfo(msg.id.endpointId, &info);
-      const int nChannels = (msg.type == CTLPI_AUDIO_SRC_BACKGLASS_MONO) ? 1 : 2;
-      VPX::AudioPlayer::AudioStreamID const stream = me->m_audioPlayer->OpenAudioStream("Plugin."s + info.name + '.' + std::to_string(msg.id.resId), static_cast<int>(msg.sampleRate), nChannels, msg.format == CTLPI_AUDIO_FORMAT_SAMPLE_FLOAT);
+      int nChannels;
+      switch (msg.channelFormat)
+      {
+      case CTLPI_AUDIO_FORMAT_CHANNEL_MONO: nChannels = 1; break;
+      case CTLPI_AUDIO_FORMAT_CHANNEL_STEREO: nChannels = 2; break;
+      default: return;
+      }
+      bool isFloat;
+      switch (msg.sampleFormat)
+      {
+      case CTLPI_AUDIO_FORMAT_SAMPLE_INT16: isFloat = false; break;
+      case CTLPI_AUDIO_FORMAT_SAMPLE_FLOAT: isFloat = true; break;
+      default: return;
+      }
+      const char* const srcName = laneIt->second.source.name ? laneIt->second.source.name : "Audio"; // The name is optional
+      const auto stream = me->m_audioPlayer->OpenAudioStream(std::format("{}.{:04X}", srcName, msg.streamId.resId), static_cast<int>(msg.sampleRate), nChannels, isFloat);
       if (stream)
       {
-         me->m_audioStreams[msg.id.id] = stream;
-         me->m_audioPlayer->SetStreamVolume(stream, msg.volume);
+         lane.streams[msg.streamId.id] = stream;
+         me->m_audioPlayer->SetStreamVolume(stream, msg.volume * laneIt->second.mixerVolume);
          me->m_audioPlayer->EnqueueStream(stream, msg.buffer, msg.bufferSize);
       }
    }
 }
 
-void Player::OnAudioSrcChanged(const unsigned int msgId, void* userData, void* msgData)
+float Player::GetAudioLaneMixerVolume(uint64_t laneId) const
 {
-   Player *me = static_cast<Player *>(userData);
-   me->UpdateActiveAudioSource();
+   std::lock_guard lock(m_audioSourceMutex);
+   const auto it = m_audioLanes.find(laneId);
+   return it != m_audioLanes.end() ? it->second.mixerVolume : 1.f;
 }
 
-void Player::UpdateActiveAudioSource()
+void Player::SetAudioLaneMixerVolume(uint64_t laneId, float volume)
 {
-   const MsgPluginAPI &msgApi = m_pluginManager.GetMsgAPI();
-
-   GetAudioSrcMsg getSrcMsg = { 0, 0, nullptr };
-   msgApi.BroadcastMsg(m_pluginAPI.GetVPXEndPointId(), m_getAudioSrcMsgId, &getSrcMsg);
-
-   if (getSrcMsg.count == 0)
-   {
-      m_activeAudioSourceId = 0;
-      return;
-   }
-
-   vector<AudioSrcId> sources(getSrcMsg.count);
-   getSrcMsg = { getSrcMsg.count, 0, sources.data() };
-   msgApi.BroadcastMsg(m_pluginAPI.GetVPXEndPointId(), m_getAudioSrcMsgId, &getSrcMsg);
-
-   uint64_t activeId = 0;
-   for (const auto& src : sources)
-   {
-      if (src.overrideId.id == 0)
-      {
-         activeId = src.id.id;
-         break;
-      }
-   }
-
-   bool walkDownOverrides = (activeId != 0);
-   while (walkDownOverrides)
-   {
-      walkDownOverrides = false;
-      for (const auto& src : sources)
-      {
-         if (src.overrideId.id == activeId)
-         {
-            activeId = src.id.id;
-            walkDownOverrides = true;
-            break;
-         }
-      }
-   }
-
-   if (m_activeAudioSourceId != activeId)
-   {
-      if (m_activeAudioSourceId != 0)
-      {
-         const auto &entry = m_audioStreams.find(m_activeAudioSourceId);
-         if (entry != m_audioStreams.end() && m_audioPlayer->IsOpened(entry->second))
-         {
-            m_audioPlayer->CloseAudioStream(entry->second, false);
-            m_audioStreams.erase(entry);
-         }
-      }
-      m_activeAudioSourceId = activeId;
-   }
+   std::lock_guard lock(m_audioSourceMutex);
+   const auto it = m_audioLanes.find(laneId);
+   if (it != m_audioLanes.end())
+      it->second.mixerVolume = volume;
 }
+
+void Player::UpdateVolume() { m_audioPlayer->SetMainVolume(m_backglassVolume, m_playfieldVolume); }
 
 void Player::PauseMusic()
 {

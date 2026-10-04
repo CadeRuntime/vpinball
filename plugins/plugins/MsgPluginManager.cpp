@@ -9,6 +9,7 @@
 
 #define MINI_CASE_SENSITIVE
 #include "mINI/ini.h"
+#include "PluginStrings.h"
 #include <plog/Log.h>
 
 using namespace std::string_literals;
@@ -54,6 +55,7 @@ MsgPluginManager::MsgPluginManager()
 {
    assert(m_pluginManager == nullptr);
    m_pluginManager = this;
+   m_api.version = 1;
    m_api.GetPluginEndpoint = GetPluginEndpoint;
    m_api.GetEndpointInfo = GetEndpointInfo;
    m_api.GetMsgID = GetMsgID;
@@ -86,6 +88,8 @@ MsgPluginManager::~MsgPluginManager()
 ///////////////////////////////////////////////////////////////////////////////
 // Message API
 
+void MsgPluginManager::AssertAPIThread() { assert(m_apiThread == std::this_thread::get_id()); }
+
 unsigned int MsgPluginManager::GetPluginEndpoint(const char* id)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
@@ -105,7 +109,7 @@ unsigned int MsgPluginManager::GetPluginEndpoint(const char* id)
 void MsgPluginManager::GetEndpointInfo(const uint32_t endpointId, MsgEndpointInfo* info)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    const auto item = std::ranges::find_if(pm.m_plugins, [endpointId](const std::shared_ptr<MsgPlugin>& plg) { return plg->IsLoaded() && plg->m_endpointId == endpointId; });
    if (item == pm.m_plugins.end())
       return;
@@ -120,7 +124,7 @@ void MsgPluginManager::GetEndpointInfo(const uint32_t endpointId, MsgEndpointInf
 unsigned int MsgPluginManager::GetMsgID(const char* name_space, const char* name)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
 
    MsgEntry* freeMsg = nullptr;
    const std::string_view namespaceView { name_space };
@@ -143,13 +147,15 @@ unsigned int MsgPluginManager::GetMsgID(const char* name_space, const char* name
    freeMsg->name_space = name_space;
    freeMsg->name = name;
    freeMsg->callbacks.clear();
+   assert(nameView.rfind(':') != std::string_view::npos); // Message name must include a version marker separated by a colon (e.g. "OnDmdTrigger:1")
+   assert(nameView.rfind(':') != 0); // Message name may not be just a version marker (e.g. ":1" is invalid)
    return freeMsg->id;
 }
 
 void MsgPluginManager::SubscribeMsg(const uint32_t endpointId, const unsigned int msgId, const msgpi_msg_callback callback, void* userData)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    assert(callback != nullptr);
    assert(msgId < pm.m_msgs.size());
    assert(pm.m_msgs[msgId].refCount > 0);
@@ -163,7 +169,7 @@ void MsgPluginManager::SubscribeMsg(const uint32_t endpointId, const unsigned in
 void MsgPluginManager::UnsubscribeMsg(const unsigned int msgId, const msgpi_msg_callback callback, void* userData)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    assert(callback != nullptr);
    assert(msgId < pm.m_msgs.size());
    assert(pm.m_msgs[msgId].refCount > 0);
@@ -180,7 +186,7 @@ void MsgPluginManager::UnsubscribeMsg(const unsigned int msgId, const msgpi_msg_
 void MsgPluginManager::BroadcastMsg(const uint32_t endpointId, const unsigned int msgId, void* data)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    assert(msgId < pm.m_msgs.size());
    assert(pm.m_msgs[msgId].refCount > 0);
    assert(1 <= endpointId && endpointId <= pm.m_plugins.size());
@@ -192,7 +198,7 @@ void MsgPluginManager::BroadcastMsg(const uint32_t endpointId, const unsigned in
 void MsgPluginManager::SendMsg(const uint32_t endpointId, const unsigned int msgId, const uint32_t targetEndpointId, void* data)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    assert(msgId < pm.m_msgs.size());
    assert(pm.m_msgs[msgId].refCount > 0);
    assert(1 <= endpointId && endpointId <= pm.m_plugins.size());
@@ -224,7 +230,7 @@ void MsgPluginManager::ReleaseMsgID(const unsigned int msgId)
 void MsgPluginManager::RegisterSetting(const uint32_t endpointId, MsgSettingDef* settingDef)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    if (pm.m_settingHandler == nullptr)
       return;
    const auto item = std::ranges::find_if(pm.m_plugins, [endpointId](const std::shared_ptr<MsgPlugin>& plg) { return plg->IsLoaded() && plg->m_endpointId == endpointId; });
@@ -257,15 +263,14 @@ void MsgPluginManager::RunOnMainThread(const uint32_t endpointId, const double d
    std::unique_lock lock(pm.m_timerListMutex);
    if (delayInS < 0.)
    {
-      pm.m_timers.emplace(pm.m_timers.begin(), endpointId, callback, userData, std::chrono::steady_clock::now());
+      bool done = false;
+      pm.m_timers.emplace(pm.m_timers.begin(), endpointId, callback, userData, std::chrono::steady_clock::now(), &done);
 #ifdef _MSC_VER
       // Wake up message loop
       PostThreadMessage(GetCurrentThreadId(), WM_NULL, 0, 0);
 #endif
-      // FIXME block cleanly until processed
-      lock.unlock();
-      while (!pm.m_timers.empty())
-         std::this_thread::sleep_for(std::chrono::nanoseconds(100));
+      // Wait for this callback only, not for the other pending ones
+      pm.m_timerDone.wait(lock, [&done] { return done; });
    }
    else
    {
@@ -281,7 +286,7 @@ void MsgPluginManager::RunOnMainThread(const uint32_t endpointId, const double d
 void MsgPluginManager::FlushPendingCallbacks(const uint32_t endpointId)
 {
    MsgPluginManager& pm = *MsgPluginManager::m_pluginManager;
-   assert(std::this_thread::get_id() == pm.m_apiThread);
+   pm.AssertAPIThread();
    
    bool modified = true; // The callbacks may result in new callbacks being registered, so continue until we have no more pending ones
    while (modified)
@@ -304,30 +309,43 @@ void MsgPluginManager::FlushPendingCallbacks(const uint32_t endpointId)
       }
       // Release lock before calling callbacks to avoid deadlock
       for (const auto& it : timers)
-         it.callback(it.userData);
+         pm.RunTimer(it);
    }
 }
 
 void MsgPluginManager::ProcessAsyncCallbacks()
 {
-   assert(std::this_thread::get_id() == m_apiThread);
-   if (m_timers.empty())
-      return;
-   std::list<TimerEntry> timers;
+   AssertAPIThread();
+   // Take due timers one at a time, removing each before running it unlocked, as callbacks may queue or flush timers, or nest this call.
+   // Timers queued meanwhile are not earlier than 'start', so this ends
+   const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+   for (;;)
    {
-      const std::lock_guard lock(m_timerListMutex);
-      const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-      for (auto it = m_timers.begin(); it != m_timers.end();)
+      TimerEntry timer {};
       {
-         if (it->time > now)
-            break;
-         timers.push_back(*it);
-         it = m_timers.erase(it);
+         const std::lock_guard lock(m_timerListMutex);
+         // Not always the front one: blocking requests are queued first, whatever their time
+         const auto it = std::ranges::find_if(m_timers, [start](const TimerEntry& entry) { return entry.time < start; });
+         if (it == m_timers.end())
+            return;
+         timer = *it;
+         m_timers.erase(it);
       }
+      RunTimer(timer);
    }
-   // Release lock before calling callbacks to avoid deadlock
-   for (const auto& it : timers)
-      it.callback(it.userData);
+}
+
+void MsgPluginManager::RunTimer(const TimerEntry& timer)
+{
+   timer.callback(timer.userData);
+   if (timer.done)
+   {
+      {
+         const std::lock_guard lock(m_timerListMutex);
+         *timer.done = true; // The waiter may return (and discard 'done') as soon as the lock is released
+      }
+      m_timerDone.notify_all();
+   }
 }
 
 
@@ -336,7 +354,7 @@ void MsgPluginManager::ProcessAsyncCallbacks()
 
 static std::string unquote(const std::string& str)
 {
-   if (str.front() == '"' && str.back() == '"')
+   if (str.size() >= 2 && str.front() == '"' && str.back() == '"') // Missing values are empty
       return str.substr(1, str.size() - 2);
    return str;
 }
@@ -354,9 +372,10 @@ std::shared_ptr<MsgPlugin> MsgPluginManager::RegisterPlugin(const std::string& i
 void MsgPluginManager::ScanPluginFolder(std::shared_ptr<MsgModuleLoader> loader, const std::filesystem::path& pluginDir, const std::function<void(MsgPlugin&)>& callback)
 {
    assert(std::this_thread::get_id() == m_apiThread);
-   if (!std::filesystem::exists(pluginDir))
+   std::error_code ec;
+   if (!std::filesystem::exists(pluginDir, ec))
    {
-      PLOGE << "Missing plugin directory: " << pluginDir;
+      PLOGE << "Missing plugin directory: " << PluginStrings::PathToUTF8(pluginDir);
       return;
    }
    std::string libraryKey;
@@ -400,9 +419,10 @@ void MsgPluginManager::ScanPluginFolder(std::shared_ptr<MsgModuleLoader> loader,
       return;
    }
 
-   for (const auto& entry : std::filesystem::directory_iterator(pluginDir))
+   for (std::filesystem::directory_iterator dirIt(pluginDir, ec), end; !ec && dirIt != end; dirIt.increment(ec))
    {
-      if (entry.is_directory())
+      const auto& entry = *dirIt;
+      if (std::error_code entryError; entry.is_directory(entryError))
       {
          mINI::INIStructure ini;
          mINI::INIFile file(entry.path() / "plugin.cfg"sv);
@@ -410,8 +430,8 @@ void MsgPluginManager::ScanPluginFolder(std::shared_ptr<MsgModuleLoader> loader,
          {
             std::string id = unquote(ini["configuration"s]["id"s]);
             const std::string libraryFile = unquote(ini["libraries"s][libraryKey]);
-            const std::filesystem::path libraryPath = entry.path() / libraryFile;
-            if (!std::filesystem::exists(libraryPath))
+            const std::filesystem::path libraryPath = entry.path() / PluginStrings::PathFromUTF8(libraryFile);
+            if (std::error_code fileError; libraryFile.empty() || !std::filesystem::is_regular_file(libraryPath, fileError))
             {
                PLOGE << "Plugin " << id << " has an invalid library reference to a missing file for " << libraryKey << ": " << libraryFile;
                continue;
@@ -425,13 +445,17 @@ void MsgPluginManager::ScanPluginFolder(std::shared_ptr<MsgModuleLoader> loader,
             else
             {
                auto plugin = std::make_shared<MsgPlugin>(id, unquote(ini["configuration"s].get("name"s)), unquote(ini["configuration"s].get("description"s)),
-                  unquote(ini["configuration"s].get("author"s)), unquote(ini["configuration"s].get("version"s)), unquote(ini["configuration"s].get("link"s)), loader, entry.path().string(),
-                  libraryPath.string(), static_cast<unsigned int>(m_plugins.size() + 1));
+                  unquote(ini["configuration"s].get("author"s)), unquote(ini["configuration"s].get("version"s)), unquote(ini["configuration"s].get("link"s)), loader, PluginStrings::PathToUTF8(entry.path()),
+                  PluginStrings::PathToUTF8(libraryPath), static_cast<unsigned int>(m_plugins.size() + 1));
                m_plugins.push_back(plugin);
                callback(*plugin);
             }
          }
       }
+   }
+   if (ec)
+   {
+      PLOGE << "Failed to scan plugin directory " << PluginStrings::PathToUTF8(pluginDir) << ": " << ec.message();
    }
 }
 
@@ -444,6 +468,12 @@ void MsgPluginManager::UnloadPlugin(MsgPlugin& plugin)
 {
    m_settingHandler(plugin.m_id, SettingAction::UnregisterAll, nullptr);
    plugin.Unload();
+   {
+      // Check for any invalid pending callback
+      const std::lock_guard lock(m_timerListMutex);
+      assert(std::ranges::find_if(m_timers, [id = plugin.m_endpointId](auto callback) { return callback.endpointId == id; }) == m_timers.end());
+   }
+
    bool invalidPlugin = false;
    for (const auto& timer : m_timers)
       if (timer.endpointId == plugin.m_endpointId)

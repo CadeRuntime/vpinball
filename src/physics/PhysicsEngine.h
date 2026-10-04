@@ -8,6 +8,10 @@
 #include "physics/collideex.h"
 #include "physics/cabinet/PlumbHandler.h"
 
+class BallControl;
+class InputAction;
+class PlungerHandler;
+
 class PhysicsEngine final
 {
 public:
@@ -19,10 +23,13 @@ public:
 
    // Only supported for UI for the time being
    void SetDynamic(IEditable *editable) { GetUIQuadTree()->SetDynamic(editable); }
-   void Update(IEditable *editable) { GetUIQuadTree()->Update(editable); }
    void SetStatic(IEditable *editable) { GetUIQuadTree()->SetStatic(editable); }
 
-   // Allow to add/remove parts after initial setup
+   // Allow to update/add/remove parts after initial setup (live edit). Editing suspends the simulation,
+   // immediately updates the colliders (they may be displayed in the editor), and defers the static
+   // quadtree rebuild to the next physics update (see FlushStaticQuadTree)
+   void Update(IEditable *editable);
+   void Add(IEditable *editable);
    void Remove(IEditable *editable);
 
    // Add or remove a collider, as a consequence of PhysicSetup/Release
@@ -53,6 +60,35 @@ public:
    uint64_t GetStartTime() const { return m_startTime_usec; }
    uint64_t GetCurrentTime() const { return m_curPhysicsFrameTime; }
 
+   // Table being simulated
+   PinTable *GetTable() const { return m_table; }
+
+   // Simulated time, updated by UpdatePhysics
+   uint32_t GetTimeMsec() const { return m_time_msec; }
+   double GetTimeSec() const { return m_time_sec; }
+
+   // Balls registered in the simulation
+   const vector<HitBall *> &GetBalls() const { return m_vballs; }
+
+   // True when the player added an implicit (non collidable) playfield mesh, meaning the ground HitPlane must be simulated
+   void SetImplicitPlayfieldMesh(const bool hasImplicitMesh) { m_implicitPlayfieldMesh = hasImplicitMesh; }
+
+   // Last simulated time at which a ball hit the plunger vicinity (feedback for UI and toys)
+   uint32_t GetLastPlungerHit() const { return m_lastPlungerHit; }
+   void NotifyPlungerBallContact() { m_lastPlungerHit = m_time_msec; }
+
+   // Access to the player services used by the physics objects. These are no-ops / null
+   // when there is no active player (e.g. headless simulation).
+   BallControl *GetBallControl() const;
+   PlungerHandler *GetPlungerHandler() const;
+   InputAction *GetLaunchBallAction() const;
+   Vertex2D GetCabinetAcceleration() const;
+   void PlayBallBallRumble(float impactSpeed) const;
+   void PlaySlingshotRumble() const;
+   void PlayFlipperContactRumble(float impactSpeed) const;
+   void PlayPlungerRumble(float fireSpeed) const;
+   void PlayPlungerLaunchRumble(float impact) const;
+
    VPX::Physics::PlumbHandler m_plumbHandler;
 
 private:
@@ -61,7 +97,24 @@ private:
 
    void ReleaseVHO(const vector<HitObject *> &vho, bool isUI);
 
+   void AddStaticColliders(IEditable *editable); // Create the gameplay colliders of an editable and add them to the static quadtree's hit object list
+   void ReleaseStaticColliders(IEditable *editable); // Release the gameplay colliders of an editable and remove them from the static quadtree's hit object list
+   void RegisterHitObject(HitObject *hitObject); // Register a collider with the simulation (flippers, plungers, movers)
+   void UnregisterHitObject(HitObject *hitObject); // Unregister a collider from the simulation (flippers, plungers, movers)
+   void FlushStaticQuadTree(); // Rebuild the static quadtree structure after its hit object list was modified (colliders are kept up to date)
+
+   PinTable *const m_table;
+
    Vertex3Ds m_gravity;
+
+   vector<HitBall *> m_vballs; // Balls registered in the simulation (add/remove through AddCollider/RemoveCollider)
+
+   bool m_implicitPlayfieldMesh = false; // An implicit playfield mesh was created, the ground HitPlane must be hit tested
+
+   uint32_t m_time_msec = 0; // Simulated time in milliseconds, published to the player when present
+   double m_time_sec = 0.0; // Simulated time in seconds, published to the player when present
+
+   uint32_t m_lastPlungerHit = 0;
 
    unsigned int m_physicsMaxLoops;
 
@@ -78,6 +131,12 @@ private:
    unsigned int m_onUpdatePhysicsMsgId;
 
    vector<class HitFlipper *> m_vFlippers;
+   vector<class HitPlunger *> m_vPlungers;
+
+public:
+   void OnBallWallHit(const class HitBall& ball, const Vertex3Ds& hitNormal, const float impactSpeed); // a ball hitting static geometry, offered to the plungers (shooter lane end)
+
+private:
    HitPlane m_hitPlayfield; // HitPlanes cannot be part of octree (infinite size)
    HitPlane m_hitTopGlass;
 
@@ -86,6 +145,7 @@ private:
    vector<HitObject *>* m_pendingHitObjects = nullptr; // Hit objects pending insertion in quadtree, only defined while collecting through AddCollider callback method
 
    /*HitKD*/ HitQuadtree m_hitoctree;
+   bool m_staticQuadTreeDirty = false; // Hit object list of m_hitoctree was modified without rebuilding its structure (rebuilt lazily, see FlushStaticQuadTree)
 #ifdef USE_EMBREE
    HitQuadtree m_hitoctree_dynamic; // should be generated from scratch each time something changes
 #else

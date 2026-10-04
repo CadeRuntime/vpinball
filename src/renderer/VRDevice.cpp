@@ -5,6 +5,7 @@
 
 #include "core/VPApp.h"
 #include "core/vpversion.h"
+#include "math/matrix.h"
 #include "parts/primitive.h"
 #include "renderer/MeshBuffer.h"
 #include "renderer/IndexBuffer.h"
@@ -190,7 +191,7 @@ VRDevice::VRDevice(const Settings& settings)
       // VRDevice is created before bgfx initialization (since it creates the graphic context expected by OpenXR), so bgfx::getRendererType() is not defined at this point.
       // Renderer is determined at compile time based on platform: D3D11 for Windows, Vulkan for Android.
       #if BX_PLATFORM_WINDOWS
-         const string gfxBackend = g_pplayer->m_ptable->m_settings.GetPlayer_GfxBackend();
+         const string gfxBackend = g_settingsService.GetActiveSettings().GetPlayer_GfxBackend();
          if (gfxBackend == "Vulkan"sv)
          #ifdef _DEBUG
             m_rendererType = bgfx::RendererType::Enum::Vulkan;
@@ -201,17 +202,10 @@ VRDevice::VRDevice(const Settings& settings)
          }
          #endif
          else if (gfxBackend == "Direct3D12"sv)
-         #if defined(_DEBUG) || defined(ENABLE_BGFX_DX12)
             m_rendererType = bgfx::RendererType::Enum::Direct3D12;
-         #else
-         {
-            PLOGI << "Renderer backend enforced to Direct3D11 as Direct3D12 is still experimental and not enabled in release builds";
-            m_rendererType = bgfx::RendererType::Enum::Direct3D11;
-         }
-         #endif
          else
             m_rendererType = bgfx::RendererType::Enum::Direct3D11; // Default to Direct3D 11
-      #elif BX_PLATFORM_ANDROID
+      #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
          m_rendererType = bgfx::RendererType::Enum::Vulkan;
       #else
          #error "Unsupported platform for OpenXR"
@@ -241,10 +235,12 @@ VRDevice::VRDevice(const Settings& settings)
       m_visibilityMaskExtensionSupported = EnableExtensionIfSupported(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
       #if BX_PLATFORM_WINDOWS
          m_win32PerfCounterExtensionSupported = EnableExtensionIfSupported(XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME);
-      #elif BX_PLATFORM_ANDROID
+      #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
          m_convertTimespecTimeExtensionSupported = EnableExtensionIfSupported(XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME);
       #endif
       m_passthroughExtensionSupported = EnableExtensionIfSupported(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+      m_displayRefreshRateExtensionSupported = EnableExtensionIfSupported(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+      m_displayRefreshRateMode = settings.GetPlayerVR_DisplayRefreshRate();
       #ifdef DEBUG
          m_debugUtilsExtensionSupported = EnableExtensionIfSupported(XR_EXT_DEBUG_UTILS_EXTENSION_NAME);
       #endif
@@ -270,7 +266,7 @@ VRDevice::VRDevice(const Settings& settings)
          OPENXR_CHECK(xrGetInstanceProcAddr(m_xrInstance, "xrConvertTimeToWin32PerformanceCounterKHR", (PFN_xrVoidFunction*)&m_xrConvertTimeToWin32PerformanceCounterKHR),
             "Failed to get xrConvertTimeToWin32PerformanceCounterKHR.");
       }
-      #elif BX_PLATFORM_ANDROID
+      #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
       if (m_convertTimespecTimeExtensionSupported)
       {
          OPENXR_CHECK(
@@ -278,6 +274,11 @@ VRDevice::VRDevice(const Settings& settings)
             "Failed to get xrConvertTimeToTimespecTimeKHR.");
       }
       #endif
+      if (m_displayRefreshRateExtensionSupported)
+      {
+         OPENXR_CHECK(xrGetInstanceProcAddr(m_xrInstance, "xrGetDisplayRefreshRateFB", (PFN_xrVoidFunction*)&m_xrGetDisplayRefreshRateFB), "Failed to get xrGetDisplayRefreshRateFB.");
+         OPENXR_CHECK(xrGetInstanceProcAddr(m_xrInstance, "xrRequestDisplayRefreshRateFB", (PFN_xrVoidFunction*)&m_xrRequestDisplayRefreshRateFB), "Failed to get xrRequestDisplayRefreshRateFB.");
+      }
       if (m_visibilityMaskExtensionSupported)
       {
          OPENXR_CHECK(xrGetInstanceProcAddr(m_xrInstance, "xrGetVisibilityMaskKHR", (PFN_xrVoidFunction*)&xrGetVisibilityMaskKHR), "Failed to get xrGetVisibilityMaskKHR.");
@@ -319,6 +320,8 @@ VRDevice::~VRDevice()
          OPENXR_CHECK(xrDestroySpace(m_rightControllerSpace), "Failed to destroy Right Controller Space.")
       // Destroy the reference XrSpace.
       OPENXR_CHECK(xrDestroySpace(m_referenceSpace), "Failed to destroy Space.")
+      if (m_viewSpace != XR_NULL_HANDLE)
+         OPENXR_CHECK(xrDestroySpace(m_viewSpace), "Failed to destroy View Space.")
 
       if (m_passthroughLayer != XR_NULL_HANDLE)
       {
@@ -543,7 +546,7 @@ void VRDevice::SetupHMD()
    assert(m_viewConfigurationViews[0].recommendedSwapchainSampleCount == m_viewConfigurationViews[1].recommendedSwapchainSampleCount);
 
    // Let the user choose the down/super sampling
-   const float resFactor = g_pplayer ? g_pplayer->m_ptable->m_settings.GetPlayerVR_ResFactor() : -1.f;
+   const float resFactor = g_pplayer ? g_settingsService.GetActiveSettings().GetPlayerVR_ResFactor() : -1.f;
    if (resFactor <= 0.1f || resFactor > 10.f)
    {
       m_eyeWidth = m_viewConfigurationViews[0].recommendedImageRectWidth;
@@ -551,23 +554,26 @@ void VRDevice::SetupHMD()
    }
    else
    {
-      m_eyeWidth = static_cast<unsigned int>((float)m_viewConfigurationViews[0].maxImageRectWidth * resFactor);
-      m_eyeHeight = static_cast<unsigned int>((float)m_viewConfigurationViews[0].maxImageRectHeight * resFactor);
+      m_eyeWidth = static_cast<unsigned int>((float)m_viewConfigurationViews[0].recommendedImageRectWidth * resFactor);
+      m_eyeHeight = static_cast<unsigned int>((float)m_viewConfigurationViews[0].recommendedImageRectHeight * resFactor);
    }
-   // Limit to a resolution, under the maximum texture size supported by the GPU
-   const bgfx::Caps* caps = bgfx::getCaps();
-   if ((static_cast<uint32_t>(m_eyeWidth) >= caps->limits.maxTextureSize) || (static_cast<uint32_t>(m_eyeHeight) >= caps->limits.maxTextureSize))
+
+   // Limit to OpenXR declared limits
+   const uint32_t maxWidth = std::min(m_viewConfigurationViews[0].maxImageRectWidth, m_systemProperties.graphicsProperties.maxSwapchainImageWidth);
+   const uint32_t maxHeight = std::min(m_viewConfigurationViews[0].maxImageRectHeight, m_systemProperties.graphicsProperties.maxSwapchainImageHeight);
+   if (m_eyeWidth == 0 || m_eyeHeight == 0 || m_eyeWidth > maxWidth || m_eyeHeight > maxHeight)
    {
-      PLOGI << "Requested resolution exceed the GPU capability, defaulting to headset recommended resolution";
+      PLOGI << "Requested resolution exceeds OpenXR swapchain limits, defaulting to headset recommended resolution";
       m_eyeWidth = m_viewConfigurationViews[0].recommendedImageRectWidth;
       m_eyeHeight = m_viewConfigurationViews[0].recommendedImageRectHeight;
    }
+
    PLOGI << "Headset recommended resolution: " << m_viewConfigurationViews[0].recommendedImageRectWidth << 'x' << m_viewConfigurationViews[0].recommendedImageRectHeight;
    PLOGI << "Headset maximum resolution: " << m_viewConfigurationViews[0].maxImageRectWidth << 'x' << m_viewConfigurationViews[0].maxImageRectHeight;
    PLOGI << "Selected resolution: " << m_eyeWidth << 'x' << m_eyeHeight;
 
    // Create graphics backend early so GetGraphicContext() can provide Vulkan handles to BGFX
-   #if BX_PLATFORM_WINDOWS || BX_PLATFORM_ANDROID
+   #if BX_PLATFORM_WINDOWS || BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
    if (m_rendererType == bgfx::RendererType::Vulkan)
    {
       PLOGI << "Creating Vulkan backend for OpenXR (before BGFX initialization)";
@@ -588,6 +594,30 @@ void VRDevice::SetupHMD()
    #endif
 
    assert(m_backend != nullptr);
+}
+
+void VRDevice::SetDisplayRefreshRateMode(int mode)
+{
+   m_displayRefreshRateMode = mode;
+   if (m_sessionRunning)
+      ApplyDisplayRefreshRate();
+}
+
+void VRDevice::ApplyDisplayRefreshRate()
+{
+   if (!m_displayRefreshRateExtensionSupported)
+      return;
+   static constexpr float rates[] = { 0.f, 72.f, 80.f, 90.f, 120.f };
+   const float requested = rates[clamp(m_displayRefreshRateMode, 0, static_cast<int>(std::size(rates)) - 1)];
+   float rate = 0.f;
+   if (m_xrGetDisplayRefreshRateFB(m_session, &rate) == XR_SUCCESS && rate > 0.f && g_pplayer && g_pplayer->m_playfieldWnd)
+      g_pplayer->m_playfieldWnd->SetRefreshRate(rate);
+   if (requested > 0.f && requested != rate)
+   {
+      const XrResult result = m_xrRequestDisplayRefreshRateFB(m_session, requested);
+      if (result != XR_SUCCESS)
+         PLOGW << "Headset refused refresh rate " << requested << " Hz (result: " << result << ')';
+   }
 }
 
 void VRDevice::CreateSession()
@@ -639,7 +669,7 @@ void VRDevice::CreateSession()
    assert(m_session);
 
    // Initialize passthrough if supported (Meta Quest MR feature)
-   if (m_passthroughExtensionSupported)
+   if (m_passthroughExtensionSupported && g_pplayer && g_settingsService.GetActiveSettings().GetPlayerVR_UsePassthroughColor())
    {
       PFN_xrCreatePassthroughFB xrCreatePassthroughFB;
       OPENXR_CHECK(xrGetInstanceProcAddr(m_xrInstance, "xrCreatePassthroughFB", (PFN_xrVoidFunction*)&xrCreatePassthroughFB), "Failed to get xrCreatePassthroughFB.");
@@ -667,14 +697,22 @@ void VRDevice::CreateSession()
    XrReferenceSpaceType* referenceSpaces = new XrReferenceSpaceType[referenceSpaceCount];
    xrEnumerateReferenceSpaces(m_session, referenceSpaceCount, &referenceSpaceCount, referenceSpaces);
    XrReferenceSpaceCreateInfo referenceSpaceCI { XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
+   bool viewSpaceSupported = false;
    for (uint32_t i = 0; i < referenceSpaceCount; i++)
       if (referenceSpaces[i] == XR_REFERENCE_SPACE_TYPE_STAGE)
          referenceSpaceCI.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
       else if ((referenceSpaces[i] == XR_REFERENCE_SPACE_TYPE_LOCAL) && (referenceSpaceCI.referenceSpaceType != XR_REFERENCE_SPACE_TYPE_STAGE))
          referenceSpaceCI.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+      else if (referenceSpaces[i] == XR_REFERENCE_SPACE_TYPE_VIEW)
+         viewSpaceSupported = true;
    referenceSpaceCI.poseInReferenceSpace = { { 0.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 0.0f } };
    OPENXR_CHECK(xrCreateReferenceSpace(m_session, &referenceSpaceCI, &m_referenceSpace), "Failed to create ReferenceSpace.");
    delete[] referenceSpaces;
+   if (viewSpaceSupported)
+   {
+      referenceSpaceCI.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+      OPENXR_CHECK(xrCreateReferenceSpace(m_session, &referenceSpaceCI, &m_viewSpace), "Failed to create View Space.");
+   }
 
    // Get the supported swapchain formats as an array of int64_t and ordered by runtime preference.
    uint32_t formatCount = 0;
@@ -704,7 +742,8 @@ void VRDevice::CreateSession()
       swapchainCreateInfo.faceCount = 1;
       swapchainCreateInfo.sampleCount = m_viewConfigurationViews[0].recommendedSwapchainSampleCount;
       swapchainCreateInfo.createFlags = 0;
-      swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | (i == 0 ? XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT : XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+      swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT
+         | (i == 0 ? (XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT) : (XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT));
       OPENXR_CHECK(xrCreateSwapchain(m_session, &swapchainCreateInfo, &swapchain.swapchain), "Failed to create Swapchain");
 
       uint32_t swapchainImageCount;
@@ -714,6 +753,43 @@ void VRDevice::CreateSession()
       m_backend->CreateImageViews(swapchain);
    }
    m_swapchainRenderTargets.resize(m_colorSwapchainInfo.imageViews.size() * m_depthSwapchainInfo.imageViews.size());
+
+   // Create a dedicated mono swapchain for the LiveUI, submitted as a view-locked quad composition layer. This avoids
+   // the compositor reprojection shaking the (head-locked) UI, as well as the fake stereo offset that made it unfocusable.
+   if (m_viewSpace != XR_NULL_HANDLE)
+   {
+      m_uiSwapchainInfo.backendFormat = m_backend->SelectColorSwapchainFormat(formats);
+      m_uiSwapchainInfo.width = m_eyeWidth;
+      m_uiSwapchainInfo.height = m_eyeHeight;
+      m_uiSwapchainInfo.arraySize = 1;
+
+      XrSwapchainCreateInfo swapchainCreateInfo { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+      swapchainCreateInfo.arraySize = 1;
+      swapchainCreateInfo.format = m_uiSwapchainInfo.backendFormat;
+      swapchainCreateInfo.width = m_uiSwapchainInfo.width;
+      swapchainCreateInfo.height = m_uiSwapchainInfo.height;
+      swapchainCreateInfo.mipCount = 1;
+      swapchainCreateInfo.faceCount = 1;
+      swapchainCreateInfo.sampleCount = 1;
+      swapchainCreateInfo.createFlags = 0;
+      swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+      OPENXR_CHECK(xrCreateSwapchain(m_session, &swapchainCreateInfo, &m_uiSwapchainInfo.swapchain), "Failed to create UI Swapchain");
+      if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE)
+      {
+         uint32_t swapchainImageCount;
+         OPENXR_CHECK(xrEnumerateSwapchainImages(m_uiSwapchainInfo.swapchain, 0, &swapchainImageCount, nullptr), "Failed to enumerate UI Swapchain Images.");
+         XrSwapchainImageBaseHeader* swapchainImages = m_backend->AllocateSwapchainImageData(m_uiSwapchainInfo.swapchain, SwapchainType::COLOR, swapchainImageCount);
+         OPENXR_CHECK(xrEnumerateSwapchainImages(m_uiSwapchainInfo.swapchain, swapchainImageCount, &swapchainImageCount, swapchainImages), "Failed to enumerate UI Swapchain Images.");
+         m_backend->CreateImageViews(m_uiSwapchainInfo);
+         m_uiRenderTargets.resize(m_uiSwapchainInfo.imageViews.size());
+         if (m_uiSwapchainInfo.imageViews.empty())
+         { // Image enumeration failed, release the swapchain and fallback to rendering the UI inside the projection layer
+            m_backend->FreeSwapchainImageData(m_uiSwapchainInfo.swapchain);
+            OPENXR_CHECK(xrDestroySwapchain(m_uiSwapchainInfo.swapchain), "Failed to destroy UI Swapchain");
+            m_uiSwapchainInfo.swapchain = XR_NULL_HANDLE;
+         }
+      }
+   }
 
    auto inputHandler = std::make_unique<XRInputHandler>(g_pplayer->m_pininput, m_xrInstance, m_session);
    XrAction leftPoseAction = inputHandler->GetAction("/user/hand/left/input/grip/pose");
@@ -745,9 +821,13 @@ void VRDevice::ReleaseSession()
 
    // Destroy the swapchian render targets, and color/depth image views
    m_swapchainRenderTargets.clear();
+   m_uiRenderTarget = nullptr;
+   m_uiRenderTargets.clear();
    for (const auto& imageView : m_colorSwapchainInfo.imageViews)
       bgfx::destroy(imageView);
    for (const auto& imageView : m_depthSwapchainInfo.imageViews)
+      bgfx::destroy(imageView);
+   for (const auto& imageView : m_uiSwapchainInfo.imageViews)
       bgfx::destroy(imageView);
 
    // Free the Swapchain Image Data.
@@ -755,12 +835,18 @@ void VRDevice::ReleaseSession()
       m_backend->FreeSwapchainImageData(m_colorSwapchainInfo.swapchain);
    if (m_depthSwapchainInfo.swapchain)
       m_backend->FreeSwapchainImageData(m_depthSwapchainInfo.swapchain);
+   if (m_uiSwapchainInfo.swapchain)
+      m_backend->FreeSwapchainImageData(m_uiSwapchainInfo.swapchain);
 
    // Destroy the swapchains.
    if (m_colorSwapchainInfo.swapchain)
       OPENXR_CHECK(xrDestroySwapchain(m_colorSwapchainInfo.swapchain), "Failed to destroy Color Swapchain");
    if (m_depthSwapchainInfo.swapchain)
       OPENXR_CHECK(xrDestroySwapchain(m_depthSwapchainInfo.swapchain), "Failed to destroy Depth Swapchain");
+   if (m_uiSwapchainInfo.swapchain)
+      OPENXR_CHECK(xrDestroySwapchain(m_uiSwapchainInfo.swapchain), "Failed to destroy UI Swapchain");
+   m_uiSwapchainInfo.swapchain = XR_NULL_HANDLE;
+   m_uiSwapchainInfo.imageViews.clear();
 
    DiscardVisibilityMask();
 }
@@ -821,6 +907,14 @@ void VRDevice::PollEvents()
          }
          break;
       }
+      case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB:
+      {
+         const XrEventDataDisplayRefreshRateChangedFB* refreshRateChanged = reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&eventData);
+         PLOGI << "OPENXR: Headset refresh rate changed from " << refreshRateChanged->fromDisplayRefreshRate << " Hz to " << refreshRateChanged->toDisplayRefreshRate << " Hz";
+         if (g_pplayer && g_pplayer->m_playfieldWnd)
+            g_pplayer->m_playfieldWnd->SetRefreshRate(refreshRateChanged->toDisplayRefreshRate);
+         break;
+      }
       // Session State changes:
       case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED:
       {
@@ -838,6 +932,7 @@ void VRDevice::PollEvents()
             sessionBeginInfo.primaryViewConfigurationType = m_viewConfiguration;
             OPENXR_CHECK(xrBeginSession(m_session, &sessionBeginInfo), "Failed to begin Session.");
             m_sessionRunning = true;
+            ApplyDisplayRefreshRate();
          }
          if (sessionStateChanged->state == XR_SESSION_STATE_STOPPING)
          {
@@ -991,7 +1086,7 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
       QueryPerformanceFrequency(&TimerFreq);
       m_predictedDisplayTimestamp += static_cast<float>(displayTime.QuadPart - now.QuadPart) / static_cast<float>(TimerFreq.QuadPart);
    }
-   #elif BX_PLATFORM_ANDROID
+   #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
    if (m_xrConvertTimeToTimespecTimeKHR)
    {
       timespec displayTime;
@@ -1027,7 +1122,6 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
          PLOGE << "Failed to locate Views.";
          rendered = false;
       }
-
       if (rendered)
       {
          // The steps that leads to the matrix stack implemented below are the followings, with first matrix being view, 
@@ -1072,7 +1166,7 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
                const vec3 lockbarAxis = rightPos - leftPos;
                const float lockbarAngle = atan2f(-lockbarAxis.z, lockbarAxis.x);
                m_headsetViewCentering = false;
-               m_lockbarWidth = lockbarAxis.Length() * 100.f * table->m_settings.GetPlayerVR_ControllerLockbarScale();
+               m_lockbarWidth = lockbarAxis.Length() * 100.f * table->GetSettings().GetPlayerVR_ControllerLockbarScale();
                
                // Update fixed scaling, considering lockbar size to be the width of the playfield + 2"1/4
                const float tableWidth = VPUTOCM(table->m_right - table->m_left) + 2.25f * 2.54f;
@@ -1085,7 +1179,7 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
                m_lockbarHeight = -centerPos.y;
                m_orientation = RADTOANG(lockbarAngle);
                m_tablePos.x = dx * c - dy * s;
-               m_tablePos.y = dx * s + dy * c + table->m_settings.GetPlayerVR_ControllerCabYOffset() + lockbarToPlayfield * scale;
+               m_tablePos.y = dx * s + dy * c + table->GetSettings().GetPlayerVR_ControllerCabYOffset() + lockbarToPlayfield * scale;
                m_tablePos.z = 0.f;
                m_worldDirty = true;
             }
@@ -1103,9 +1197,19 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
             XrPosef_ToMatrix3D(&medianView, &medianPoseInVPU);
 
             m_headsetViewCentering = false;
-            m_orientation = RADTOANG(atan2f(medianView.m[0][2], medianView.m[0][0]));
-            m_tablePos.x = g_app->m_settings.GetPlayer_ScreenPlayerX() - VPUTOCM(medianPoseInVPU.position.x);
-            m_tablePos.y = g_app->m_settings.GetPlayer_ScreenPlayerY() - VPUTOCM(medianPoseInVPU.position.z);
+            const float angle = atan2f(medianView.m[0][2], medianView.m[0][0]);
+            const float c = cosf(angle);
+            const float s = sinf(angle);
+            const float dx = -VPUTOCM(medianPoseInVPU.position.x);
+            const float dy = -VPUTOCM(medianPoseInVPU.position.z);
+            const Settings& settings = g_settingsService.GetActiveSettings();
+
+            // Rotate the tracking-space translation into the table's yaw frame, just as
+            // controller centering does. Player X/Y is the desired standing position
+            // relative to the lockbar, so add it after transforming the headset pose.
+            m_orientation = RADTOANG(angle);
+            m_tablePos.x = dx * c - dy * s + settings.GetPlayer_ScreenPlayerX();
+            m_tablePos.y = dx * s + dy * c + settings.GetPlayer_ScreenPlayerY();
             m_tablePos.z = 0.f;
             //m_tablePos.z = abs(m_tablePos.z) > 10.f ? 0.f : m_tablePos.z; // Keep user custom offset except if it seems out of normal range
             m_worldDirty = true;
@@ -1251,14 +1355,19 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
          // Acquire and wait for an image from the swapchains (the timeout is infinite)
          uint32_t colorImageIndex = 0;
          uint32_t depthImageIndex = 0;
+         uint32_t uiImageIndex = 0;
          constexpr XrSwapchainImageAcquireInfo acquireInfo { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO, nullptr };
          OPENXR_CHECK(xrAcquireSwapchainImage(m_colorSwapchainInfo.swapchain, &acquireInfo, &colorImageIndex), "Failed to acquire Image from the Color Swapchian");
          OPENXR_CHECK(xrAcquireSwapchainImage(m_depthSwapchainInfo.swapchain, &acquireInfo, &depthImageIndex), "Failed to acquire Image from the Depth Swapchian");
+         if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE)
+            OPENXR_CHECK(xrAcquireSwapchainImage(m_uiSwapchainInfo.swapchain, &acquireInfo, &uiImageIndex), "Failed to acquire Image from the UI Swapchain");
 
          XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
          waitInfo.timeout = XR_INFINITE_DURATION;
          OPENXR_CHECK(xrWaitSwapchainImage(m_colorSwapchainInfo.swapchain, &waitInfo), "Failed to wait for Image from the Color Swapchain");
          OPENXR_CHECK(xrWaitSwapchainImage(m_depthSwapchainInfo.swapchain, &waitInfo), "Failed to wait for Image from the Depth Swapchain");
+         if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE)
+            OPENXR_CHECK(xrWaitSwapchainImage(m_uiSwapchainInfo.swapchain, &waitInfo), "Failed to wait for Image from the UI Swapchain");
 
          // Use the full range of recommended image size to achieve optimum resolution
          const XrRect2Di imageRect = { { 0, 0 }, { (int32_t)m_colorSwapchainInfo.width, (int32_t)m_colorSwapchainInfo.height } };
@@ -1296,8 +1405,8 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
          {
             const uint16_t nViews = static_cast<uint16_t>(m_viewConfigurationViews.size());
             bgfx::Attachment colorAttachment, depthAttachment;
-            colorAttachment.init(m_colorSwapchainInfo.imageViews[colorImageIndex], bgfx::Access::Write, 0, nViews, 0, BGFX_RESOLVE_NONE);
-            depthAttachment.init(m_depthSwapchainInfo.imageViews[depthImageIndex], bgfx::Access::Write, 0, nViews, 0, BGFX_RESOLVE_NONE);
+            colorAttachment.init(m_colorSwapchainInfo.imageViews[colorImageIndex], bgfx::Access::Write, 0, nViews, 0, BGFX_ATTACHMENT_NONE);
+            depthAttachment.init(m_depthSwapchainInfo.imageViews[depthImageIndex], bgfx::Access::Write, 0, nViews, 0, BGFX_ATTACHMENT_NONE);
             const bgfx::Attachment attachments[] = { colorAttachment, depthAttachment };
             const bgfx::FrameBufferHandle fbh = bgfx::createFrameBuffer(2, attachments);
             m_swapchainRenderTargets[colorImageIndex + depthImageIndex * m_colorSwapchainInfo.imageViews.size()]
@@ -1305,6 +1414,26 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
                   std::format("VRSwapchain [{}/{}]", colorImageIndex, depthImageIndex), m_colorSwapchainInfo.width, m_colorSwapchainInfo.height, colorFormat::RGBA);
             vrRenderTarget = m_swapchainRenderTargets[colorImageIndex + depthImageIndex * m_colorSwapchainInfo.imageViews.size()].get();
          }
+
+         // Wrap the acquired UI swapchain image as a render target. This must be done before submitFrame since the
+         // submitted frame is recorded by the logic thread which reads GetUIRenderTarget() once unblocked.
+         if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE)
+         {
+            RenderTarget* uiRenderTarget = m_uiRenderTargets[uiImageIndex].get();
+            if (uiRenderTarget == nullptr)
+            {
+               bgfx::Attachment uiAttachment;
+               uiAttachment.init(m_uiSwapchainInfo.imageViews[uiImageIndex], bgfx::Access::Write, 0, 1, 0, BGFX_ATTACHMENT_NONE);
+               const bgfx::FrameBufferHandle fbh = bgfx::createFrameBuffer(1, &uiAttachment);
+               bgfx::TextureHandle depthHandle = BGFX_INVALID_HANDLE;
+               m_uiRenderTargets[uiImageIndex] = std::make_unique<RenderTarget>(rd, SurfaceType::RT_DEFAULT, fbh, uiAttachment.handle, m_uiSwapchainInfo.format, 
+                  depthHandle, bgfx::TextureFormat::Enum::Unknown, std::format("VRUILayer [{}]", uiImageIndex), m_uiSwapchainInfo.width, m_uiSwapchainInfo.height,
+                  colorFormat::RGBA);
+               uiRenderTarget = m_uiRenderTargets[uiImageIndex].get();
+            }
+            m_uiRenderTarget = uiRenderTarget;
+         }
+
          submitFrame(vrRenderTarget);
 
          // Fill out the XrCompositionLayerProjection structure for usage with xrEndFrame().
@@ -1317,6 +1446,11 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
          constexpr XrSwapchainImageReleaseInfo releaseInfo { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO, nullptr };
          OPENXR_CHECK(xrReleaseSwapchainImage(m_colorSwapchainInfo.swapchain, &releaseInfo), "Failed to release Image back to the Color Swapchain");
          OPENXR_CHECK(xrReleaseSwapchainImage(m_depthSwapchainInfo.swapchain, &releaseInfo), "Failed to release Image back to the Depth Swapchain");
+         if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE)
+         {
+            m_uiRenderTarget = nullptr;
+            OPENXR_CHECK(xrReleaseSwapchainImage(m_uiSwapchainInfo.swapchain, &releaseInfo), "Failed to release Image back to the UI Swapchain");
+         }
 
          // Add passthrough layer first (background)
          if (m_passthroughEnabled && m_passthroughLayer != XR_NULL_HANDLE)
@@ -1328,6 +1462,24 @@ void VRDevice::RenderFrame(RenderDevice* rd, const std::function<void(RenderTarg
          }
 
          renderLayerInfo.layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&renderLayerInfo.layerProjection));
+
+         // Submit the LiveUI as a separate view-locked quad layer on top of the scene. Rendering the UI inside the
+         // projection layer made it shake since a head locked overlay was reprojected as world locked geometry, and the
+         // fake stereo offset applied per eye made it appear unfocused.
+         if (m_uiSwapchainInfo.swapchain != XR_NULL_HANDLE && m_showUILayer)
+         {
+            constexpr float uiDistance = 0.5f; // meter in front of the player
+            const float uiHeight = static_cast<float>(m_uiSwapchainInfo.width) / static_cast<float>(m_uiSwapchainInfo.height);
+            renderLayerInfo.layerQuad.layerFlags= XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT | XR_COMPOSITION_LAYER_CORRECT_CHROMATIC_ABERRATION_BIT;
+            renderLayerInfo.layerQuad.space = m_viewSpace;
+            renderLayerInfo.layerQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            renderLayerInfo.layerQuad.subImage.swapchain = m_uiSwapchainInfo.swapchain;
+            renderLayerInfo.layerQuad.subImage.imageRect = { { 0, 0 }, { (int32_t)m_uiSwapchainInfo.width, (int32_t)m_uiSwapchainInfo.height } };
+            renderLayerInfo.layerQuad.subImage.imageArrayIndex = 0;
+            renderLayerInfo.layerQuad.pose = { { 0.f, 0.f, 0.f, 1.f }, { 0.f, -0.05f * uiHeight, -uiDistance } };
+            renderLayerInfo.layerQuad.size = { 1.f, uiHeight };
+            renderLayerInfo.layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&renderLayerInfo.layerQuad));
+         }
       }
    }
 

@@ -21,7 +21,7 @@ MSGPI_INT_VAL_SETTING(dmdWidthProp, "B2SDMDWidth", "B2SDMDWidth", "", true, 0, 1
 MSGPI_INT_VAL_SETTING(dmdHeightProp, "B2SDMDHeight", "B2SDMDHeight", "", true, 0, 16384, 128);
 MSGPI_BOOL_VAL_SETTING(dmdFlipYProp, "B2SDMDFlipY", "B2SDMDFlipY", "", true, false);
 
-B2SScreen::B2SScreen(B2SData* pB2SData, MsgPluginAPI* msgApi, VPXPluginAPI* vpxApi, unsigned int endpointId)
+B2SScreen::B2SScreen(B2SData* pB2SData, const MsgPluginAPI* msgApi, VPXPluginAPI* vpxApi, unsigned int endpointId)
    : m_pB2SData(pB2SData),
      m_msgApi(msgApi),
      m_vpxApi(vpxApi),
@@ -171,7 +171,9 @@ void B2SScreen::GetB2SSettings(SDL_Point defaultDMDLocation, eDMDViewMode dmdVie
 
       // maybe rotate DMD image
       if (m_dmdFlipY && m_pFormDMD && m_pFormDMD->GetBackgroundImage()) {
-         m_pFormDMD->SetBackgroundImage(FlipImage(m_pFormDMD->GetBackgroundImage()));
+         VPXTexture pImage = m_pFormDMD->GetBackgroundImage();
+         m_pFormDMD->SetBackgroundImage(FlipImage(pImage));
+         m_vpxApi->DeleteTexture(pImage);
       }
    }
 }
@@ -327,7 +329,10 @@ void B2SScreen::ScaleControl(B2SBaseBox* pControl, float rescaleX, float rescale
             pPicbox->SetRectangleF({ pPicbox->GetRectangleF().x, newY, pPicbox->GetRectangleF().w, pPicbox->GetRectangleF().h });
             // flip the images
             if (pPicbox->GetBackgroundImage()) {
-               pPicbox->SetBackgroundImage(FlipImage(pPicbox->GetBackgroundImage()));
+               VPXTexture pImage = pPicbox->GetBackgroundImage();
+               pPicbox->SetBackgroundImage(FlipImage(pImage));
+               if (pPicbox->GetPictureBoxType() == ePictureBoxType_StandardImage)
+                  m_vpxApi->DeleteTexture(pImage);
             }
             if (pPicbox->GetOffImage()) {
                pPicbox->SetOffImage(FlipImage(pPicbox->GetOffImage()));

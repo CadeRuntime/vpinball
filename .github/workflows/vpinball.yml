@@ -1,11 +1,17 @@
 name: vpinball
 on:
   push:
-  pull_request:
+  # pull_request:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to build (leave empty to build the selected branch)'
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.pr_number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event.inputs.pr_number != '' }}
 
 env:
   VERSION_START_SHA: ea558e7417f6f06fe567d34f0e33792a141b8e64
@@ -15,9 +21,30 @@ defaults:
     shell: bash
 
 jobs:
+  context:
+    name: Context
+    runs-on: ubuntu-24.04
+    outputs:
+      is_pr: ${{ steps.context.outputs.is_pr }}
+      checkout_ref: ${{ steps.context.outputs.checkout_ref }}
+    steps:
+      - id: context
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+            echo "checkout_ref=" >> $GITHUB_OUTPUT
+          elif [[ -n "${{ github.event.inputs.pr_number }}" ]]; then
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+            echo "checkout_ref=refs/pull/${{ github.event.inputs.pr_number }}/head" >> $GITHUB_OUTPUT
+          else
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            echo "checkout_ref=" >> $GITHUB_OUTPUT
+          fi
+
   version:
     name: Version
     runs-on: ubuntu-24.04
+    needs: [ context ]
     outputs:
       revision: ${{ steps.version.outputs.revision }}
       version_short: ${{ steps.version.outputs.version_short }}
@@ -28,6 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
           fetch-depth: 0
       - id: version
         run: |
@@ -51,6 +79,7 @@ jobs:
   matrix:
     name: Matrix
     runs-on: ubuntu-24.04
+    needs: [ context ]
     outputs:
       desktop: ${{ steps.matrix.outputs.desktop }}
       dx: ${{ steps.matrix.outputs.dx }}
@@ -59,20 +88,16 @@ jobs:
     steps:
       - id: matrix
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "${{ needs.context.outputs.is_pr }}" != "true" ]]; then
             DESKTOP='{"include":[
               {"os":"windows-2025-vs2026","type":"BGFX","platform":"windows","arch":"x64","config":"Release"},
-              {"os":"windows-2025-vs2026","type":"BGFX","platform":"windows","arch":"x64","config":"Debug"},
               {"os":"windows-2025-vs2026","type":"BGFX","platform":"windows","arch":"x86","config":"Release"},
-              {"os":"windows-2025-vs2026","type":"BGFX","platform":"windows","arch":"x86","config":"Debug"},
               {"os":"windows-2025-vs2026","type":"BGFX","platform":"windows-mingw","arch":"x64","config":"Release"},
               {"os":"macos-15","type":"BGFX","platform":"macos","arch":"arm64","config":"Release"},
               {"os":"macos-15","type":"BGFX","platform":"macos","arch":"x64","config":"Release"},
               {"os":"ubuntu-24.04","type":"BGFX","platform":"linux","arch":"x64","config":"Release"},
               {"os":"windows-2025-vs2026","type":"GL","platform":"windows","arch":"x64","config":"Release"},
               {"os":"windows-2025-vs2026","type":"GL","platform":"windows","arch":"x86","config":"Release"},
-              {"os":"windows-2025-vs2026","type":"GL","platform":"windows","arch":"x64","config":"Debug"},
-              {"os":"windows-2025-vs2026","type":"GL","platform":"windows","arch":"x86","config":"Debug"},
               {"os":"macos-15","type":"GL","platform":"macos","arch":"arm64","config":"Release"},
               {"os":"macos-15","type":"GL","platform":"macos","arch":"x64","config":"Release"},
               {"os":"ubuntu-24.04","type":"GL","platform":"linux","arch":"x64","config":"Release"}
@@ -85,9 +110,7 @@ jobs:
             ]}'
             DX='{"include":[
               {"platform":"windows","arch":"x64","config":"Release"},
-              {"platform":"windows","arch":"x64","config":"Debug"},
-              {"platform":"windows","arch":"x86","config":"Release"},
-              {"platform":"windows","arch":"x86","config":"Debug"}
+              {"platform":"windows","arch":"x86","config":"Release"}
             ]}'
             ANDROID_FLAVORS='["quest","mobile"]'
           else
@@ -114,7 +137,7 @@ jobs:
   build-desktop:
     name: Build VPinballX_${{ matrix.type }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.config }}
     runs-on: ${{ matrix.os }}
-    needs: [ version, matrix ]
+    needs: [ context, version, matrix ]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.desktop) }}
@@ -138,6 +161,8 @@ jobs:
           sudo apt-get update
           sudo apt install cmake nasm bison zlib1g-dev libdrm-dev libgbm-dev libglu1-mesa-dev libegl-dev libgl1-mesa-dev libwayland-dev libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libpipewire-0.3-dev
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
       - name: Calculate external cache hash
         run: |
           echo "EXT_HASH=$(cat platforms/config.sh platforms/${{ matrix.platform }}-${{ matrix.arch }}/external.sh | sha256sum | cut -c1-12)" >> $GITHUB_ENV
@@ -160,13 +185,13 @@ jobs:
           else
             BUILD_TYPE=${{ matrix.config }} ./platforms/${{ matrix.platform }}-${{ matrix.arch }}/external.sh
           fi
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Clean external cache
         run: |
           find external -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
           find external -name "*.tar.gz" -delete 2>/dev/null || true
           find external \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Save external cache
         uses: actions/cache/save@v5
         with:
@@ -215,7 +240,7 @@ jobs:
         name: Code signing, notarization, and packaging
         run: |
           cd build/${{ matrix.config }}
-          if [[ "${{ vars.MACOS_CODESIGN }}" == "1" && "${{ github.event_name }}" == "push" ]]; then
+          if [[ "${{ vars.MACOS_CODESIGN }}" == "1" && "${{ needs.context.outputs.is_pr }}" != "true" ]]; then
             KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
             echo "${{ secrets.MACOS_CODESIGN_P12 }}" | base64 --decode > certificate.p12
             security create-keychain -p "${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}" $KEYCHAIN_PATH
@@ -223,9 +248,13 @@ jobs:
             security unlock-keychain -p "${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}" $KEYCHAIN_PATH
             security import certificate.p12 -P "${{ secrets.MACOS_CODESIGN_P12_PASSWORD }}" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
             security list-keychain -d user -s $KEYCHAIN_PATH
-            find VPinballX_${{ matrix.type }}.app/Contents/Resources/plugins -type f -name '*.dylib' -exec \
-               codesign --verbose --timestamp --options runtime --force --sign "${{ secrets.MACOS_CODESIGN_DEVELOPER_ID }}" {} \;
-            codesign --verbose --timestamp --options runtime --deep --force --sign "${{ secrets.MACOS_CODESIGN_DEVELOPER_ID }}" VPinballX_${{ matrix.type }}.app
+            codesign --verbose --timestamp --options runtime --force \
+              --sign "${{ secrets.MACOS_CODESIGN_DEVELOPER_ID }}" \
+              VPinballX_${{ matrix.type }}.app/Contents/PlugIns/*/*.dylib
+            codesign --verbose --timestamp --options runtime --deep --force \
+              --entitlements ../../apps/macos/VPinballX.entitlements \
+              --sign "${{ secrets.MACOS_CODESIGN_DEVELOPER_ID }}" \
+              VPinballX_${{ matrix.type }}.app
             ditto -c -k --rsrc --keepParent VPinballX_${{ matrix.type }}.app VPinballX_${{ matrix.type }}.zip
             xcrun notarytool submit VPinballX_${{ matrix.type }}.zip  \
               --wait \
@@ -236,7 +265,7 @@ jobs:
           fi
           create-dmg \
             --volname "VPinballX_${{ matrix.type }}-${{ needs.version.outputs.tag }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.config }}" \
-            --volicon ../../standalone/macos/VPinballX.icns \
+            --volicon ../../apps/macos/VPinballX.icns \
             --window-pos 200 120 \
             --window-size 520 320 \
             --icon-size 64 \
@@ -253,6 +282,9 @@ jobs:
               cp build/${{ matrix.config }}/VPinballX_${{ matrix.type }}64.exe stage
             else
               cp build/${{ matrix.config }}/VPinballX_${{ matrix.type }}.exe stage
+            fi
+            if [[ "${{ matrix.platform }}" == "windows" ]]; then
+              cp build/${{ matrix.config }}/VPinballX_${{ matrix.type }}*.pdb stage
             fi
             cp build/${{ matrix.config }}/*.dll stage
             if [[ "${{ matrix.type }}" == "GL" ]]; then
@@ -288,7 +320,7 @@ jobs:
   build-dx:
     name: Build VPinballX-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.config }}
     runs-on: windows-2025-vs2026
-    needs: [ version, matrix ]
+    needs: [ context, version, matrix ]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.dx) }}
@@ -303,6 +335,8 @@ jobs:
             /c/msys64/usr/bin/bash.exe -l -c "pacman -S --noconfirm mingw-w64-i686-gcc mingw-w64-i686-zlib mingw-w64-i686-libwinpthread mingw-w64-i686-libiconv mingw-w64-i686-cmake"
           fi
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
       - name: Calculate external cache hash
         run: |
           echo "EXT_HASH=$(cat platforms/config.sh platforms/${{ matrix.platform }}-${{ matrix.arch }}/external.sh | sha256sum | cut -c1-12)" >> $GITHUB_ENV
@@ -354,6 +388,7 @@ jobs:
           else
             cp build/${{ matrix.config }}/VPinballX.exe stage
           fi
+          cp build/${{ matrix.config }}/VPinballX*.pdb stage
           cp build/${{ matrix.config }}/*.dll stage
           cp -r build/${{ matrix.config }}/assets stage
           cp -r build/${{ matrix.config }}/scripts stage
@@ -369,7 +404,7 @@ jobs:
   build-sbc:
     name: Build VPinballX_${{ matrix.type }}-${{ matrix.board }}-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.config }}
     runs-on: ${{ matrix.os }}
-    needs: [ version, matrix ]
+    needs: [ context, version, matrix ]
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.matrix.outputs.sbc) }}
@@ -378,6 +413,8 @@ jobs:
           sudo apt-get update
           sudo apt install cmake nasm bison zlib1g-dev libdrm-dev libgbm-dev libglu1-mesa-dev libegl-dev libgl1-mesa-dev libwayland-dev libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libgpiod-dev
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
       - name: Calculate external cache hash
         run: |
           echo "EXT_HASH=$(cat platforms/config.sh platforms/${{ matrix.platform }}-${{ matrix.arch }}/external.sh | sha256sum | cut -c1-12)" >> $GITHUB_ENV
@@ -392,13 +429,13 @@ jobs:
       - name: Build external cache
         run: |
           BUILD_TYPE=${{ matrix.config }} ./platforms/${{ matrix.platform }}-${{ matrix.arch }}/external.sh
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Clean external cache
         run: |
           find external -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
           find external -name "*.tar.gz" -delete 2>/dev/null || true
           find external \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Save external cache
         uses: actions/cache/save@v5
         with:
@@ -442,7 +479,7 @@ jobs:
   build-ios:
     name: Build VPinballX_BGFX-ios-${{ matrix.config }}
     runs-on: macos-15
-    needs: [ version ]
+    needs: [ context, version ]
     strategy:
       fail-fast: false
       matrix:
@@ -452,6 +489,8 @@ jobs:
           brew install bison autoconf automake libtool ldid
           echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
       - name: Calculate external cache hash
         run: |
           echo "EXT_HASH=$(cat platforms/config.sh platforms/ios-arm64/external.sh | sha256sum | cut -c1-12)" >> $GITHUB_ENV
@@ -466,13 +505,13 @@ jobs:
       - name: Build external cache
         run: |
           BUILD_TYPE=${{ matrix.config }} ./platforms/ios-arm64/external.sh
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Clean external cache
         run: |
           find external -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
           find external -name "*.tar.gz" -delete 2>/dev/null || true
           find external \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Save external cache
         uses: actions/cache/save@v5
         with:
@@ -495,14 +534,14 @@ jobs:
           sudo xcode-select -switch /Applications/Xcode_26.3.app
           MARKETING_VERSION="${{ needs.version.outputs.version_ios }}"
           CURRENT_PROJECT_VERSION="${{ needs.version.outputs.version_full }}"
-          cd standalone/ios
+          cd apps/ios
           perl -i -pe "s/MARKETING_VERSION = [0-9.]+/MARKETING_VERSION = $MARKETING_VERSION/g" "VPinball.xcodeproj/project.pbxproj"
           perl -i -pe "s/CURRENT_PROJECT_VERSION = [0-9.]+/CURRENT_PROJECT_VERSION = $CURRENT_PROJECT_VERSION/g" "VPinball.xcodeproj/project.pbxproj"
           fastlane build_unsigned_ipa
       - name: Stage artifacts
         run: |
           mkdir tmp
-          cp standalone/ios/fastlane/VPinballX.ipa tmp/VPinballX_BGFX-${{ needs.version.outputs.tag }}-ios-${{ matrix.config }}.ipa
+          cp apps/ios/fastlane/VPinballX.ipa tmp/VPinballX_BGFX-${{ needs.version.outputs.tag }}-ios-${{ matrix.config }}.ipa
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -513,7 +552,7 @@ jobs:
   build-android:
     name: Build VPinballX_BGFX-android-${{ matrix.flavor }}-${{ matrix.config }}
     runs-on: ubuntu-24.04
-    needs: [ version, matrix ]
+    needs: [ context, version, matrix ]
     strategy:
       fail-fast: false
       matrix:
@@ -531,6 +570,8 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.context.outputs.checkout_ref }}
       - name: Calculate external cache hash
         run: |
           echo "EXT_HASH=$(cat platforms/config.sh platforms/android-arm64-v8a/external.sh | sha256sum | cut -c1-12)" >> $GITHUB_ENV
@@ -545,13 +586,13 @@ jobs:
       - name: Build external cache
         run: |
           BUILD_TYPE=${{ matrix.config }} ./platforms/android-arm64-v8a/external.sh
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Clean external cache
         run: |
           find external -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
           find external -name "*.tar.gz" -delete 2>/dev/null || true
           find external \( -name "*.o" -o -name "*.obj" \) -delete 2>/dev/null || true
-      - if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+      - if: needs.context.outputs.is_pr != 'true' && steps.cache.outputs.cache-hit != 'true'
         name: Save external cache
         uses: actions/cache/save@v5
         with:
@@ -578,14 +619,14 @@ jobs:
                   -B build/android-arm64-v8a
           fi
           cmake --build build/android-arm64-v8a -- -j$(nproc)
-      - if: github.event_name == 'push' && github.repository == 'vpinball/vpinball'
+      - if: needs.context.outputs.is_pr != 'true' && github.repository == 'vpinball/vpinball'
         name: Build app
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          cd standalone/android
+          cd apps/android
           echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 --decode > app/vpinball.jks
           FLAVOR="${{ matrix.flavor }}"
           FLAVOR_CAPITALIZED="$(echo "${FLAVOR:0:1}" | tr '[:lower:]' '[:upper:]')${FLAVOR:1}"
@@ -594,13 +635,13 @@ jobs:
             bundle${FLAVOR_CAPITALIZED}${{ matrix.config }} \
             -PversionName="${{ needs.version.outputs.version_full }}" \
             -Psha_short="${{ needs.version.outputs.sha_short }}"
-      - if: github.event_name == 'pull_request' || github.repository != 'vpinball/vpinball'
+      - if: needs.context.outputs.is_pr == 'true' || github.repository != 'vpinball/vpinball'
         name: Build app (fork)
         run: |
           export ANDROID_KEYSTORE_PASSWORD=vpinball
           export ANDROID_KEY_ALIAS=vpinball
           export ANDROID_KEY_PASSWORD=vpinball
-          cd standalone/android
+          cd apps/android
           keytool -genkey -v -keystore app/vpinball.jks \
                 -keyalg RSA -keysize 2048 -validity 10000 \
                 -storepass "$ANDROID_KEYSTORE_PASSWORD" \
@@ -619,10 +660,10 @@ jobs:
           CONFIG_LC=$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')
           FLAVOR_LC=$(echo "${{ matrix.flavor }}" | tr '[:upper:]' '[:lower:]')
           mkdir tmp-apk
-          cp standalone/android/app/build/outputs/apk/${FLAVOR_LC}/${CONFIG_LC}/*.apk tmp-apk/VPinballX_BGFX-${{ needs.version.outputs.tag }}-android-${{ matrix.flavor }}-${{ matrix.config }}.apk
+          cp apps/android/app/build/outputs/apk/${FLAVOR_LC}/${CONFIG_LC}/*.apk tmp-apk/VPinballX_BGFX-${{ needs.version.outputs.tag }}-android-${{ matrix.flavor }}-${{ matrix.config }}.apk
           if [[ "${{ github.repository }}" == "vpinball/vpinball" ]]; then
              mkdir tmp-aab
-             cp standalone/android/app/build/outputs/bundle/${FLAVOR_LC}${{ matrix.config }}/*.aab tmp-aab/VPinballX_BGFX-${{ needs.version.outputs.tag }}-android-${{ matrix.flavor }}-${{ matrix.config }}.aab
+             cp apps/android/app/build/outputs/bundle/${FLAVOR_LC}${{ matrix.config }}/*.aab tmp-aab/VPinballX_BGFX-${{ needs.version.outputs.tag }}-android-${{ matrix.flavor }}-${{ matrix.config }}.aab
           fi
       - name: Upload apk
         uses: actions/upload-artifact@v7

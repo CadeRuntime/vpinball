@@ -6,11 +6,13 @@
 #include "core/VPApp.h"
 #include "parts/pintable.h"
 #include "renderer/RenderProbe.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
-RenderProbeDialog::RenderProbeDialog()
+RenderProbeDialog::RenderProbeDialog(PinTableWnd *tableEditor)
    : CDialog(IDD_RENDERPROBE)
+   , m_tableEditor(tableEditor)
    , hListHwnd(nullptr)
 {
 }
@@ -54,7 +56,7 @@ BOOL RenderProbeDialog::OnInitDialog()
 
 void RenderProbeDialog::UpdateList()
 {
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    ListView_DeleteAllItems(hListHwnd);
    for (size_t i = 0; i < pt->GetRenderProbeList().size(); i++)
    {
@@ -238,14 +240,14 @@ void RenderProbeDialog::SaveProbeFromUI(RenderProbe *const pb)
       pb->SetRoughness(roughness);
       pb->SetReflectionPlane(plane);
       pb->SetReflectionMode((RenderProbe::ReflectionMode)reflectionMode);
-      CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+      CCO(PinTable) *const pt = m_tableEditor->m_table;
       pt->SetNonUndoableDirty(eSaveDirty);
    }
 }
 
 BOOL RenderProbeDialog::OnCommand(WPARAM wParam, LPARAM lParam)
 {
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    UNREFERENCED_PARAMETER(lParam);
 
    switch (LOWORD(wParam))
@@ -350,10 +352,10 @@ void RenderProbeDialog::OnClose()
 
 void RenderProbeDialog::LoadPosition()
 {
-   const int x = g_app->m_settings.GetEditor_RenderProbePosX();
-   const int y = g_app->m_settings.GetEditor_RenderProbePosY();
-   const int w = g_app->m_settings.GetEditor_RenderProbeWidth();
-   const int h = g_app->m_settings.GetEditor_RenderProbeHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_RenderProbePosX();
+   const int y = g_settingsService.GetAppSettings().GetEditor_RenderProbePosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_RenderProbeWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_RenderProbeHeight();
    POINT p { x, y };
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != NULL) // Do not apply if point is offscreen
       SetWindowPos(nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -362,8 +364,8 @@ void RenderProbeDialog::LoadPosition()
 void RenderProbeDialog::SavePosition()
 {
    const CRect rect = GetWindowRect();
-   g_app->m_settings.SetEditor_RenderProbePosX((int)rect.left, false);
-   g_app->m_settings.SetEditor_RenderProbePosY((int)rect.top, false);
-   g_app->m_settings.SetEditor_RenderProbeWidth(rect.right - rect.left, false);
-   g_app->m_settings.SetEditor_RenderProbeHeight(rect.bottom - rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_RenderProbePosX((int)rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_RenderProbePosY((int)rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_RenderProbeWidth(rect.right - rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_RenderProbeHeight(rect.bottom - rect.top, false);
 }

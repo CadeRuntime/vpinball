@@ -50,7 +50,7 @@ void SensorSetupPageSection::AppendSection(InGameUIPage* page, PhysicsSensor* se
    };
 
    const string prevMapping = m_sensor->GetMappingString();
-   m_sensor->LoadMapping(m_page->m_player->m_ptable->m_settings, m_settingId);
+   m_sensor->LoadMapping(g_settingsService.GetActiveSettings(), m_settingId);
    std::unique_ptr<SensorMapping> storedMapping = m_sensor->IsMapped() ? std::make_unique<SensorMapping>(m_sensor->GetMapping()) : nullptr;
    m_sensor->SetMapping(prevMapping);
 
@@ -157,23 +157,25 @@ void SensorSetupPageSection::AppendSection(InGameUIPage* page, PhysicsSensor* se
    // Scale is defined as a custom scale applied on a selected unit.
    const float liveScale = liveMapping->GetScale();
    const float storedScale = storedMapping ? storedMapping->GetScale() : 1.f;
-   bool isCustomScale = true;
    if (liveMapping->GetType() == SensorMapping::Type::Acceleration)
    {
       // Accelerations must be provided to the engine in m/s^2 (acquired value x scale => m/s^2)
       // We propose some default scales, that is to say 1/2/4/8g (which is what Pinscape boards propose)
       constexpr float g = 9.80665f;
+      int accUnit = abs(liveScale - g) < 0.01f ? 1 //
+         : abs(liveScale - 2.f * g) < 0.01f    ? 2 //
+         : abs(liveScale - 4.f * g) < 0.01f    ? 3 //
+         : abs(liveScale - 8.f * g) < 0.01f    ? 4 //
+                                               : 0;
       if (m_accUnit < 0)
-         m_accUnit = abs(liveScale - g) < 0.01f ? 1 : abs(liveScale - 2.f * g) < 0.01f ? 2 : abs(liveScale - 4.f * g) < 0.01f ? 3 : abs(liveScale - 8.f * g) < 0.01f ? 4 : 0;
-      isCustomScale = m_accUnit == 0;
+         m_accUnit = accUnit;
       m_page->AddItem(std::make_unique<InGameUIItem>(
          VPX::Properties::EnumPropertyDef(
             ""s, ""s, "Sensor unit"s, "Unit used by the sensor or custom scaling."s, false, 0, 0, vector { "Custom unit"s, "1 Gravity"s, "2 Gravity"s, "4 Gravity"s, "8 Gravity"s }),
-         [this]() { return m_accUnit; }, // Live
+         [this, accUnit]() { return accUnit; }, // Live
          [this](const Settings& settings) { return m_accUnit; }, // Stored
          [this, liveScale, g](int, int v)
          {
-            m_accUnit = v;
             const float sign = liveScale < 0.f ? -1.f : 1.f;
             switch (v)
             {
@@ -185,54 +187,69 @@ void SensorSetupPageSection::AppendSection(InGameUIPage* page, PhysicsSensor* se
             m_rebuildPage();
          },
          [](Settings& settings) { /* Already performed in first page item */ }, // Reset
-         [](int v, Settings& settings, bool isTableOverride) { /* Already performed in first page item */ })); // Save
+         [this, accUnit](int v, Settings& settings, bool isTableOverride) { m_accUnit = accUnit; })); // Save
    }
    else if (liveMapping->GetType() == SensorMapping::Type::Velocity)
    {
       // Velocities must be provided to the engine in m/s (acquired value x scale => m/s)
-      // We propose some default scales, that is to say 20mm/s (which is what Pinscape boards use)
+      // We propose some default scales (derived from Pinscape firmware)
+      constexpr float pinscapeDefaultNudge = 4096.f / (20.f * 1000.f); // Pinscape measure in mm/s then multiply by 20 and send a -4096/4096 range (this scale can be overriden)
+      constexpr float pinscapeDefaultPlunger = 12.5f;
+      int velUnit = fabs(liveScale/pinscapeDefaultNudge - 1.f) < 0.005f   ? 1 //
+                  : fabs(liveScale/pinscapeDefaultPlunger - 1.f) < 0.005f ? 2 //
+                                                                          : 0;
       if (m_velUnit < 0)
-         m_velUnit = abs(liveScale - 0.020f) < 0.01f ? 1 :  0;
-      isCustomScale = m_velUnit == 0;
+         m_velUnit = velUnit;
       m_page->AddItem(std::make_unique<InGameUIItem>(
-         VPX::Properties::EnumPropertyDef(""s, ""s, "Sensor unit"s, "Unit used by the sensor or custom scaling."s, false, 0, 0, vector { "Custom unit"s, "20 mm/s"s }),
-         [this]() { return m_velUnit; }, // Live
+         VPX::Properties::EnumPropertyDef(""s, ""s, "Sensor unit"s, "Unit used by the sensor or custom scaling."s, false, 0, 0,
+            vector {
+               "Custom unit"s, // See below
+               "0.2048 m/s [Pinscape nudge velocity]"s, // The value is surprising but this is really the result of the default scaling (20x)
+               "12.5 p.u/s [Pinscape plunger velocity]"s // Plunger velocity is a per unit velocity regarding full plunger frame length (so no direct length unit)
+            }),
+         [this, velUnit]() { return velUnit; }, // Live
          [this](const Settings& settings) { return m_velUnit; }, // Stored
          [this, liveScale](int, int v)
          {
-            m_velUnit = v;
             const float sign = liveScale < 0.f ? -1.f : 1.f;
             switch (v)
             {
-            case 1: m_sensor->GetMapping().SetScale(sign * 20.f); break;
+            case 1: m_sensor->GetMapping().SetScale(sign * pinscapeDefaultNudge); break;
+            case 2: m_sensor->GetMapping().SetScale(sign * pinscapeDefaultPlunger); break;
             }
             m_rebuildPage();
          },
          [](Settings& settings) { /* Already performed in first page item */ }, // Reset
-         [](int v, Settings& settings, bool isTableOverride) { /* Already performed in first page item */ })); // Save
+         [this, velUnit](int v, Settings& settings, bool isTableOverride) { m_velUnit = velUnit; })); // Save
    }
    else if (liveMapping->GetType() == SensorMapping::Type::Position)
    {
       // Positions are unit less:
-      // . plunger is somewhat ackward with +1 for fully retracted and -1 being either symmetric (linear mode) or a custom scaling (legacy)
+      // . plunger is +1 for fully retracted, 0 at rest and -1 for fully extended (symmetric from the rest..retracted range)
       // . nudge only uses position for gamepad nudging where the units does not mean anything (it is just used to evaluate the player intent)
    }
-   if (isCustomScale)
-   {
-      m_page->AddItem(std::make_unique<InGameUIItem>(
-         VPX::Properties::FloatPropertyDef(""s, ""s, "Gain"s, "Scale the acquired value by the selected scale."s, false, 0.f, 5.f, 0.f, 1.f), 100.f,
-         "%4.1f %%", //
-         [liveScale]() { return fabs(liveScale); }, // Live
-         [storedScale](const Settings&) { return fabs(storedScale); }, // Stored
-         [this, liveScale](float, float v)
-         {
-            const bool reversed = liveScale < 0.f;
-            m_sensor->GetMapping().SetScale(reversed ? -v : v);
-            m_rebuildPage();
-         }, //
-         [](Settings&) { /* Already performed in first page item */ }, // Reset
-         [](float, Settings&, bool) { /* Already performed in first page item */ })); // Save
-   }
+   m_page->AddItem(std::make_unique<InGameUIItem>(
+      VPX::Properties::FloatPropertyDef(""s, ""s, "Unit scale"s,
+         liveMapping->GetType() == SensorMapping::Type::Acceleration  ? "Scale to apply to the value acquired to convert it to m/s^2"s
+            : liveMapping->GetType() == SensorMapping::Type::Velocity ? "Scale to apply to the value acquired to convert it to m/s or p.u./s"s
+                                                                      : "Scale to apply to acquired value"s,
+         false, 0.f,
+         liveMapping->GetType() == SensorMapping::Type::Acceleration  ? 80.f
+            : liveMapping->GetType() == SensorMapping::Type::Velocity ? 20.f
+                                                                      : 10.f,
+         0.f, 1.f),
+      1.f,
+      "%4.3f", //
+      [liveScale]() { return fabs(liveScale); }, // Live
+      [storedScale](const Settings&) { return fabs(storedScale); }, // Stored
+      [this, liveScale](float, float v)
+      {
+         const bool reversed = liveScale < 0.f;
+         m_sensor->GetMapping().SetScale(reversed ? -v : v);
+         m_rebuildPage();
+      }, //
+      [](Settings&) { /* Already performed in first page item */ }, // Reset
+      [](float, Settings&, bool) { /* Already performed in first page item */ })); // Save
 
    m_page->AddItem(std::make_unique<InGameUIItem>(
       VPX::Properties::BoolPropertyDef(""s, ""s, "Reversed axis"s, "Toggle axis direction"s, false, false), //

@@ -18,6 +18,7 @@ echo "  LIBDOF_SHA: ${LIBDOF_SHA}"
 echo "  FFMPEG_SHA: ${FFMPEG_SHA}"
 echo "  LIBZIP_SHA: ${LIBZIP_SHA}"
 echo "  LIBWINEVBS_SHA: ${LIBWINEVBS_SHA}"
+echo "  OPENXR_SHA: ${OPENXR_SHA}"
 echo ""
 
 NUM_PROCS=$(nproc)
@@ -162,6 +163,41 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
 fi
 
 #
+# build openxr
+#
+
+OPENXR_EXPECTED_SHA="${OPENXR_SHA}"
+OPENXR_FOUND_SHA="$([ -f openxr/cache.txt ] && cat openxr/cache.txt || echo "")"
+
+if [ "${OPENXR_EXPECTED_SHA}" != "${OPENXR_FOUND_SHA}" ]; then
+   echo "Building OpenXR. Expected: ${OPENXR_EXPECTED_SHA}, Found: ${OPENXR_FOUND_SHA}"
+
+   rm -rf openxr
+   mkdir openxr
+   cd openxr
+
+   curl -sL https://github.com/KhronosGroup/OpenXR-SDK-Source/archive/${OPENXR_SHA}.tar.gz -o OpenXR-SDK-Source-${OPENXR_SHA}.tar.gz
+   tar xzf OpenXR-SDK-Source-${OPENXR_SHA}.tar.gz
+   mv OpenXR-SDK-Source-${OPENXR_SHA} openxr
+   cd openxr
+   cmake \
+      -DBUILD_WITH_SYSTEM_JSONCPP=OFF \
+      -DBUILD_TESTS=OFF \
+      -DBUILD_API_LAYERS=OFF \
+      -DCMAKE_DISABLE_FIND_PACKAGE_OpenGL=ON \
+      -DCMAKE_DISABLE_FIND_PACKAGE_OpenGLES=ON \
+      -DDYNAMIC_LOADER=ON \
+      -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+      -B build
+   cmake --build build -- -j${NUM_PROCS}
+   cd ..
+
+   echo "$OPENXR_EXPECTED_SHA" > cache.txt
+
+   cd ..
+fi
+
+#
 # build pinmame
 #
 
@@ -175,7 +211,7 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    mkdir pinmame
    cd pinmame
 
-   curl -sL https://github.com/vbousquet/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
+   curl -sL https://github.com/vpinball/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
@@ -409,12 +445,15 @@ cp -a freeimage/freeimage/build/libfreeimage.{so,so.*} ../../../third-party/runt
 cp freeimage/freeimage/Source/FreeImage.h ../../../third-party/include
 
 cp -a bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx.so ../../../third-party/runtime-libs/linux-aarch64
+cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode.a ../../../third-party/build-libs/linux-aarch64
 cp -r bgfx/bgfx.cmake/bgfx/include/bgfx ../../../third-party/include/
 cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
 cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 
 cp -a pinmame/pinmame/build/libpinmame.{so,so.*} ../../../third-party/runtime-libs/linux-aarch64
-cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include
+mkdir -p ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
 
 cp -a libdmdutil/libdmdutil/build/libdmdutil.{so,so.*} ../../../third-party/runtime-libs/linux-aarch64
 cp -r libdmdutil/libdmdutil/include/DMDUtil ../../../third-party/include/
@@ -453,8 +492,10 @@ cp libzip/libzip/lib/zip.h ../../../third-party/include
 cp -a libwinevbs/libwinevbs/build/libwinevbs.so* ../../../third-party/runtime-libs/linux-aarch64
 mkdir -p ../../../third-party/include/libwinevbs/wine/include
 mkdir -p ../../../third-party/include/libwinevbs/atl/include
-mkdir -p ../../../third-party/include/libwinevbs/atlmfc/include
 cp libwinevbs/libwinevbs/include/libwinevbs.h ../../../third-party/include/libwinevbs/
 cp -r libwinevbs/libwinevbs/wine/include/* ../../../third-party/include/libwinevbs/wine/include/
 cp -r libwinevbs/libwinevbs/atl/include/* ../../../third-party/include/libwinevbs/atl/include/
-cp -r libwinevbs/libwinevbs/atlmfc/include/* ../../../third-party/include/libwinevbs/atlmfc/include/
+
+cp -a openxr/openxr/build/src/loader/libopenxr_loader.so* ../../../third-party/runtime-libs/linux-aarch64
+mkdir -p ../../../third-party/include/openxr
+cp openxr/openxr/build/include/openxr/*.h ../../../third-party/include/openxr

@@ -3,12 +3,17 @@
 #pragma once
 
 #include "fileio.h"
+#include "TableHash.h"
+
+#include "pole/pole.h"
+
 
 class BiffReader final :
    public IObjectReader
 {
 public:
-   BiffReader(IStream *pistream, const int version, const HCRYPTHASH hcrypthash, const HCRYPTKEY hcryptkey);
+   BiffReader(POLE::Stream *stream, const int version, TableHash *const hash, const HCRYPTKEY hcryptkey);
+   BiffReader(const uint8_t *data, const uint32_t size, const int version, TableHash *const hash, const HCRYPTKEY hcryptkey);
    int GetVersion() const override { return m_version; }
    bool HasError() const override { return m_hasError; }
 
@@ -27,13 +32,21 @@ public:
    void AsObject(const std::function<bool(const int tag, IObjectReader &reader)> &processToken, bool isSkippable = false) override;
 
    void ReadBytes(void *const pv, const uint32_t count);
+   // Reads without feeding the (legacy) table hash, for the few fields the hash was never built from (see AsFontDescriptor)
+   void ReadBytesNoHash(void *const pv, const uint32_t count);
 
-   IStream *m_pistream;
-   HCRYPTHASH m_hcrypthash;
+   POLE::Stream *m_stream = nullptr;
+   TableHash *m_hash; // null to read without contributing to the table hash
    HCRYPTKEY m_hcryptkey;
 
 private:
+   uint64_t ReadSource(unsigned char *pv, const uint32_t count);
+   bool ValidateLength(const int32_t len); // Flags an error if a length read from the file exceeds the remaining data
    int GetIntNoHash();
+
+   const uint8_t *m_data = nullptr;
+   uint32_t m_dataSize = 0;
+   uint32_t m_dataPos = 0;
 
    const int m_version;
    int m_bytesinrecordremaining = 0;

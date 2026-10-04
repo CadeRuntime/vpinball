@@ -20,7 +20,7 @@ namespace VPX::Physics
 //
 // Cabinet physics model is a simplified 2D second order oscillator fitted on real machine behavior.
 // Measurements show that modern (1990-2020) real pinball machines, weighting around 113kg,
-// oscillate at around 11Hz for a side nudge and 5.5Hz for a front nudge. Damping has also been
+// oscillate at around 4.5Hz for a side nudge and 4.3Hz for a front nudge. Damping has also been
 // fitted to correspond to the observed decay of oscillation amplitude.
 //
 // Older machines used to be fairly lighter and the model could be improved for these.
@@ -108,32 +108,24 @@ bool GamepadNudge::IsActive() const { return m_deactivationDelay > 0; }
 void GamepadNudge::StepOneMillisecond()
 {
    // Convert stick position to acceleration
-   // 12m/s^2 for firm front nudge, resulting in a 5mm cabinet move, side nudge needs a somewhat higher energy for the same move
-   // (Hacky empirical balancing of front vs side energy, needs some more physics study to validate this)
-   const float xSensor = m_xSensor.GetValue() * m_nudgeStrengthScale * 16.f;
-   const float ySensor = m_ySensor.GetValue() * m_nudgeStrengthScale * 12.f;
+   const float xSensor = m_xSensor.GetValue() * (m_nudgeStrengthScale * FullDeflectionAcceleration);
+   const float ySensor = m_ySensor.GetValue() * (m_nudgeStrengthScale * FullDeflectionAcceleration);
 
-   static bool m_isImpulseInProgress = false;
-   static Vertex2D m_initialCabinetPosition;
    m_nudgeIntentHandler.StepOneMillisecond({ xSensor, ySensor });
    if (m_nudgeIntentHandler.IsImpulseInProgress())
    {
-      if (!m_isImpulseInProgress)
-         m_initialCabinetPosition = m_cabinetModel.GetCabinetOffset();
-      m_isImpulseInProgress = true;
-      m_cabinetModel.StepOneMillisecond(m_cabinetModel.GetMass() * m_nudgeIntentHandler.GetImpulseAceleration());
+      m_cabinetModel.StepOneMillisecond(m_cabinetModel.GetMass() * m_nudgeIntentHandler.GetImpulseAcceleration());
       m_deactivationDelay = 10000;
    }
    else
    {
-      m_isImpulseInProgress = false;
       m_cabinetModel.StepOneMillisecond({ 0.f, 0.f });
       if (m_deactivationDelay > 0)
          m_deactivationDelay--;
    }
 
    // Log for debugging purposes as CSV: Sensor;Intent acceleration (m/s^2);Cab acceleration (m/s^2);Cab position (mm)
-   PLOGD_IF(false) << std::format(";{:8.5f};{:8.5f};{:8.5f};{:8.5f}", m_ySensor.GetValue(), m_nudgeIntentHandler.GetImpulseAceleration().y, m_cabinetModel.GetCabinetAcceleration().y,
+   PLOGD_IF(false) << std::format(";{:8.5f};{:8.5f};{:8.5f};{:8.5f}", m_ySensor.GetValue(), m_nudgeIntentHandler.GetImpulseAcceleration().y, m_cabinetModel.GetCabinetAcceleration().y,
       m_cabinetModel.GetCabinetOffset().y * 1000.f);
    /* static float maxDisp = 0.f;
    if (m_cabinetModel.GetCabinetOffset().y > maxDisp)

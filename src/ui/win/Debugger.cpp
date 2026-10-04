@@ -17,11 +17,6 @@ DebuggerDialog::DebuggerDialog() : CDialog(IDD_DEBUGGER)
 {
 }
 
-BOOL DebuggerDialog::IsSubDialogMessage(MSG& msg) const
-{
-    return IsDialogMessage(msg);
-}
-
 BOOL DebuggerDialog::OnInitDialog()
 {
     AttachItem(IDC_PLAY, m_playButton);
@@ -49,6 +44,7 @@ BOOL DebuggerDialog::OnInitDialog()
                                                   WS_CHILD | ES_NOHIDESEL | WS_VISIBLE | ES_SUNKEN | WS_HSCROLL | WS_VSCROLL | ES_MULTILINE | ES_WANTRETURN | WS_BORDER,
                                                   rcEditSize.left, rcEditSize.top, rcEditSize.right - rcEditSize.left, rcEditSize.bottom - rcEditSize.top, GetHwnd(), nullptr, g_app->GetInstanceHandle(), 0);
 
+    ::SendMessage(g_pplayer->m_hwndDebugOutput, SCI_SETCODEPAGE, SC_CP_UTF8, 0); // Evaluated statements and log output are UTF-8 (Scintilla defaults to the ANSI code page)
     ::SendMessage(g_pplayer->m_hwndDebugOutput, SCI_STYLESETSIZE, 32, 10);
     ::SendMessage(g_pplayer->m_hwndDebugOutput, SCI_STYLESETFONT, 32, (LPARAM)"Courier");
 
@@ -79,9 +75,9 @@ BOOL DebuggerDialog::OnInitDialog()
        break;
     }
 
-    m_ballSizeEdit.SetWindowText(std::to_string(g_app->m_settings.GetEditor_ThrowBallSize()).c_str());
+    m_ballSizeEdit.SetWindowText(std::to_string(g_settingsService.GetAppSettings().GetEditor_ThrowBallSize()).c_str());
 
-    m_ballMassEdit.SetWindowText(f2sz(g_app->m_settings.GetEditor_ThrowBallMass()).c_str());
+    m_ballMassEdit.SetWindowText(f2sz(g_settingsService.GetAppSettings().GetEditor_ThrowBallMass()).c_str());
 
     m_resizer.Initialize(GetHwnd(), GetWindowRect());
     m_resizer.AddChild(m_notesEdit.GetHwnd(), CResizer::bottomright, RD_STRETCH_HEIGHT | RD_STRETCH_WIDTH);
@@ -109,7 +105,7 @@ BOOL DebuggerDialog::OnCommand(WPARAM wParam, LPARAM lParam)
         case IDC_STEP:
         {
             const int ms = GetDlgItemInt(IDC_STEPAMOUNT, FALSE);
-            g_pplayer->SetPlayState(false, ms);
+            g_pplayer->SetPlayState(true, ms);
             return TRUE;
         }
         case IDC_EXPAND:
@@ -131,8 +127,8 @@ BOOL DebuggerDialog::OnCommand(WPARAM wParam, LPARAM lParam)
 
 void DebuggerDialog::OnClose()
 {
-    g_app->m_settings.SetEditor_ThrowBallSize(GetDlgItemInt(IDC_THROW_BALL_SIZE_EDIT2, FALSE), false);
-    g_app->m_settings.SetEditor_ThrowBallMass(sz2f(GetDlgItemText(IDC_THROW_BALL_MASS_EDIT2).GetString()), false);
+    g_settingsService.GetAppSettings().SetEditor_ThrowBallSize(GetDlgItemInt(IDC_THROW_BALL_SIZE_EDIT2, FALSE), false);
+    g_settingsService.GetAppSettings().SetEditor_ThrowBallMass(sz2f(GetDlgItemText(IDC_THROW_BALL_MASS_EDIT2).GetString()), false);
     g_pplayer->m_debugMode = false;
     g_pplayer->m_showDebugger = false;
     ShowWindow(SW_HIDE);
@@ -145,10 +141,10 @@ void DebuggerDialog::LoadPosition()
    const CRect rcDialog = GetWindowRect();
    Settings::SetEditor_DebuggerPosX_Default((int)((rcMain.right + rcMain.left) / 2 - (rcDialog.right - rcDialog.left) / 2));
    Settings::SetEditor_DebuggerPosY_Default((int) ((rcMain.bottom + rcMain.top) / 2 - (rcDialog.bottom - rcDialog.top) / 2));
-   const int x = g_app->m_settings.GetEditor_DebuggerPosX(); 
-   const int y = g_app->m_settings.GetEditor_DebuggerPosY();
-   const int w = g_app->m_settings.GetEditor_DebuggerWidth();
-   const int h = g_app->m_settings.GetEditor_DebuggerHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_DebuggerPosX(); 
+   const int y = g_settingsService.GetAppSettings().GetEditor_DebuggerPosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_DebuggerWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_DebuggerHeight();
    const POINT p { x, y };
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != NULL) // Do not apply if point is offscreen
       SetWindowPos(nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -157,10 +153,10 @@ void DebuggerDialog::LoadPosition()
 void DebuggerDialog::SavePosition()
 {
    const CRect rect = GetWindowRect();
-   g_app->m_settings.SetEditor_DebuggerPosX((int)rect.left, false);
-   g_app->m_settings.SetEditor_DebuggerPosY((int)rect.top, false);
-   g_app->m_settings.SetEditor_DebuggerWidth(rect.right - rect.left, false);
-   g_app->m_settings.SetEditor_DebuggerHeight(rect.bottom - rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_DebuggerPosX((int)rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_DebuggerPosY((int)rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_DebuggerWidth(rect.right - rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_DebuggerHeight(rect.bottom - rect.top, false);
 }
 
 LRESULT DebuggerDialog::OnNotify(WPARAM wparam, LPARAM lparam)

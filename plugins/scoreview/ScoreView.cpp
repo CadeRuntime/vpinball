@@ -14,7 +14,7 @@ namespace ScoreView {
 static inline float InvsRGB(const float x) { return (x <= 0.04045f) ? (x * (float)(1.0 / 12.92)) : (powf(x * (float)(1.0 / 1.055) + (float)(0.055 / 1.055), 2.4f)); }
 
 ScoreView::ScoreView(const MsgPluginAPI* api, unsigned int endpointId, VPXPluginAPI* vpxApi)
-   : m_resURIResolver(*api, endpointId, true, true, false, false)
+   : m_resURIResolver(*api, endpointId, true, true, false)
    , m_vpxApi(vpxApi)
    , m_msgApi(api)
    , m_endpointId(endpointId)
@@ -69,7 +69,7 @@ void ScoreView::Load(const std::filesystem::path& path)
 void ScoreView::Parse(const std::filesystem::path& path)
 {
    std::ifstream content(path);
-   #define CHECK_FIELD(check) if (!(check)) { LOGE(std::format("Invalid field '{}: {}' at line {} in ScoreView file {}", key, value, lineIndex, path.string())); return; }
+   #define CHECK_FIELD(check) if (!(check)) { LOGE(std::format("Invalid field '{}: {}' at line {} in ScoreView file {}", key, value, lineIndex, PluginStrings::PathToUTF8(path))); return; }
    static const string whitespace = " \t"s;
    Layout layout = { };
    layout.path = path;
@@ -114,13 +114,13 @@ void ScoreView::Parse(const std::filesystem::path& path)
          indentSize = afterIndent;
       if ((indentSize != 0) && ((afterIndent % indentSize) != 0))
       {
-         LOGE(std::format("Invalid indentation at line {} in ScoreView file {}", lineIndex, path.string()));
+         LOGE(std::format("Invalid indentation at line {} in ScoreView file {}", lineIndex, PluginStrings::PathToUTF8(path)));
          return;
       }
       size_t indent = indentSize == 0 ? 0 : afterIndent / indentSize;
       if (indent > expectedIndent)
       {
-         LOGE(std::format("Invalid indentation ({} while expecting {} at line {}) in ScoreView file {}", indent, expectedIndent, lineIndex, path.string()));
+         LOGE(std::format("Invalid indentation ({} while expecting {} at line {}) in ScoreView file {}", indent, expectedIndent, lineIndex, PluginStrings::PathToUTF8(path)));
          return;
       }
       if (indent < expectedIndent)
@@ -134,12 +134,12 @@ void ScoreView::Parse(const std::filesystem::path& path)
       const auto colon = line.find(':');
       if (colon == string::npos)
       {
-         LOGE(std::format("Field is missing ':' separator at line {} in ScoreView file {}", lineIndex, path.string()));
+         LOGE(std::format("Field is missing ':' separator at line {} in ScoreView file {}", lineIndex, PluginStrings::PathToUTF8(path)));
          return;
       }
       if (colon == afterIndent)
       {
-         LOGE(std::format("Field is missing a key before ':' separator at line {} in ScoreView file {}", lineIndex, path.string()));
+         LOGE(std::format("Field is missing a key before ':' separator at line {} in ScoreView file {}", lineIndex, PluginStrings::PathToUTF8(path)));
          return;
       }
       const string key(line.cbegin() + afterIndent, line.cbegin() + colon);
@@ -185,7 +185,22 @@ void ScoreView::Parse(const std::filesystem::path& path)
          visual->glassAmbient = vec3(1.f, 1.f, 1.f);
          visual->glassPad = vec4(0.f, 0.f, 0.f, 0.f);
          visual->glassArea = vec4(0.f, 0.f, 0.f, 0.f);
-         visual->dmdSize = ivec2(-1, -1);
+         visual->displaySize = ivec2(-1, -1);
+      }
+      else if (key == "- Screen")
+      {
+         CHECK_FIELD(indent == 1);
+         expectedIndent = indent + 1;
+         layout.visuals.push_back({ VisualType::Screen });
+         visual = &layout.visuals.back();
+         visual->srcUri = "ctrl://default/display";
+         visual->liveStyle = 1; // Default to LCD
+         visual->tint = vec3(1.f, 1.f, 1.f);
+         visual->glassTint = vec3(1.f, 1.f, 1.f);
+         visual->glassAmbient = vec3(1.f, 1.f, 1.f);
+         visual->glassPad = vec4(0.f, 0.f, 0.f, 0.f);
+         visual->glassArea = vec4(0.f, 0.f, 0.f, 0.f);
+         visual->displaySize = ivec2(-1, -1);
       }
       else if (key == "- SegDisplay")
       {
@@ -258,6 +273,18 @@ void ScoreView::Parse(const std::filesystem::path& path)
                CHECK_FIELD(false);
             }
          }
+         else if (visual->type == VisualType::Screen)
+         {
+            if (value == "LCD")
+               visual->liveStyle = 1;
+            else if (value == "CRT")
+               visual->liveStyle = 2;
+            else
+            {
+               // Invalid style
+               CHECK_FIELD(false);
+            }
+         }
          else if (visual->type == VisualType::SegDisplay)
          {
             if (value == "Auto")
@@ -292,11 +319,11 @@ void ScoreView::Parse(const std::filesystem::path& path)
       }
       else if (key == "Size")
       {
-         CHECK_FIELD((indent == 2) && (visual != nullptr) && (visual->type == VisualType::DMD)); // DMD size
+         CHECK_FIELD((indent == 2) && (visual != nullptr) && (visual->type == VisualType::DMD || visual->type == VisualType::Screen)); // DMD & Screen size
          const auto size = parseArray(value);
          CHECK_FIELD(size.size() == 2);
-         visual->dmdSize.x = static_cast<int>(size[0]);
-         visual->dmdSize.y = static_cast<int>(size[1]);
+         visual->displaySize.x = static_cast<int>(size[0]);
+         visual->displaySize.y = static_cast<int>(size[1]);
       }
       else if (key == "Type")
       {
@@ -378,9 +405,17 @@ void ScoreView::Parse(const std::filesystem::path& path)
       switch (visual.type)
       {
       case VisualType::DMD:
-         if (visual.dmdSize.x < 0 || visual.dmdSize.y < 0)
+         if (visual.displaySize.x < 0 || visual.displaySize.y < 0)
          {
-            LOGE("DMD display needs Size to be defined in ScoreView file " + path.string());
+            LOGE("DMD display needs Size to be defined in ScoreView file " + PluginStrings::PathToUTF8(path));
+            return;
+         }
+         break;
+
+      case VisualType::Screen:
+         if (visual.displaySize.x < 0 || visual.displaySize.y < 0)
+         {
+            LOGE("Screen display needs Size to be defined in ScoreView file " + PluginStrings::PathToUTF8(path));
             return;
          }
          break;
@@ -390,7 +425,7 @@ void ScoreView::Parse(const std::filesystem::path& path)
             visual.nElements = (int)visual.xOffsets.size();
          if (visual.nElements == 0)
          {
-            LOGE("Segment display needs at least one of XPos/NElements to be defined in ScoreView file " + path.string());
+            LOGE("Segment display needs at least one of XPos/NElements to be defined in ScoreView file " + PluginStrings::PathToUTF8(path));
             return;
          }
          if (visual.xOffsets.empty())
@@ -413,7 +448,7 @@ void ScoreView::Parse(const std::filesystem::path& path)
 
 void ScoreView::LoadGlass(Visual& visual)
 {
-   assert((visual.type == VisualType::DMD) || (visual.type == VisualType::SegDisplay));
+   assert((visual.type == VisualType::DMD) || (visual.type == VisualType::Screen) || (visual.type == VisualType::SegDisplay));
    if ((visual.glass == nullptr) && !visual.glassPath.empty())
    {
       auto texImage = m_images.find(visual.glassPath);
@@ -421,7 +456,7 @@ void ScoreView::LoadGlass(Visual& visual)
          visual.glass = texImage->second;
       else
       {
-         const std::filesystem::path fullPath = m_bestLayout->path.remove_filename() / visual.glassPath;
+         const std::filesystem::path fullPath = m_bestLayout->path.remove_filename() / PluginStrings::PathFromUTF8(visual.glassPath);
          std::ifstream file(fullPath, std::ios::binary | std::ios::ate);
          if (file.is_open())
          {
@@ -434,7 +469,7 @@ void ScoreView::LoadGlass(Visual& visual)
          }
          else
          {
-            LOGE("Missing glass file: " + fullPath.string());
+            LOGE("Missing glass file: " + PluginStrings::PathToUTF8(fullPath));
             visual.glass = nullptr;
          }
          m_images[visual.glassPath] = visual.glass;
@@ -452,8 +487,8 @@ void ScoreView::Select(const float scoreW, const float scoreH)
    const float rtAR = scoreW / scoreH;
 
    // Evaluate layouts against current context
-   ResURIResolver::SegDisplayState segDisplay;
-   ResURIResolver::DisplayState display;
+   PinballPlugin::ResURIResolver::SegDisplayState segDisplay;
+   PinballPlugin::ResURIResolver::DisplayState display;
    for (auto& layout : m_layouts)
    {
       const float layoutAR = layout.width / layout.height;
@@ -466,11 +501,27 @@ void ScoreView::Select(const float scoreW, const float scoreH)
          {
          case VisualType::DMD:
             display = m_resURIResolver.GetDisplayState(visual.srcUri);
-            if ((display.source == nullptr) || (display.source->width * visual.dmdSize.y != visual.dmdSize.x * display.source->height))
+            if ((display.source == nullptr) || (display.source->width * visual.displaySize.y != visual.displaySize.x * display.source->height)
+               || ((display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_UNKNOWN
+                  && (display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_NEON_PLASMA
+                  && (display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_RED_LED
+                  && (display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_RGB_LED))
                layout.unmatchedVisuals++;
             else
                layout.matchedVisuals += 10; // To favor DMD over alphanumeric seg displays
             break;
+
+         case VisualType::Screen:
+            display = m_resURIResolver.GetDisplayState(visual.srcUri);
+            if ((display.source == nullptr) || (display.source->width * visual.displaySize.y != visual.displaySize.x * display.source->height)
+               || ((display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_UNKNOWN
+                  && (display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_CRT_DISPLAY
+                  && (display.source->hardware & CTLPI_DISPLAY_HARDWARE_FAMILY_MASK) != CTLPI_DISPLAY_HARDWARE_LCD_DISPLAY))
+               layout.unmatchedVisuals++;
+            else
+               layout.matchedVisuals++;
+            break;
+
          case VisualType::SegDisplay:
             segDisplay = m_resURIResolver.GetSegDisplayState(visual.srcUri);
             if ((segDisplay.source == nullptr) || (segDisplay.source->nElements != visual.nElements))
@@ -478,6 +529,7 @@ void ScoreView::Select(const float scoreW, const float scoreH)
             else
                layout.matchedVisuals++;
             break;
+
          case VisualType::Image:
             break;
          }
@@ -538,16 +590,23 @@ bool ScoreView::Render(VPXRenderContext2D* ctx)
       switch (visual.type)
       {
       case VisualType::DMD:
+      case VisualType::Screen:
       {
-         ResURIResolver::DisplayState dmd = m_resURIResolver.GetDisplayState(visual.srcUri);
+         PinballPlugin::ResURIResolver::DisplayState dmd = m_resURIResolver.GetDisplayState(visual.srcUri);
          if (dmd.state.frame == nullptr)
             continue;
          LoadGlass(visual);
-         m_vpxApi->UpdateTexture(&visual.dmdTex, dmd.source->width, dmd.source->height,
-              dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_LUM32F  ? VPXTextureFormat::VPXTEXFMT_BW32F
-            : dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_SRGB565 ? VPXTextureFormat::VPXTEXFMT_sRGB565
-                                                                      : VPXTextureFormat::VPXTEXFMT_sRGB8,
-            dmd.state.frame);
+         if (!visual.hasUploadedFrame || (visual.dmdTex == nullptr) || (dmd.state.frameId != visual.uploadedFrameId) || (*dmd.source != visual.uploadedSrc))
+         {
+            m_vpxApi->UpdateTexture(&visual.dmdTex, dmd.source->width, dmd.source->height,
+                 dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_LUM32F  ? VPXTextureFormat::VPXTEXFMT_BW32F
+               : dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_SRGB565 ? VPXTextureFormat::VPXTEXFMT_sRGB565
+                                                                         : VPXTextureFormat::VPXTEXFMT_sRGB8,
+               dmd.state.frame);
+            visual.uploadedSrc = *dmd.source;
+            visual.uploadedFrameId = dmd.state.frameId;
+            visual.hasUploadedFrame = true;
+         }
          vec4 glassArea;
          if (visual.glass == nullptr || visual.glassArea.z == 0.f || visual.glassArea.w == 0.f)
             glassArea = vec4(0.f, 0.f, 1.f, 1.f);
@@ -559,7 +618,19 @@ bool ScoreView::Render(VPXRenderContext2D* ctx)
             glassArea.z = visual.glassArea.z / static_cast<float>(texInfo->width);
             glassArea.w = visual.glassArea.w / static_cast<float>(texInfo->height);
          }
-         ctx->DrawDisplay(ctx, static_cast<VPXDisplayRenderStyle>(visual.liveStyle),
+         VPXDisplayRenderStyle style;
+         if (visual.type == VisualType::DMD)
+            style = static_cast<VPXDisplayRenderStyle>(visual.liveStyle);
+         else
+         {
+            switch (visual.liveStyle)
+            {
+            case 1: style = VPXDMDStyle_Pixelated; break;
+            case 2: style = VPXDMDStyle_CRT; break;
+            default: style = VPXDMDStyle_Smoothed; break;
+            }
+         }
+         ctx->DrawDisplay(ctx, style,
             // First layer: glass
             visual.glass, visual.glassTint.x, visual.glassTint.y, visual.glassTint.z, visual.glassRoughness, // Glass texture, tint and roughness
             glassArea.x, glassArea.y, glassArea.z, glassArea.w, // Glass texture coordinates (inside overall glass texture)
@@ -574,7 +645,7 @@ bool ScoreView::Render(VPXRenderContext2D* ctx)
 
       case VisualType::SegDisplay:
       {
-         ResURIResolver::SegDisplayState frame = m_resURIResolver.GetSegDisplayState(visual.srcUri);
+         PinballPlugin::ResURIResolver::SegDisplayState frame = m_resURIResolver.GetSegDisplayState(visual.srcUri);
          if ((frame.state.frame == nullptr) || (frame.source->nElements != visual.nElements))
             continue;
          LoadGlass(visual);

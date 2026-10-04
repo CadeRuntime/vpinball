@@ -1,26 +1,25 @@
+// license:GPLv3+
+
 #pragma once
 
-#ifndef __STANDALONE__
 #include <wxx_controls.h>
 #include <wxx_dialog.h>
-#endif
 
+#include "ui/LoadProgress.h"
 
-class ProgressDialog final : public CDialog
+// Shows table load progress in a dialog: the LoadProgress implementation the Win32 editor hands to Player
+class ProgressDialog final : public CDialog, public LoadProgress
 {
 public:
    ProgressDialog();
 
-   void SetProgress(const string &text, const int value = -1);
+   void SetProgress(const string &text, const float value = -1.f) override;
 
 protected:
+   BOOL OnCommand(WPARAM wparam, LPARAM lparam) override;
    BOOL OnInitDialog() override;
 
 private:
-#ifdef __STANDALONE__
-   int m_progress = -1;
-#else
    CProgressBar m_progressBar;
    CStatic m_progressName;
-#endif
 };

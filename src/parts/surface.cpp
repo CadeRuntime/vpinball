@@ -12,9 +12,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/DragPointDialogs.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 
@@ -25,15 +22,15 @@ Surface::~Surface()
 
 Surface *Surface::CopyForPlay() const
 {
-   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Surface, m_vdpoint)
+   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Surface, m_curve)
    dst->m_isWall = m_isWall;
    dst->m_isDropped = m_isDropped;
    return dst;
 }
 
 #define LinkProp(field, prop)                                                                                                                                                                \
-   field = m_isWall ? (fromMouseClick ? g_app->m_settings.GetDefaultPropsWall_##prop() : Settings::GetDefaultPropsWall_##prop##_Default()) \
-                    : (fromMouseClick ? g_app->m_settings.GetDefaultPropsTarget_##prop() : Settings::GetDefaultPropsTarget_##prop##_Default())
+   field = m_isWall ? (fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsWall_##prop() : Settings::GetDefaultPropsWall_##prop##_Default()) \
+                    : (fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsTarget_##prop() : Settings::GetDefaultPropsTarget_##prop##_Default())
 HRESULT Surface::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
 {
    m_isWall = true;
@@ -43,35 +40,10 @@ HRESULT Surface::Init(const float x, const float y, const bool fromMouseClick, c
    LinkProp(width, Width);
    LinkProp(length, Length);
 
-   CComObject<DragPoint> *pdp;
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - width, y - length, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - width, y + length, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + width, y + length, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + width, y - length, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x - width, y - length, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x - width, y + length, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x + width, y + length, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x + width, y - length, 0.f, false));
 
    return S_OK;
 }
@@ -85,38 +57,15 @@ HRESULT Surface::InitTarget(const float x, const float y, const bool fromMouseCl
    LinkProp(width, Width);
    LinkProp(length, Length);
 
-   CComObject<DragPoint> *pdp;
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - width, y - length, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - width, y + length, 0.f, false);
-      pdp->m_autoTexture = false;
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + width, y + length, 0.f, false);
-      pdp->m_autoTexture = false;
-      pdp->m_texturecoord = 1.0f;
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + 30.0f, y - 6.0f, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x - width, y - length, 0.f, false));
+   auto pdp = std::make_unique<DragPoint>(&m_curve, x - width, y + length, 0.f, false);
+   pdp->SetAutoTextureCoordinate(false);
+   m_curve.PushPoint(std::move(pdp));
+   pdp = std::make_unique<DragPoint>(&m_curve, x + width, y + length, 0.f, false);
+   pdp->SetAutoTextureCoordinate(false);
+   pdp->SetTextureCoordinateU(1.0f);
+   m_curve.PushPoint(std::move(pdp));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x + 30.0f, y - 6.0f, 0.f, false));
 
    //SetDefaults();
    //Set separate defaults for targets (SetDefaults sets the Wall defaults)
@@ -184,7 +133,7 @@ void Surface::SetDefaultPhysics(const bool fromMouseClick)
 
 void Surface::WriteRegDefaults()
 {
-#define LinkProp(field, prop) { if (m_isWall) g_app->m_settings.SetDefaultPropsWall_##prop(field, false); else g_app->m_settings.SetDefaultPropsTarget_##prop(field, false); }
+#define LinkProp(field, prop) { if (m_isWall) g_settingsService.GetAppSettings().SetDefaultPropsWall_##prop(field, false); else g_settingsService.GetAppSettings().SetDefaultPropsTarget_##prop(field, false); }
    LinkProp(m_d.m_hitEvent, HitEvent);
    LinkProp(m_d.m_threshold, HitThreshold);
    LinkProp(m_d.m_slingshot_threshold, SlingshotThreshold);
@@ -209,95 +158,6 @@ void Surface::WriteRegDefaults()
 #undef LinkProp
 }
 
-void Surface::UIRenderPass1(Sur * const psur)
-{
-   psur->SetFillColor(m_ptable->RenderSolid() ? m_vpinball->m_fillColor : -1);
-   psur->SetObject(this);
-   // Don't want border color to be over-ridden when selected - that will be drawn later
-   psur->SetBorderColor(-1, false, 0);
-
-   vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
-   if (!m_ptable->RenderSolid() || !m_d.m_displayTexture)
-      psur->Polygon(vvertex);
-   else if (const Texture *const ppi = m_ptable->GetImage(m_d.m_szImage); ppi && ppi->GetGDIBitmap())
-      psur->PolygonImage(vvertex, ppi->GetGDIBitmap(), m_ptable->m_left, m_ptable->m_top, m_ptable->m_right, m_ptable->m_bottom, ppi->m_width, ppi->m_height);
-   else
-      psur->Polygon(vvertex);
-}
-
-void Surface::UIRenderPass2(Sur * const psur)
-{
-   psur->SetFillColor(-1);
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetObject(this); // For selected formatting
-   psur->SetObject(nullptr);
-
-   {
-      vector<RenderVertex> vvertex; //!! check/reuse from prerender
-      GetRgVertex(vvertex);
-      psur->Polygon(vvertex);
-   }
-
-   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
-   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || m_vpinball->m_alwaysDrawDragPoints);
-
-   if (!drawDragpoints)
-   {
-      // if any of the dragpoints of this object are selected then draw all the dragpoints
-      for (size_t i = 0; i < m_vdpoint.size(); i++)
-      {
-         const CComObject<DragPoint> * const pdp = m_vdpoint[i];
-         if (pdp->m_selectstate != SelectState::NotSelected)
-         {
-            drawDragpoints = true;
-            break;
-         }
-      }
-   }
-
-   for (size_t i = 0; i < m_vdpoint.size(); i++)
-   {
-      CComObject<DragPoint> * const pdp = m_vdpoint[i];
-      if (!(drawDragpoints || pdp->m_slingshot))
-         continue;
-      psur->SetFillColor(-1);
-      psur->SetBorderColor(pdp->m_dragging ? RGB(0, 255, 0) : RGB(255, 0, 0), false, 0);
-
-      if (drawDragpoints)
-      {
-         psur->SetObject(pdp);
-         psur->Ellipse2(pdp->m_v.x, pdp->m_v.y, 8);
-      }
-
-      if (pdp->m_slingshot)
-      {
-         psur->SetObject(nullptr);
-         const CComObject<DragPoint> * const pdp2 = m_vdpoint[(i < m_vdpoint.size() - 1) ? (i + 1) : 0];
-         psur->SetLineColor(RGB(0, 0, 0), false, 3);
-
-         psur->Line(pdp->m_v.x, pdp->m_v.y, pdp2->m_v.x, pdp2->m_v.y);
-      }
-   }
-}
-
-void Surface::RenderBlueprint(Sur *psur, const bool solid)
-{
-   // Don't render dragpoints for blueprint
-   if (solid)
-      psur->SetFillColor(BLUEPRINT_SOLID_COLOR);
-   else
-      psur->SetFillColor(-1);
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetObject(this); // For selected formatting
-   psur->SetObject(nullptr);
-
-   vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
-
-   psur->Polygon(vvertex);
-}
-
 
 // Ported at: VisualPinball.Engine/VPT/Surface/SurfaceHitGenerator.cs
 
@@ -307,7 +167,12 @@ void Surface::PhysicSetup(PhysicsEngine* physics, const bool isUI)
       return;
 
    vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
+   m_curve.GetRgVertex(vvertex);
+
+   // The generated colliders are one sided (line segments collide on their normal side,
+   // the top face from above, the bottom one from below), so they expect the canonical
+   // winding, otherwise the wall becomes a trap that lets balls in without letting them out.
+   NormalizeWindingOrder(vvertex);
 
    const int count = (int)vvertex.size();
    Vertex3Ds * const rgv3Dt = new Vertex3Ds[count];
@@ -465,19 +330,8 @@ void Surface::GetBoundingVertices(vector<Vertex3Ds> &bounds, vector<Vertex3Ds> *
 
 void Surface::UpdateBounds()
 {
-   const Vertex2D center2D = GetPointCenter();
+   const Vertex2D& center2D = GetCenter();
    m_boundingSphereCenter.Set(center2D.x, center2D.y, m_d.m_heighttop);
-}
-
-void Surface::MoveOffset(const float dx, const float dy)
-{
-   for (size_t i = 0; i < m_vdpoint.size(); i++)
-   {
-      CComObject<DragPoint> * const pdp = m_vdpoint[i];
-
-      pdp->m_v.x += dx;
-      pdp->m_v.y += dy;
-   }
 }
 
 // Ported at: VisualPinball.Engine/VPT/Surface/SurfaceMeshGenerator.cs
@@ -485,12 +339,15 @@ void Surface::MoveOffset(const float dx, const float dy)
 void Surface::GenerateMesh(vector<Vertex3D_NoTex2> &topBuf, vector<Vertex3D_NoTex2> &sideBuf, vector<WORD> &topBottomIndices, vector<WORD> &sideIndices)
 {
    vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
+   m_curve.GetRgVertex(vvertex);
+   // The mesh generation assumes the canonical winding (ear-clipping triangulation,
+   // side face normals), so a reversed point order used to leave the top face empty
+   NormalizeWindingOrder(vvertex);
    float *rgtexcoord = nullptr;
 
    Texture * const pinSide = m_ptable->GetImage(m_d.m_szSideImage);
    if (pinSide)
-      GetTextureCoords(vvertex, &rgtexcoord);
+      m_curve.GetTextureCoords(vvertex, &rgtexcoord);
 
    m_numVertices = (unsigned int)vvertex.size();
    Vertex2D * const rgnormal = new Vertex2D[m_numVertices];
@@ -690,7 +547,7 @@ void Surface::ExportMesh(ObjLoader& loader)
    m_d.m_heightbottom = oldBottomHeight;
    m_d.m_heighttop = oldTopHeight;
 
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
    if (!topBuf.empty() && m_d.m_topBottomVisible && !m_d.m_sideVisible)
    {
       loader.WriteObjectName(name);
@@ -699,7 +556,7 @@ void Surface::ExportMesh(ObjLoader& loader)
       const Material * const mat = m_ptable->GetMaterial(m_d.m_szTopMaterial);
       if (tex)
       {
-         loader.WriteMaterial(m_d.m_szImage, tex->GetFilePath().string(), mat);
+         loader.WriteMaterial(m_d.m_szImage, PathToUTF8(tex->GetFilePath()), mat); // Written as text in the .mtl file
          loader.UseTexture(m_d.m_szImage);
       }
       else
@@ -998,7 +855,7 @@ void Surface::RenderWallsAtHeight(const bool drop, const bool isReflectionPass)
    if (isReflectionPass && (/*m_d.m_heightbottom < 0.0f ||*/ m_d.m_heighttop < 0.0f))
       return;
 
-   m_renderer->m_renderDevice->m_basicShader->SetVector(SHADER_fDisableLighting_top_below, m_d.m_disableLightingTop, StaticRendering() ? 1.f : m_d.m_disableLightingBelow, 0.f, 0.f);
+   m_renderer->m_renderDevice->m_basicShader->SetVector(ShaderUniform::fDisableLighting_top_below, m_d.m_disableLightingTop, StaticRendering() ? 1.f : m_d.m_disableLightingBelow, 0.f, 0.f);
 
    // render side
    if (m_d.m_sideVisible && !drop && (m_numVertices > 0)) // Don't need to render walls if dropped
@@ -1031,17 +888,13 @@ void Surface::RenderWallsAtHeight(const bool drop, const bool isReflectionPass)
             m_renderer->m_renderDevice->m_basicShader, m_isDynamic, m_boundingSphereCenter, 0.f, m_meshBuffer, RenderDevice::TRIANGLELIST, m_numVertices * 6 + (m_numPolys * 3 * 2), m_numPolys * 3);
    }
 
-   m_renderer->m_renderDevice->m_basicShader->SetVector(SHADER_fDisableLighting_top_below, 0.f, 0.f, 0.f, 0.f);
+   m_renderer->m_renderDevice->m_basicShader->SetVector(ShaderUniform::fDisableLighting_top_below, 0.f, 0.f, 0.f, 0.f);
 }
 
-void Surface::AddPoint(int x, int y, const bool smooth)
+void Surface::AddPoint(const Vertex2D &v, const bool smooth)
 {
-   STARTUNDO
-
-   const Vertex2D v = m_ptable->TransformPoint(x, y);
-
    vector<RenderVertex> vvertex;
-   GetRgVertex(vvertex);
+   m_curve.GetRgVertex(vvertex);
 
    Vertex2D vOut(0.f, 0.f);
    int iSeg;
@@ -1053,76 +906,27 @@ void Surface::AddPoint(int x, int y, const bool smooth)
       if (vvertex[i].controlPoint)
          icp++;
 
-   CComObject<DragPoint> *pdp;
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, vOut.x, vOut.y, 0.f, smooth);
-      m_vdpoint.insert(m_vdpoint.begin() + icp, pdp); // push the second point forward, and replace it with this one.  Should work when index2 wraps.
-   }
-
-   STOPUNDO
+   m_curve.InsertPoint(icp, std::make_unique<DragPoint>(&m_curve, vOut.x, vOut.y, 0.f, smooth)); // push the second point forward, and replace it with this one.  Should work when index2 wraps.
 }
-
-#ifndef __STANDALONE__
-void Surface::DoCommand(int icmd, int x, int y)
-{
-   ISelect::DoCommand(icmd, x, y);
-
-   switch (icmd)
-   {
-   case ID_WALLMENU_FLIP:
-      FlipPointY(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_MIRROR:
-      FlipPointX(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_ROTATE:
-      VPX::WinUI::RotatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_SCALE:
-      VPX::WinUI::ScalePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_TRANSLATE:
-      VPX::WinUI::TranslatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_ADDPOINT:
-      AddPoint(x, y, false);
-      break;
-   }
-}
-#endif
 
 void Surface::FlipY(const Vertex2D& pvCenter)
 {
-   IHaveDragPoints::FlipPointY(pvCenter);
+   m_curve.FlipPointY(pvCenter);
 }
 
 void Surface::FlipX(const Vertex2D& pvCenter)
 {
-   IHaveDragPoints::FlipPointX(pvCenter);
+   m_curve.FlipPointX(pvCenter);
 }
 
-void Surface::Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter)
+void Surface::Rotate(const float ang, const Vertex2D &center, const bool useElementCenter) { m_curve.RotatePoints(ang, useElementCenter ? GetCenter() : center); }
+
+void Surface::Scale(const float scalex, const float scaley, const Vertex2D &center, const bool useElementCenter)
 {
-   IHaveDragPoints::RotatePoints(ang, pvCenter, useElementCenter);
+   m_curve.ScalePoints(scalex, scaley, useElementCenter ? GetCenter() : center);
 }
 
-void Surface::Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter)
-{
-   IHaveDragPoints::ScalePoints(scalex, scaley, pvCenter, useElementCenter);
-}
-
-void Surface::Translate(const Vertex2D &pvOffset)
-{
-   IHaveDragPoints::TranslatePoints(pvOffset);
-}
+void Surface::Translate(const Vertex2D &offset) { m_curve.TranslatePoints(offset); }
 
 void Surface::Save(IObjectWriter& writer, const bool saveForUndo)
 {
@@ -1142,7 +946,7 @@ void Surface::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteFloat(FID(HTBT), m_d.m_heightbottom);
    writer.WriteFloat(FID(HTTP), m_d.m_heighttop);
    //writer.WriteBool(FID(INNR), m_d.m_inner); //!! Deprecated
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteBool(FID(DSPT), m_d.m_displayTexture);
    writer.WriteFloat(FID(SLGF), m_d.m_slingshotforce);
    writer.WriteFloat(FID(SLTH), m_d.m_slingshot_threshold);
@@ -1159,21 +963,20 @@ void Surface::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteString(FID(MAPH), m_d.m_szPhysicsMaterial);
    writer.WriteBool(FID(OVPH), m_d.m_overwritePhysics);
    SaveSharedEditableFields(writer);
-   SavePoints(writer);
+   m_curve.SavePoints(writer);
    writer.EndObject();
 }
 
 void Surface::ClearForOverwrite()
 {
-   ClearPointsForOverwrite();
+   m_curve.ClearPoints();
 }
 
 void Surface::Load(IObjectReader& reader)
 {
-   bool inner = true;
    SetDefaults(false);
    reader.AsObject(
-      [this, &inner](int tag, IObjectReader& reader)
+      [this](int tag, IObjectReader &reader)
       {
          switch (tag)
          {
@@ -1194,8 +997,10 @@ void Surface::Load(IObjectReader& reader)
          case FID(SLMA): m_d.m_szSlingShotMaterial = reader.AsString(); break;
          case FID(HTBT): m_d.m_heightbottom = reader.AsFloat(); break;
          case FID(HTTP): m_d.m_heighttop = reader.AsFloat(); break;
-         case FID(INNR): inner = reader.AsBool(); break; //!! Deprecated, do not use anymore
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         // Deprecated and no longer written. An outer wall (not inner) needs the table
+         // bounds to be squared off, which are out of reach here, so InitPostLoad does it
+         case FID(INNR): m_onLoadInsideOutOuterWall = !reader.AsBool(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(DSPT): m_d.m_displayTexture = reader.AsBool(); break;
          case FID(SLGF): m_d.m_slingshotforce = reader.AsFloat(); break;
          case FID(SLTH): m_d.m_slingshot_threshold = reader.AsFloat(); break;
@@ -1218,92 +1023,55 @@ void Surface::Load(IObjectReader& reader)
          case FID(SVBL): m_d.m_sideVisible = reader.AsBool(); break;
          case FID(REEN): m_d.m_reflectionEnabled = reader.AsBool(); break;
          case FID(PNTS): break; // Empty tag placed before drag point data (unused)
-         case FID(DPNT): LoadPointToken(reader); break;
+         case FID(DPNT): m_curve.LoadPointToken(reader); break;
          default: LoadSharedEditableField(tag, reader); break;
          }
          return true;
       });
-
-   // Pure backwards-compatibility code:
-   // On some tables, the outer wall is still modelled/copy-pasted 'inside-out',
-   // this tries to compensate for that
-   if (!inner) {
-      const size_t cvertex = m_vdpoint.size();
-
-      float miny = FLT_MAX;
-      size_t minyindex = 0;
-
-      // Find smallest y point - use it to connect with surrounding border
-      for (size_t i = 0; i < cvertex; i++)
-      {
-         float y;
-         m_vdpoint[i]->get_Y(&y);
-         if (y < miny)
-         {
-            miny = y;
-            minyindex = i;
-         }
-      }
-
-      float tmpx;
-      m_vdpoint[minyindex]->get_X(&tmpx);
-      const float tmpy = miny /*- 1.0f*/; // put tiny gap in to avoid errors
-
-      // swap list around
-      std::ranges::reverse(m_vdpoint.begin(), m_vdpoint.end());
-
-      CComObject<DragPoint> *pdp;
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, m_ptable->m_left, m_ptable->m_top, 0.f, false);
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, m_ptable->m_right, m_ptable->m_top, 0.f, false);
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, m_ptable->m_right + 1.0f, m_ptable->m_bottom, 0.f, false); //!!! +1 needed for whatever reason (triangulation screwed up)
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, m_ptable->m_left, m_ptable->m_bottom, 0.f, false);
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, m_ptable->m_left - 1.0f, m_ptable->m_top, 0.f, false); //!!! -1 needed for whatever reason (triangulation screwed up)
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, tmpx, tmpy, 0.f, false);
-         m_vdpoint.insert(m_vdpoint.begin() + (cvertex - minyindex - 1), pdp);
-      }
-   }
 }
 
-void Surface::UpdateStatusBarInfo()
+// Pure backwards-compatibility code:
+// On some tables, the outer wall is still modelled/copy-pasted 'inside-out', this tries
+// to compensate for that by closing the shape over the table border. Runs from here
+// rather than from Load because it needs the table bounds, and a part only reaches its
+// table once PinTable::AddPart has taken it
+void Surface::InitPostLoad()
 {
-   if (!m_vpinball)
+   if (!m_onLoadInsideOutOuterWall)
       return;
-   const string tbuf = std::format("TopHeight: {:.03f} | BottomHeight: {:.03f}", m_vpinball->ConvertToUnit(m_d.m_heighttop), m_vpinball->ConvertToUnit(m_d.m_heightbottom));
-   m_vpinball->SetStatusBarUnitInfo(tbuf, true);
+   m_onLoadInsideOutOuterWall = false; // one shot, the points are inserted for good
+   assert(m_ptable != nullptr);
+
+   const size_t cvertex = m_curve.GetPoints().size();
+
+   float miny = FLT_MAX;
+   size_t minyindex = 0;
+
+   // Find smallest y point - use it to connect with surrounding border
+   for (size_t i = 0; i < cvertex; i++)
+   {
+      const float y = m_curve.GetPoints()[i]->GetY();
+      if (y < miny)
+      {
+         miny = y;
+         minyindex = i;
+      }
+   }
+
+   const float tmpx = m_curve.GetPoints()[minyindex]->GetX();
+   const float tmpy = miny /*- 1.0f*/; // put tiny gap in to avoid errors
+
+   // swap list around
+   m_curve.ReverseOrder();
+
+   m_curve.InsertPoint(cvertex - minyindex - 1, std::make_unique<DragPoint>(&m_curve, m_ptable->m_left, m_ptable->m_top, 0.f, false));
+   m_curve.InsertPoint((cvertex - minyindex - 1), std::make_unique<DragPoint>(&m_curve, m_ptable->m_right, m_ptable->m_top, 0.f, false));
+   //!!! +1 needed for whatever reason (triangulation screwed up)
+   m_curve.InsertPoint(cvertex - minyindex - 1, std::make_unique<DragPoint>(&m_curve, m_ptable->m_right + 1.0f, m_ptable->m_bottom, 0.f, false));
+   m_curve.InsertPoint(cvertex - minyindex - 1, std::make_unique<DragPoint>(&m_curve, m_ptable->m_left, m_ptable->m_bottom, 0.f, false));
+   //!!! -1 needed for whatever reason (triangulation screwed up)
+   m_curve.InsertPoint(cvertex - minyindex - 1, std::make_unique<DragPoint>(&m_curve, m_ptable->m_left - 1.0f, m_ptable->m_top, 0.f, false));
+   m_curve.InsertPoint(cvertex - minyindex - 1, std::make_unique<DragPoint>(&m_curve, tmpx, tmpy, 0.f, false));
 }
 
 STDMETHODIMP Surface::get_HasHitEvent(VARIANT_BOOL *pVal)
@@ -1569,7 +1337,7 @@ STDMETHODIMP Surface::get_Friction(float *pVal)
 
 STDMETHODIMP Surface::put_Friction(float newVal)
 {
-   m_d.m_friction = saturate(newVal);
+   m_d.m_friction = max(newVal, 0.f); // Friction can not be negative, but may exceed 1
    return S_OK;
 }
 

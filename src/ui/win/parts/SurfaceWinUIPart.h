@@ -1,0 +1,33 @@
+﻿#pragma once
+
+#include "ui/win/IWinUIPart.h"
+#include "ui/win/PinTableWnd.h"
+#include "ui/win/parts/DragPointUIPartList.h"
+
+class Surface;
+
+class SurfaceWinUIPart final : public IWinUIPart
+{
+public:
+   static inline constexpr int ToolID = ID_INSERT_WALL;
+   static inline constexpr int CursorID = IDC_WALL;
+   static inline constexpr IWinUIPart::AllowedViews AllowedViews = IWinUIPart::AllowedViews::Playfield;
+
+   explicit SurfaceWinUIPart(PinTableWnd* editor, Surface* surface);
+
+   ItemTypeEnum GetItemType() const override { return eItemSurface; }
+
+   void UIRenderPass1(Sur* psur) override;
+   void UIRenderPass2(Sur* psur) override;
+   void RenderBlueprint(Sur* psur, bool solid) override;
+   void UpdateStatusBarInfo() override;
+   int GetMenuId() const override { return IDR_SURFACEMENU; }
+   void DoCommand(int icmd, int x, int y) override;
+
+   IWinUIPart* GetSubPart(DragPoint* point) override { return m_pointParts.Get(point); }
+   IWinUIPart* GetSubPartByIndex(int index) override { return m_pointParts.GetAt(index); }
+
+private:
+   Surface* const m_surface;
+   DragPointUIPartList m_pointParts;
+};

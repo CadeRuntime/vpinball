@@ -5,6 +5,7 @@
 
 #include "core/VPApp.h"
 #include "parts/pintable.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
@@ -20,8 +21,9 @@ extern SORTDATA SortData;
 extern int CALLBACK MyCompProc( LPARAM lSortParam1, LPARAM lSortParam2, LPARAM lSortOption );
 int SoundDialog::m_columnSortOrder;
 
-SoundDialog::SoundDialog()
+SoundDialog::SoundDialog(PinTableWnd *tableEditor)
    : CDialog(IDD_SOUNDDIALOG)
+   , m_tableEditor(tableEditor)
    , hSoundList(nullptr)
 {
    m_columnSortOrder = 1;
@@ -64,7 +66,7 @@ static int DPIValue(int value)
 BOOL SoundDialog::OnInitDialog()
 {
    m_audioPlayer = std::make_unique<VPX::AudioPlayer>(
-      g_app->m_settings.GetPlayer_SoundDeviceBG(), g_app->m_settings.GetPlayer_SoundDevice(), static_cast<VPX::SoundConfigTypes>(g_app->m_settings.GetPlayer_Sound3D()));
+      g_settingsService.GetAppSettings().GetPlayer_SoundDeviceBG(), g_settingsService.GetAppSettings().GetPlayer_SoundDevice(), static_cast<VPX::SoundConfigTypes>(g_settingsService.GetAppSettings().GetPlayer_Sound3D()));
 
     const HWND toolTipHwnd = CreateWindowEx(
       0, TOOLTIPS_CLASS, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_BALLOON, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, GetHwnd(), nullptr, g_app->GetInstanceHandle(), nullptr);
@@ -153,12 +155,10 @@ BOOL SoundDialog::OnInitDialog()
 void SoundDialog::ListSounds()
 {
    ListView_DeleteAllItems(hSoundList);
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
-   if (pt)
+   if (CCO(PinTable) *const pt = m_tableEditor->m_table)
       for (const auto sound : pt->m_vsound)
          AddListSound(sound);
 }
-
 
 int SoundDialog::AddListSound(const VPX::Sound *const pps)
 {
@@ -171,7 +171,7 @@ int SoundDialog::AddListSound(const VPX::Sound *const pps)
 
    const int index = ListView_InsertItem(hSoundList, &lvitem);
 
-   ListView_SetItemText_Safe(hSoundList, index, 1, pps->GetImportPath().string().c_str());
+   ListView_SetItemText_Safe(hSoundList, index, 1, PathToString(pps->GetImportPath()).c_str());
 
    const string pan = f2sz(dequantizeSignedPercent(pps->GetPan()));
    ListView_SetItemText_Safe(hSoundList, index, 3, pan.c_str());
@@ -205,7 +205,7 @@ int SoundDialog::AddListSound(const VPX::Sound *const pps)
 INT_PTR SoundDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     m_resizer.HandleMessage(uMsg, wParam, lParam);
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
+    CCO(PinTable) *const pt = m_tableEditor->m_table;
 
     switch(uMsg)
     {
@@ -351,23 +351,20 @@ void SoundDialog::OnCancel()
 
 void SoundDialog::Import()
 {
-   CCO(PinTable)* const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
    if (pt == nullptr)
       return;
 
-   const string& szInitialDir = g_app->m_settings.GetRecentDir_SoundDir();
+   const string& szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_SoundDir();
 
    vector<string> szFileName;
-   if (g_pvp->OpenFileDialog(szInitialDir, szFileName, "Sound Files (.wav/.ogg/.mp3)\0*.wav;*.ogg;*.mp3\0", "mp3", OFN_EXPLORER | OFN_ALLOWMULTISELECT))
+   if (m_tableEditor->m_vpxEditor->OpenFileDialog(szInitialDir, szFileName, "Sound Files (.wav/.ogg/.mp3/.flac)\0*.wav;*.ogg;*.mp3;*.flac\0", "mp3", OFN_EXPLORER | OFN_ALLOWMULTISELECT))
    {
-      g_app->m_settings.SetRecentDir_SoundDir(std::filesystem::path(szFileName[0]).parent_path().string(), false);
+      g_settingsService.GetAppSettings().SetRecentDir_SoundDir(PathToString(std::filesystem::path(szFileName[0]).parent_path()), false);
       for (const string &file : szFileName)
-      {
-         VPX::Sound* sound = pt->ImportSound(file);
-         const int indexs = AddListSound(sound);
-         ListView_SetItemState(hSoundList, indexs, LVIS_SELECTED, LVIS_SELECTED);
-      }
+         if (VPX::Sound* sound = pt->ImportSound(file))
+            ListView_SetItemState(hSoundList, AddListSound(sound), LVIS_SELECTED, LVIS_SELECTED);
 
       pt->SetNonUndoableDirty(eSaveDirty);
    }
@@ -377,200 +374,196 @@ void SoundDialog::Import()
 
 void SoundDialog::ReImport()
 {
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
-    const int count = ListView_GetSelectedCount( hSoundList );
-    if (count > 0)
-    {
-        const int ans = MessageBox( LocalString( IDS_REPLACESOUND ).m_szbuffer/*"Are you sure you want to remove this image?"*/, "Confirm Reimport", MB_YESNO | MB_DEFBUTTON2 );
-        if (ans == IDYES)
-        {
-            int sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED );
-            while(sel != -1)
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
+   const int count = ListView_GetSelectedCount(hSoundList);
+   if (count > 0)
+   {
+      const int ans = MessageBox(LocalString(IDS_REPLACESOUND).m_szbuffer /*"Are you sure you want to remove this image?"*/, "Confirm Reimport", MB_YESNO | MB_DEFBUTTON2);
+      if (ans == IDYES)
+      {
+         int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED);
+         while (sel != -1)
+         {
+            LVITEM lvitem;
+            lvitem.mask = LVIF_PARAM;
+            lvitem.iItem = sel;
+            lvitem.iSubItem = 0;
+            ListView_GetItem(hSoundList, &lvitem);
+            VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
+
+            const auto &importPath = pps->GetImportPath();
+            if (std::filesystem::exists(importPath))
             {
-                LVITEM lvitem;
-                lvitem.mask = LVIF_PARAM;
-                lvitem.iItem = sel;
-                lvitem.iSubItem = 0;
-                ListView_GetItem( hSoundList, &lvitem );
-                VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
-
-                const auto &importPath = pps->GetImportPath();
-                if (std::filesystem::exists(importPath))
-                {
-                   pt->ReImportSound(pps, importPath);
-                   pt->SetNonUndoableDirty(eSaveDirty);
-                }
-                else
-                   MessageBox(importPath.string().c_str(), "FILE NOT FOUND!", MB_OK);
-
-                sel = ListView_GetNextItem( hSoundList, sel, LVNI_SELECTED );
+               pt->ReImportSound(pps, importPath);
+               pt->SetNonUndoableDirty(eSaveDirty);
             }
-        }
-        //pt->SetNonUndoableDirty(eSaveDirty);
-    }
+            else
+               MessageBox(PathToString(importPath).c_str(), "FILE NOT FOUND!", MB_OK);
+
+            sel = ListView_GetNextItem(hSoundList, sel, LVNI_SELECTED);
+         }
+      }
+      //pt->SetNonUndoableDirty(eSaveDirty);
+   }
     SetFocus();
 }
 
 void SoundDialog::ReImportFrom()
 {
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
-    const int sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED );
-    if (sel != -1)
-    {
-        const int ans = MessageBox(LocalString( IDS_REPLACESOUND ).m_szbuffer/*"Are you sure you want to replace this sound with a new one?"*/, "Confirm Reimport", MB_YESNO | MB_DEFBUTTON2);
-        if (ans == IDYES)
-        {
-            const string& szInitialDir = g_app->m_settings.GetRecentDir_SoundDir();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
+   const int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED);
+   if (sel != -1)
+   {
+      const int ans = MessageBox(LocalString(IDS_REPLACESOUND).m_szbuffer /*"Are you sure you want to replace this sound with a new one?"*/, "Confirm Reimport", MB_YESNO | MB_DEFBUTTON2);
+      if (ans == IDYES)
+      {
+         const string &szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_SoundDir();
 
-            vector<string> szFileName;
-            if (g_pvp->OpenFileDialog(szInitialDir, szFileName, "Sound Files (.wav/.ogg/.mp3)\0*.wav;*.ogg;*.mp3\0", "mp3", 0))
-            {
-                LVITEM lvitem;
-                lvitem.mask = LVIF_PARAM;
-                lvitem.iItem = sel;
-                lvitem.iSubItem = 0;
-                ListView_GetItem( hSoundList, &lvitem );
-                VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
+         vector<string> szFileName;
+         if (m_tableEditor->m_vpxEditor->OpenFileDialog(szInitialDir, szFileName, "Sound Files (.wav/.ogg/.mp3/.flac)\0*.wav;*.ogg;*.mp3;*.flac\0", "mp3", 0))
+         {
+            LVITEM lvitem;
+            lvitem.mask = LVIF_PARAM;
+            lvitem.iItem = sel;
+            lvitem.iSubItem = 0;
+            ListView_GetItem(hSoundList, &lvitem);
+            VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
 
-                pt->ReImportSound(pps, szFileName[0] );
-                ListView_SetItemText_Safe(hSoundList, sel, 1, szFileName[0].c_str());
+            pt->ReImportSound(pps, szFileName[0]);
+            ListView_SetItemText_Safe(hSoundList, sel, 1, szFileName[0].c_str());
 
-                const size_t index = szFileName[0].find_last_of(PATH_SEPARATOR_CHAR);
-                if (index != string::npos)
-                   g_app->m_settings.SetRecentDir_SoundDir(szFileName[0].substr(0, index), false);
+            const size_t index = szFileName[0].find_last_of(PATH_SEPARATOR_CHAR);
+            if (index != string::npos)
+               g_settingsService.GetAppSettings().SetRecentDir_SoundDir(szFileName[0].substr(0, index), false);
 
-                pt->SetNonUndoableDirty( eSaveDirty );
-            }
-        }
-    }
+            pt->SetNonUndoableDirty(eSaveDirty);
+         }
+      }
+   }
     SetFocus();
 }
 
 void SoundDialog::Export()
 {
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
-    const int selectedItemsCount = ListView_GetSelectedCount(hSoundList);
-    const size_t renameOnExport = IsDlgButtonChecked(IDC_CHECK_RENAME_ON_EXPORT);
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
+   const int selectedItemsCount = ListView_GetSelectedCount(hSoundList);
+   const size_t renameOnExport = IsDlgButtonChecked(IDC_CHECK_RENAME_ON_EXPORT);
 
-    if (selectedItemsCount)
-    {
-        int sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED ); //next selected item 	
-        if (sel != -1)
-        {
-            LVITEM lvitem;
-            lvitem.mask = LVIF_PARAM;
-            lvitem.iItem = sel;
-            lvitem.iSubItem = 0;
-            ListView_GetItem( hSoundList, &lvitem );
-            VPX::Sound *pps = (VPX::Sound *)lvitem.lParam;
+   if (selectedItemsCount)
+   {
+      int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED); //next selected item
+      if (sel != -1)
+      {
+         LVITEM lvitem;
+         lvitem.mask = LVIF_PARAM;
+         lvitem.iItem = sel;
+         lvitem.iSubItem = 0;
+         ListView_GetItem(hSoundList, &lvitem);
+         VPX::Sound *pps = (VPX::Sound *)lvitem.lParam;
 
-            OPENFILENAME ofn = {};
-            ofn.lStructSize = sizeof( OPENFILENAME );
-            ofn.hInstance = g_app->GetInstanceHandle();
-            ofn.hwndOwner = g_pvp->GetHwnd();
-            ofn.lpstrFilter = "Sound Files (.wav/.ogg/.mp3)\0*.wav;*.ogg;*.mp3\0";
+         OPENFILENAME ofn = {};
+         ofn.lStructSize = sizeof(OPENFILENAME);
+         ofn.hInstance = g_app->GetInstanceHandle();
+         ofn.hwndOwner = m_tableEditor->m_vpxEditor->GetHwnd();
+         ofn.lpstrFilter = "Sound Files (.wav/.ogg/.mp3/.flac)\0*.wav;*.ogg;*.mp3;*.flac\0";
 
-            char filename[MAXSTRING];
-            if (!renameOnExport)
-               strncpy_s(filename, std::size(filename), pps->GetImportPath().filename().string().c_str());
-            else
+         char filename[MAXSTRING];
+         if (!renameOnExport)
+            strncpy_s(filename, std::size(filename), PathToString(pps->GetImportPath().filename()).c_str());
+         else
+         {
+            const auto ext = pps->GetImportPath().extension();
+            const string filename2 = pps->GetName() + (ext.empty() ? ".ogg"s : PathToString(ext));
+            strncpy_s(filename, std::size(filename), filename2.c_str());
+         }
+         ofn.lpstrFile = filename;
+         ofn.nMaxFile = std::size(filename);
+         ofn.lpstrDefExt = "ogg";
+
+         string initDir = g_settingsService.GetAppSettings().GetRecentDir_SoundDir();
+
+         ofn.lpstrInitialDir = initDir.c_str();
+         //ofn.lpstrTitle = "SAVE AS";
+         ofn.Flags = OFN_NOREADONLYRETURN | OFN_CREATEPROMPT | OFN_OVERWRITEPROMPT | OFN_EXPLORER;
+
+         if (GetSaveFileName(&ofn)) //Get filename from user
+         {
+            string pathName = ofn.lpstrFile;
+            const size_t pos = pathName.find_last_of(PATH_SEPARATOR_CHAR);
+            if (pos != string::npos)
+               pathName.resize(pos + 1);
+
+            while (sel != -1 && pps != nullptr)
             {
-               const auto ext = pps->GetImportPath().extension();
-               const string filename2 = pps->GetName() + (ext.empty() ? ".ogg"s : ext.string());
-               strncpy_s(filename, std::size(filename), filename2.c_str());
-            }
-            ofn.lpstrFile = filename;
-            ofn.nMaxFile = std::size(filename);
-            ofn.lpstrDefExt = "ogg";
-
-            string initDir = g_app->m_settings.GetRecentDir_SoundDir();
-
-            ofn.lpstrInitialDir = initDir.c_str();
-            //ofn.lpstrTitle = "SAVE AS";
-            ofn.Flags = OFN_NOREADONLYRETURN | OFN_CREATEPROMPT | OFN_OVERWRITEPROMPT | OFN_EXPLORER;
-
-            if (GetSaveFileName( &ofn ))	//Get filename from user
-            {
-               string pathName = ofn.lpstrFile;
-               const size_t pos = pathName.find_last_of(PATH_SEPARATOR_CHAR);
-               if (pos != string::npos)
-                  pathName.resize(pos + 1);
-
-               while (sel != -1 && pps != nullptr)
+               string filen;
+               if (selectedItemsCount > 1)
                {
-                  string filen;
-                  if (selectedItemsCount > 1)
+                  filen = pathName;
+                  if (!renameOnExport)
                   {
-                     filen = pathName;
-                     if (!renameOnExport)
-                     {
-                        filen += pps->GetImportPath().filename().string();
-                     }
-                     else
-                     {
-                        filen += pps->GetName();
-                        filen += pps->GetImportPath().extension().string();
-                     }
+                     filen += PathToString(pps->GetImportPath().filename());
                   }
-
-                  if (!pt->ExportSound(pps, (selectedItemsCount > 1) ? filen : filename))
-                     ShowError("Could not export Sound");
-                  sel = ListView_GetNextItem( hSoundList, sel, LVNI_SELECTED ); //next selected item
-                  lvitem.iItem = sel;
-                  lvitem.iSubItem = 0;
-                  ListView_GetItem( hSoundList, &lvitem );
-                  pps = (VPX::Sound *)lvitem.lParam;
+                  else
+                  {
+                     filen += pps->GetName();
+                     filen += PathToString(pps->GetImportPath().extension());
+                  }
                }
 
-               g_app->m_settings.SetRecentDir_SoundDir(pathName, false);
+               if (!pt->ExportSound(pps, (selectedItemsCount > 1) ? filen : filename))
+                  ShowError("Could not export Sound");
+               sel = ListView_GetNextItem(hSoundList, sel, LVNI_SELECTED); //next selected item
+               lvitem.iItem = sel;
+               lvitem.iSubItem = 0;
+               ListView_GetItem(hSoundList, &lvitem);
+               pps = (VPX::Sound *)lvitem.lParam;
             }
-        }
-    }
+
+            g_settingsService.GetAppSettings().SetRecentDir_SoundDir(pathName, false);
+         }
+      }
+   }
 
     SetFocus();
 }
 
 void SoundDialog::SoundToBG()
 {
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
-    if (ListView_GetSelectedCount( hSoundList ))
-    {
-        LVITEM lvitem;
-        int sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED ); //next selected item 	
-        while(sel != -1)
-        {
-            lvitem.mask = LVIF_PARAM;
-            lvitem.iItem = sel;
-            lvitem.iSubItem = 0;
-            ListView_GetItem( hSoundList, &lvitem );
-            VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
-            pps->SetOutputTarget((pps->GetOutputTarget() != VPX::SNDOUT_BACKGLASS) ? VPX::SNDOUT_BACKGLASS : VPX::SNDOUT_TABLE);
-            switch (pps->GetOutputTarget())
-            {
-               case VPX::SNDOUT_BACKGLASS:
-                  ListView_SetItemText_Safe(hSoundList, sel, 2, "Backglass");
-                  break;
-               case VPX::SNDOUT_TABLE:
-               default:
-                  ListView_SetItemText_Safe(hSoundList, sel, 2, "Table");
-                  break;
-            }
-            pt->SetNonUndoableDirty(eSaveDirty);
-            sel = ListView_GetNextItem(hSoundList, sel, LVNI_SELECTED ); //next selected item
-        }
-    }
+   if (ListView_GetSelectedCount(hSoundList))
+   {
+      LVITEM lvitem;
+      int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED); //next selected item
+      while (sel != -1)
+      {
+         lvitem.mask = LVIF_PARAM;
+         lvitem.iItem = sel;
+         lvitem.iSubItem = 0;
+         ListView_GetItem(hSoundList, &lvitem);
+         VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
+         pps->SetOutputTarget((pps->GetOutputTarget() != VPX::SNDOUT_BACKGLASS) ? VPX::SNDOUT_BACKGLASS : VPX::SNDOUT_TABLE);
+         switch (pps->GetOutputTarget())
+         {
+         case VPX::SNDOUT_BACKGLASS: ListView_SetItemText_Safe(hSoundList, sel, 2, "Backglass"); break;
+         case VPX::SNDOUT_TABLE:
+         default: ListView_SetItemText_Safe(hSoundList, sel, 2, "Table"); break;
+         }
+         pt->SetNonUndoableDirty(eSaveDirty);
+         sel = ListView_GetNextItem(hSoundList, sel, LVNI_SELECTED); //next selected item
+      }
+   }
     SetFocus();
 }
 
 void SoundDialog::SoundPosition()
 {
-	CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
-	if (ListView_GetSelectedCount(hSoundList))
-	{
-		LVITEM lvitem;
-		int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED); //next selected item 	
+   if (ListView_GetSelectedCount(hSoundList))
+   {
+      LVITEM lvitem;
+      int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED); //next selected item 	
 
 		lvitem.mask = LVIF_PARAM;
 		lvitem.iItem = sel;
@@ -600,47 +593,47 @@ void SoundDialog::SoundPosition()
 			ListSounds();
 			SetFocus();
 		}
-	}
+   }
 }
 
 
 void SoundDialog::DeleteSound()
 {
-    CCO( PinTable ) * const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
 
-    const int count = ListView_GetSelectedCount( hSoundList );
-    if (count > 0)
-    {
-        const int ans = MessageBox(LocalString( IDS_REMOVESOUND ).m_szbuffer/*"Are you sure you want to remove this image?"*/, "Confirm Deletion", MB_YESNO | MB_DEFBUTTON2);
-        if (ans == IDYES)
-        {
-            int sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED );
-            while(sel != -1)
-            {
-                LVITEM lvitem;
-                lvitem.mask = LVIF_PARAM;
-                lvitem.iItem = sel;
-                lvitem.iSubItem = 0;
-                ListView_GetItem( hSoundList, &lvitem );
-                VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
-                ListView_DeleteItem( hSoundList, sel );
-                pt->RemoveSound(pps);
+   const int count = ListView_GetSelectedCount(hSoundList);
+   if (count > 0)
+   {
+      const int ans = MessageBox(LocalString(IDS_REMOVESOUND).m_szbuffer /*"Are you sure you want to remove this image?"*/, "Confirm Deletion", MB_YESNO | MB_DEFBUTTON2);
+      if (ans == IDYES)
+      {
+         int sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED);
+         while (sel != -1)
+         {
+            LVITEM lvitem;
+            lvitem.mask = LVIF_PARAM;
+            lvitem.iItem = sel;
+            lvitem.iSubItem = 0;
+            ListView_GetItem(hSoundList, &lvitem);
+            VPX::Sound *const pps = (VPX::Sound *)lvitem.lParam;
+            ListView_DeleteItem(hSoundList, sel);
+            pt->RemoveSound(pps);
 
-                // The previous selection is now deleted, so look again from the top of the list
-                sel = ListView_GetNextItem( hSoundList, -1, LVNI_SELECTED );
-            }
-        }
-        pt->SetNonUndoableDirty( eSaveDirty );
-    }
+            // The previous selection is now deleted, so look again from the top of the list
+            sel = ListView_GetNextItem(hSoundList, -1, LVNI_SELECTED);
+         }
+      }
+      pt->SetNonUndoableDirty(eSaveDirty);
+   }
     SetFocus();
 }
 
 void SoundDialog::LoadPosition()
 {
-   const int x = g_app->m_settings.GetEditor_SoundMngPosX();
-   const int y = g_app->m_settings.GetEditor_SoundMngPosY();
-   const int w = g_app->m_settings.GetEditor_SoundMngWidth();
-   const int h = g_app->m_settings.GetEditor_SoundMngHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_SoundMngPosX();
+   const int y = g_settingsService.GetAppSettings().GetEditor_SoundMngPosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_SoundMngWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_SoundMngHeight();
    POINT p { x, y };
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != nullptr) // Do not apply if point is offscreen
       SetWindowPos( nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE );
@@ -649,10 +642,10 @@ void SoundDialog::LoadPosition()
 void SoundDialog::SavePosition()
 {
     const CRect rect = GetWindowRect();
-    g_app->m_settings.SetEditor_SoundMngPosX((int)rect.left, false);
-    g_app->m_settings.SetEditor_SoundMngPosY((int)rect.top, false);
-    g_app->m_settings.SetEditor_SoundMngWidth(rect.right - rect.left, false);
-    g_app->m_settings.SetEditor_SoundMngHeight(rect.bottom - rect.top, false);
+    g_settingsService.GetAppSettings().SetEditor_SoundMngPosX((int)rect.left, false);
+    g_settingsService.GetAppSettings().SetEditor_SoundMngPosY((int)rect.top, false);
+    g_settingsService.GetAppSettings().SetEditor_SoundMngWidth(rect.right - rect.left, false);
+    g_settingsService.GetAppSettings().SetEditor_SoundMngHeight(rect.bottom - rect.top, false);
 }
 
 void SoundDialog::AddToolTip(const char *const text, HWND parentHwnd, HWND toolTipHwnd, HWND controlHwnd)
@@ -734,12 +727,11 @@ void SoundPositionDialog::SetSliderValues()
 INT_PTR SoundPositionDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	//const HWND hwndDlg = GetHwnd();
-	//CCO(PinTable) * const pt = g_pvp->GetActiveTable();
 
-	switch (uMsg)
-	{
-	case WM_HSCROLL:
-	case WM_VSCROLL:
+   switch (uMsg)
+   {
+   case WM_HSCROLL:
+   case WM_VSCROLL:
 		switch (LOWORD(wParam))
 		{
 		case TB_ENDTRACK:
@@ -762,8 +754,8 @@ INT_PTR SoundPositionDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
 			break;
 		}
 		break;
-	}
-	return DialogProcDefault(uMsg, wParam, lParam);
+   }
+   return DialogProcDefault(uMsg, wParam, lParam);
 }
 
 void SoundPositionDialog::ReadTextValue(int item, int &oValue)
@@ -824,9 +816,21 @@ void SoundPositionDialog::TestSound()
 
 	// Hold the actual settings temporarily and reinitialize, as it could be reset if dialog is cancelled.
 	const VPX::SoundOutTypes iOutputTargetTmp = m_pSound->GetOutputTarget();
-	m_pSound->SetOutputTarget(m_cOutputTarget);
-	m_audioPlayer->PlaySound(m_pSound, dequantizeSignedPercent(m_volume), 0.0f, 0, dequantizeSignedPercent(m_balance), dequantizeSignedPercent(m_fade), 0, false, true);
-	m_pSound->SetOutputTarget(iOutputTargetTmp);
+   const int iVolume = m_pSound->GetVolume();
+   const int iPan = m_pSound->GetPan();
+   const int iFrontRearFade = m_pSound->GetFrontRearFade();
+
+   m_pSound->SetOutputTarget(m_cOutputTarget);
+   m_pSound->SetVolume(m_volume);
+   m_pSound->SetPan(m_balance);
+   m_pSound->SetFrontRearFade(m_fade);
+
+   m_audioPlayer->PlaySound(m_pSound, 1.0f, 0.0f, 0, 0.f, 0.f, 0, false, true);
+
+   m_pSound->SetOutputTarget(iOutputTargetTmp);
+   m_pSound->SetVolume(iVolume);
+   m_pSound->SetPan(iPan);
+   m_pSound->SetFrontRearFade(iFrontRearFade);
 }
 
 void SoundPositionDialog::OnOK()

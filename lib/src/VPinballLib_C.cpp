@@ -38,20 +38,15 @@ VPINBALLAPI const char* VPinballGetVersionStringFull()
    return version.c_str();
 }
 
-VPINBALLAPI void VPinballInit(VPinballEventCallback callback)
+VPINBALLAPI void VPinballInit(VPinballEventCallback eventCallback, VPinballRumbleCallback rumbleCallback)
 {
-   VPinballLib::VPinballLib::Instance().Init(callback);
+   VPinballLib::VPinballLib::Instance().Init(eventCallback, rumbleCallback);
 }
 
 VPINBALLAPI void VPinballLog(VPINBALL_LOG_LEVEL level, const char* pMessage)
 {
    if (pMessage != nullptr)
       VPinballLib::VPinballLib::Instance().Log(level, pMessage);
-}
-
-VPINBALLAPI void VPinballResetLog()
-{
-   VPinballLib::VPinballLib::Instance().ResetLog();
 }
 
 VPINBALLAPI int VPinballLoadValueInt(const char* pSectionName, const char* pKey, int defaultValue)
@@ -137,14 +132,6 @@ VPINBALLAPI const char* VPinballGetPath(VPINBALL_PATH pathType)
    return path.c_str();
 }
 
-VPINBALLAPI VPINBALL_STATUS VPinballLoadTable(const char* pPath)
-{
-   if (pPath == nullptr)
-      return VPINBALL_STATUS_FAILURE;
-
-   return VPinballLib::VPinballLib::Instance().LoadTable(pPath);
-}
-
 VPINBALLAPI VPINBALL_STATUS VPinballExtractTableScript(const char* pPath)
 {
    if (pPath == nullptr)
@@ -153,9 +140,9 @@ VPINBALLAPI VPINBALL_STATUS VPinballExtractTableScript(const char* pPath)
    return VPinballLib::VPinballLib::Instance().ExtractTableScript(pPath);
 }
 
-VPINBALLAPI VPINBALL_STATUS VPinballPlay()
+VPINBALLAPI VPINBALL_STATUS VPinballPlay(const char* pPath)
 {
-   return VPinballLib::VPinballLib::Instance().Play();
+   return VPinballLib::VPinballLib::Instance().Play(pPath ? string(pPath) : string());
 }
 
 VPINBALLAPI VPINBALL_STATUS VPinballStop()

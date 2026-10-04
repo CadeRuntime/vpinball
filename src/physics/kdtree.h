@@ -25,10 +25,10 @@ private:
    void CreateNextLevel(HitKD* hitoct, const unsigned int level, unsigned int level_empty);
 
    FRect3D m_rectbounds;
-   unsigned int m_start; // index of first item in HitKD.m_vho
-   unsigned int m_items; // number of items (bit 0..29) and axis (bits 30..31)
+   unsigned int m_start = 0; // index of first item in HitKD.m_vho
+   unsigned int m_items = 0; // number of items (bit 0..29) and axis (bits 30..31)
 
-   HitKDNode * m_children; // if nullptr, is a leaf; otherwise keeps the 2 children
+   HitKDNode* m_children = nullptr; // if nullptr, is a leaf; otherwise keeps the 2 children
 
    friend class HitKD;
 };
@@ -36,7 +36,7 @@ private:
 class HitKD final
 {
 public:
-   HitKD();
+   HitKD(PhysicsEngine* physics = nullptr);
    ~HitKD();
 
    void Reset(const vector<HitObject*> &vho);
@@ -60,6 +60,8 @@ public:
 private:
    void Initialize();
    void InitSseArrays();
+
+   PhysicsEngine* const m_physics;
 
    vector<HitObject*> m_vho; // all items
    unsigned int m_num_items = 0; // alias of m_vho.size()

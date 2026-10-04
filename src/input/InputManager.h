@@ -3,12 +3,14 @@
 #pragma once
 
 #include <SDL3/SDL.h>
+#include <mutex>
 
 #include "input/InputAction.h"
 #include "input/PhysicsSensor.h"
 #include "math/vector.h"
 #include "plugins/VPXPlugin.h" // VPXAction enum (plugin action mapping)
 
+class Settings;
 class PlungerSensor;
 class PlungerHandler;
 namespace VPX::Physics
@@ -23,7 +25,7 @@ class InputManager final
    , public SensorMapping::AxisInputEventManager
 {
 public:
-   InputManager(class Player* player);
+   InputManager(class Player* player, Settings& appSettings);
    InputManager(const InputManager&) = delete;
    InputManager& operator=(const InputManager&) = delete;
    ~InputManager() override;
@@ -62,8 +64,12 @@ public:
    unsigned int GetVRViewCenterActionId() const { return m_vrViewCenterActionId; }
    unsigned int GetVRViewUpActionId() const { return m_vrViewUpActionId; }
    unsigned int GetVRViewDownActionId() const { return m_vrViewDownActionId; }
+   bool IsUINavigationActionId(unsigned int id) const;
    bool IsPressed(int actionId) const;
    int GetWindowVirtualKeyForAction(unsigned int actionId) const;
+
+   void EnableRumbleFeedback(bool enable) { m_rumbleMode = enable; }
+   bool IsRumbleFeedbackEnabled() const { return m_rumbleMode; }
 
    ///// Input devices
    enum class DeviceType
@@ -139,15 +145,46 @@ public:
    public:
       virtual ~InputHandler() = default;
       virtual void Update() = 0;
-      virtual void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration) { }
+      virtual void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration, const bool kickLow, const bool kickHigh) { }
    };
 
    // Used by actions to report state changes and query if local processing should be performed
    bool OnInputActionStateChanged(InputAction* action);
    VPXAction MapActionIdToVPXAction(unsigned int id) const; // translate core action id -> stable plugin enum
 
-   // Speed: 0..1
+   // Speed: 0..1. Pulses are mixed, not replaced: the device plays the strongest active pulse per motor, and
+   // falls back to the next one when that runs out. The devices are driven by UpdateRumble.
    void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration);
+   void UpdateRumble(); // Called after each physics update and on input processing: sends the mix to the devices when it changed
+
+   // Rumble on flipper/ball contact, scaled by the relative normal velocity of the impact
+   void PlayFlipperContactRumble(const float normalImpactSpeed);
+   float GetFlipperContactRumbleStrength() const { return m_rumbleFlipperContact; }
+   void SetFlipperContactRumbleStrength(const float strength) { m_rumbleFlipperContact = strength; }
+
+   // The generic rumbles that used to be fixed-strength calls at their sites; the strength settings scale
+   // them, with 0 disabling the effect.
+   void PlayBumperRumble();
+   void PlaySlingshotRumble();
+   void PlayPlungerRumble(const float fireSpeed);
+   void PlayPlungerLaunchRumble(const float impact); // 0..1 from the closing speed of the tip and the ball
+   void PlayFlipperButtonRumble();
+   float GetBumperRumbleStrength() const { return m_rumbleBumper; }
+   void SetBumperRumbleStrength(const float strength) { m_rumbleBumper = strength; }
+   float GetSlingshotRumbleStrength() const { return m_rumbleSlingshot; }
+   void SetSlingshotRumbleStrength(const float strength) { m_rumbleSlingshot = strength; }
+   float GetPlungerRumbleStrength() const { return m_rumblePlunger; }
+   void SetPlungerRumbleStrength(const float strength) { m_rumblePlunger = strength; }
+   float GetFlipperButtonRumbleStrength() const { return m_rumbleFlipperButton; }
+   void SetFlipperButtonRumbleStrength(const float strength) { m_rumbleFlipperButton = strength; }
+   // Rumble on cabinet nudge, scaled by the cabinet acceleration (m/s^2). Called once per physics millisecond.
+   void PlayNudgeRumble(const Vertex2D& cabinetAcceleration);
+   // Rumble on ball/ball collision, scaled by the closing speed along the contact normal
+   void PlayBallBallRumble(const float impactSpeed);
+   float GetBallBallRumbleStrength() const { return m_rumbleBallBall; }
+   void SetBallBallRumbleStrength(const float strength) { m_rumbleBallBall = strength; }
+   float GetNudgeRumbleStrength() const { return m_rumbleNudge; }
+   void SetNudgeRumbleStrength(const float strength) { m_rumbleNudge = strength; }
 
    int m_leftFlipperLastChangePollDelay = 0;
 
@@ -161,6 +198,7 @@ public:
 
 private:
    class Player* m_player;
+   Settings& m_appSettings; // Input configuration is an application wide setting (not overridable per table)
 
    void CreateInputActions();
    InputAction* AddAction(std::unique_ptr<InputAction>&& action);
@@ -255,6 +293,42 @@ private:
    int m_autoStartDirectStateSlot = -1;
 
    int m_rumbleMode = 0; // 0=Off, 1=Table only, 2=Generic only, 3=Table with generic as fallback
+
+   // Active rumble pulses. Called from the physics thread (collisions, solenoids) and the OS thread (UpdateRumble
+   // once per frame), hence the mutex. Eight slots are plenty: pulses last 60..250 ms and rarely more than three overlap.
+   struct RumblePulse
+   {
+      float low = 0.f;
+      float high = 0.f;
+      uint32_t endMs = 0;
+   };
+   static constexpr int RUMBLE_PULSE_SLOTS = 8;
+   RumblePulse m_rumblePulses[RUMBLE_PULSE_SLOTS];
+   std::mutex m_rumbleMutex;
+   float m_rumbleSentLow = 0.f; // What the device is currently playing
+   float m_rumbleSentHigh = 0.f;
+   uint32_t m_rumbleSentEndMs = 0;
+   bool m_rumbleSentKickLow = false;
+   bool m_rumbleSentKickHigh = false;
+   // A new pulse at RUMBLE_KICK_MIN_LEVEL or above is flagged as a kick for RUMBLE_KICK_MS (see PlayRumble).
+   // Levels are the mix before any device mapping (see SDLInputHandler for the gamepad motor model).
+   static constexpr float RUMBLE_OFF_LEVEL = 0.01f; // below this a strength setting or a pulse level counts as off
+   static constexpr uint32_t RUMBLE_KICK_MS = 80;
+   static constexpr float RUMBLE_KICK_MIN_LEVEL = (0.6f - 0.3f) / 0.7f; // level from which a pulse gets the kick; pulses meant as a light touch stay below it
+   float m_rumbleMixLow = 0.f; // The mix before the kick, to tell a new hit from a kick ending
+   float m_rumbleMixHigh = 0.f;
+   uint32_t m_rumbleKickLowEndMs = 0;
+   uint32_t m_rumbleKickHighEndMs = 0;
+   void UpdateRumbleOutput(const uint32_t now); // m_rumbleMutex must be held
+   void SendRumble(const float low, const float high, const int ms_duration, const bool kickLow, const bool kickHigh);
+   float m_rumbleFlipperContact = 1.f; // Strength of the rumble played on flipper/ball contact, 0 disables it
+   float m_rumbleBumper = 1.f; // Strength of the bumper rumble, 0 disables it
+   float m_rumbleSlingshot = 1.f; // Strength of the slingshot rumble, 0 disables it
+   float m_rumblePlunger = 1.f; // Strength of the plunger rumble, 0 disables it
+   float m_rumbleFlipperButton = 0.5f; // Strength of the flipper solenoid pulse, 0 disables it
+   float m_rumbleNudge = 1.f; // Strength of the rumble played on cabinet nudge, 0 disables it
+   float m_rumbleBallBall = 1.f; // Strength of the rumble played when two balls collide, 0 disables it
+   int m_nudgeRumbleCooldownMs = 0; // Physics milliseconds left before another nudge rumble may be played
 
 #ifdef _WIN32
    HHOOK m_hKeyboardHook = nullptr;

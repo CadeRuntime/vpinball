@@ -248,6 +248,27 @@ vec3 InvGamma(const vec3 color) //!! use hardware support? D3DSAMP_SRGBTEXTURE
     return vec3(InvGamma(color.x),InvGamma(color.y),InvGamma(color.z));
 }
 
+// Linear sRGB, normalized so that 1.0 is 10000 nits, to the HDR10/BT.2100 encoding that a PQ
+// (SMPTE ST.2084) backbuffer expects: HDR10 (497,497,497) is D65 white at 80 nits, (1023,1023,1023)
+// is D65 white at 10000. fs_pp_tonemap.sc open codes the same steps for the scene, keep both in sync!
+vec3 LinearSRGBToPQBT2020(const vec3 color)
+{
+    const mat3 LINEAR_SRGB_TO_LINEAR_REC2020 = mtxFromRows3
+    (
+        vec3(0.6274, 0.0691, 0.0164),
+        vec3(0.3293, 0.9195, 0.0880),
+        vec3(0.0433, 0.0113, 0.8956)
+    );
+    const vec3 rec2020 = mul(color, LINEAR_SRGB_TO_LINEAR_REC2020);
+    const float m1 = (2610. / 4096.) / 4.;
+    const float m2 = (2523. / 4096.) * 128.;
+    const float c1 =  3424. / 4096.;
+    const float c2 = (2413. / 4096.) * 32.;
+    const float c3 = (2392. / 4096.) * 32.;
+    const vec3 cp = pow(rec2020, vec3_splat(m1));
+    return pow((c1 + c2 * cp) / (1.0 + c3 * cp), vec3_splat(m2));
+}
+
 vec3 InvToneMap(const vec3 color)
 {
     const float inv_2bh = 0.5/BURN_HIGHLIGHTS;
@@ -450,6 +471,26 @@ vec4 OverlayHDR (const vec4 cBase, const vec4 cBlend)
 
 	//cNew.a = 1.0;
 	return cNew;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// Sampling
+
+vec2 hash22(const vec2 uv)
+{
+	vec3 p3 = fract(uv.xyx * vec3(.1031, .1030, .0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.xx + p3.yz)*p3.zy);
+}
+
+float triangularPDF(const float r) // from -1..1, c=0 (with random no r=0..1)
+{
+	float p = 2.*r;
+	const bool b = (p > 1.);
+	if (b)
+		p = 2.-p;
+	p = 1.-sqrt(p); //!! handle 0 explicitly due to compiler doing 1/inversesqrt(0)? but might be still 0 according to spec, as rsqrt(0) = inf and 1/inf = 0, but values close to 0 could be screwed up still
+	return b ? p : -p;
 }
 
 //vec3 sphere_sample(const vec2 t)

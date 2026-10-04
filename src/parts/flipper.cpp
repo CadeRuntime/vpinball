@@ -4,6 +4,7 @@
 #include "flipper.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/flipperBase.h"
 #include "parts/Collection.h"
 #include "renderer/IndexBuffer.h"
@@ -11,8 +12,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 static constexpr float vertsTipBottomf[13 * 3] =
@@ -111,7 +110,7 @@ HRESULT Flipper::Init(const float x, const float y, const bool fromMouseClick, c
    return S_OK;
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsFlipper_##prop() : Settings::GetDefaultPropsFlipper_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsFlipper_##prop() : Settings::GetDefaultPropsFlipper_##prop##_Default()
 void Flipper::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_StartAngle, StartAngle);
@@ -155,7 +154,7 @@ void Flipper::SetDefaultPhysics(const bool fromMouseClick)
 
 void Flipper::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsFlipper_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsFlipper_##prop(field, false)
    LinkProp(m_d.m_scatter, Scatter);
    LinkProp(m_d.m_strength, Strength);
    LinkProp(m_d.m_torqueDamping, EOSTorque);
@@ -196,43 +195,43 @@ void Flipper::UpdatePhysicsSettings()
    {
       const int idx = m_d.m_OverridePhysics ? (m_d.m_OverridePhysics-1) : (m_ptable->m_overridePhysics-1);
 
-      m_d.m_OverrideMass = g_app->m_settings.GetPlayer_FlipperPhysicsMass(idx);
+      m_d.m_OverrideMass = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsMass(idx);
       if (m_d.m_OverrideMass < 0.0f)
          m_d.m_OverrideMass = m_d.m_mass;
 
-      m_d.m_OverrideStrength = g_app->m_settings.GetPlayer_FlipperPhysicsStrength(idx);
+      m_d.m_OverrideStrength = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsStrength(idx);
       if (m_d.m_OverrideStrength < 0.0f)
          m_d.m_OverrideStrength = m_d.m_strength;
 
-      m_d.m_OverrideElasticity = g_app->m_settings.GetPlayer_FlipperPhysicsElasticity(idx);
+      m_d.m_OverrideElasticity = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsElasticity(idx);
       if (m_d.m_OverrideElasticity < 0.0f)
          m_d.m_OverrideElasticity = m_d.m_elasticity;
 
-      m_d.m_OverrideScatterAngle = g_app->m_settings.GetPlayer_FlipperPhysicsScatter(idx);
+      m_d.m_OverrideScatterAngle = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsScatter(idx);
       if (m_d.m_OverrideScatterAngle < 0.0f)
          m_d.m_OverrideScatterAngle = m_d.m_scatter;
 
-      m_d.m_OverrideReturnStrength = g_app->m_settings.GetPlayer_FlipperPhysicsReturnStrength(idx);
+      m_d.m_OverrideReturnStrength = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsReturnStrength(idx);
       if (m_d.m_OverrideReturnStrength < 0.0f)
          m_d.m_OverrideReturnStrength = m_d.m_return;
 
-      m_d.m_OverrideElasticityFalloff = g_app->m_settings.GetPlayer_FlipperPhysicsElasticityFalloff(idx);
+      m_d.m_OverrideElasticityFalloff = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsElasticityFalloff(idx);
       if (m_d.m_OverrideElasticityFalloff < 0.0f)
          m_d.m_OverrideElasticityFalloff = m_d.m_elasticityFalloff;
 
-      m_d.m_OverrideFriction = g_app->m_settings.GetPlayer_FlipperPhysicsFriction(idx);
+      m_d.m_OverrideFriction = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsFriction(idx);
       if (m_d.m_OverrideFriction < 0.0f)
          m_d.m_OverrideFriction = m_d.m_friction;
 
-      m_d.m_OverrideCoilRampUp = g_app->m_settings.GetPlayer_FlipperPhysicsCoilRampUp(idx);
+      m_d.m_OverrideCoilRampUp = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsCoilRampUp(idx);
       if (m_d.m_OverrideCoilRampUp < 0.0f)
          m_d.m_OverrideCoilRampUp = m_d.m_rampUp;
 
-      m_d.m_OverrideTorqueDamping = g_app->m_settings.GetPlayer_FlipperPhysicsEOSTorque(idx);
+      m_d.m_OverrideTorqueDamping = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsEOSTorque(idx);
       if (m_d.m_OverrideTorqueDamping < 0.0f)
          m_d.m_OverrideTorqueDamping = m_d.m_torqueDamping;
 
-      m_d.m_OverrideTorqueDampingAngle = g_app->m_settings.GetPlayer_FlipperPhysicsEOSTorqueAngle(idx);
+      m_d.m_OverrideTorqueDampingAngle = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsEOSTorqueAngle(idx);
       if (m_d.m_OverrideTorqueDampingAngle < 0.0f)
          m_d.m_OverrideTorqueDampingAngle = m_d.m_torqueDampingAngle;
    }
@@ -269,7 +268,7 @@ void Flipper::PhysicRelease(PhysicsEngine* physics, const bool isUI)
 #pragma endregion
 
 
-void Flipper::SetVertices(const float basex, const float basey, const float angle, Vertex2D * const pvEndCenter, Vertex2D * const rgvTangents, const float baseradius, const float endradius) const
+void Flipper::GetVertices(const float basex, const float basey, const float angle, const float baseradius, const float endradius, Vertex2D &vEndCenter, Vertex2D (&rgvTangents)[4]) const
 {
    const float fradius = m_d.m_FlipperRadius;
    const float fa = asinf((baseradius - endradius) / fradius); //face to centerline angle (center to center)
@@ -277,9 +276,9 @@ void Flipper::SetVertices(const float basex, const float basey, const float angl
    const float faceNormOffset = (float)(M_PI / 2.0) - fa; //angle of normal when flipper center line at angle zero	
 
    const float endx = basex + fradius*sinf(angle); //place end radius center
-   pvEndCenter->x = endx;
+   vEndCenter.x = endx;
    const float endy = basey - fradius*cosf(angle);
-   pvEndCenter->y = endy;
+   vEndCenter.y = endy;
 
    const float faceNormx1 =  sinf(angle - faceNormOffset); // normals to new face positions
    const float faceNormy1 = -cosf(angle - faceNormOffset);
@@ -299,201 +298,15 @@ void Flipper::SetVertices(const float basex, const float basey, const float angl
    rgvTangents[2].y = endy + endradius*faceNormy2;
 }
 
-void Flipper::UIRenderPass1(Sur * const psur)
+void Flipper::Translate(const Vertex2D &offset)
 {
-   const float rubBaseRadius = m_d.m_BaseRadius - m_d.m_rubberthickness;
-   const float rubEndRadius = m_d.m_EndRadius - m_d.m_rubberthickness;
-   const float anglerad = ANGTORAD(m_d.m_StartAngle);
-   //const float anglerad2 = ANGTORAD(m_d.m_EndAngle);
-
-   m_d.m_FlipperRadius = m_d.m_FlipperRadiusMax;
-
-   psur->SetFillColor(m_ptable->RenderSolid() ? m_vpinball->m_fillColor : -1);
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 0);
-
-   Vertex2D vendcenter;
-   Vertex2D rgv[4];
-   SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-   psur->SetObject(this);
-
-   psur->Polygon(rgv, 4);
-   psur->Ellipse(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius);
-   psur->Ellipse(vendcenter.x, vendcenter.y, m_d.m_EndRadius);
-
-   // rubber
-   SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, rubBaseRadius, rubEndRadius);
-
-   psur->SetObject(this);
-   psur->SetLineColor(RGB(128, 0, 0), false, 0);
-
-   psur->Polygon(rgv, 4);
-   psur->Ellipse(m_d.m_Center.x, m_d.m_Center.y, rubBaseRadius);
-   psur->Ellipse(vendcenter.x, vendcenter.y, rubEndRadius);
-}
-
-void Flipper::UIRenderPass2(Sur * const psur)
-{
-   const float anglerad = ANGTORAD(m_d.m_StartAngle);
-   const float anglerad2 = ANGTORAD(m_d.m_EndAngle);
-   const float rubBaseRadius = m_d.m_BaseRadius - m_d.m_rubberthickness;
-   const float rubEndRadius = m_d.m_EndRadius - m_d.m_rubberthickness;
-
-   Vertex2D vendcenter;
-   Vertex2D rgv[4];
-   SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-   psur->SetFillColor(m_ptable->RenderSolid() ? m_vpinball->m_fillColor : -1);
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 0);
-
-   psur->SetObject(this);
-
-   psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-   psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-   psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-   psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-   //rubber
-   SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, rubBaseRadius, rubEndRadius);
-
-   psur->SetFillColor(m_ptable->RenderSolid() ? m_vpinball->m_fillColor : -1);
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 0);
-
-   psur->SetObject(this);
-
-   psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-   psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-   psur->Arc(m_d.m_Center.x, m_d.m_Center.y, rubBaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-   psur->Arc(vendcenter.x, vendcenter.y, rubEndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-
-   //draw the flipper up position
-   SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad2, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-   psur->SetLineColor(RGB(128, 128, 128), true, 0);
-
-   psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-   psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-   psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-   psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-   rgv[0].x = m_d.m_Center.x + sinf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-   rgv[0].y = m_d.m_Center.y - cosf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-   rgv[1].x = m_d.m_Center.x + sinf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-   rgv[1].y = m_d.m_Center.y - cosf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-   if (m_d.m_EndAngle < m_d.m_StartAngle)
-      psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-      , rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-   else psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-      , rgv[1].x, rgv[1].y, rgv[0].x, rgv[0].y);
-
-   if (m_d.m_FlipperRadiusMin > 0.f && m_d.m_FlipperRadiusMax > m_d.m_FlipperRadiusMin)
-   {
-      m_d.m_FlipperRadius = (m_ptable->m_globalDifficulty > 0.f) ? m_d.m_FlipperRadiusMin : m_d.m_FlipperRadiusMax;
-      m_d.m_FlipperRadius = max(m_d.m_FlipperRadius, m_d.m_BaseRadius - m_d.m_EndRadius + 0.05f);
-   }
-   else return;
-
-   if (m_d.m_FlipperRadius != m_d.m_FlipperRadiusMax)
-   {
-      SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-      psur->SetObject(this);
-
-      psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-      psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-      psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-      SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad2, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-      psur->SetLineColor(RGB(128, 128, 128), true, 0);
-
-      psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-      psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-      psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-      rgv[0].x = m_d.m_Center.x + sinf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-      rgv[0].y = m_d.m_Center.y - cosf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-      rgv[1].x = m_d.m_Center.x + sinf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-      rgv[1].y = m_d.m_Center.y - cosf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-      if (m_d.m_EndAngle < m_d.m_StartAngle)
-         psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-         , rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      else psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-         , rgv[1].x, rgv[1].y, rgv[0].x, rgv[0].y);
-
-      m_d.m_FlipperRadius = m_d.m_FlipperRadiusMax - (m_d.m_FlipperRadiusMax - m_d.m_FlipperRadiusMin) * m_ptable->m_globalDifficulty;
-      m_d.m_FlipperRadius = max(m_d.m_FlipperRadius, m_d.m_BaseRadius - m_d.m_EndRadius + 0.05f);
-
-      SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-      psur->SetObject(this);
-
-      psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-      psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-      psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-      SetVertices(m_d.m_Center.x, m_d.m_Center.y, anglerad2, &vendcenter, rgv, m_d.m_BaseRadius, m_d.m_EndRadius);
-
-      psur->SetLineColor(RGB(128, 128, 128), true, 0);
-
-      psur->Line(rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      psur->Line(rgv[2].x, rgv[2].y, rgv[3].x, rgv[3].y);
-
-      psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_BaseRadius, rgv[0].x, rgv[0].y, rgv[3].x, rgv[3].y);
-      psur->Arc(vendcenter.x, vendcenter.y, m_d.m_EndRadius, rgv[2].x, rgv[2].y, rgv[1].x, rgv[1].y);
-
-      rgv[0].x = m_d.m_Center.x + sinf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-      rgv[0].y = m_d.m_Center.y - cosf(anglerad) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-      rgv[1].x = m_d.m_Center.x + sinf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-      rgv[1].y = m_d.m_Center.y - cosf(anglerad2) * (m_d.m_FlipperRadius + m_d.m_EndRadius);
-
-      if (m_d.m_EndAngle < m_d.m_StartAngle)
-         psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-         , rgv[0].x, rgv[0].y, rgv[1].x, rgv[1].y);
-      else psur->Arc(m_d.m_Center.x, m_d.m_Center.y, m_d.m_FlipperRadius + m_d.m_EndRadius
-         , rgv[1].x, rgv[1].y, rgv[0].x, rgv[0].y);
-   }
-
-   m_d.m_FlipperRadius = m_d.m_FlipperRadiusMax;
-}
-
-void Flipper::SetObjectPos()
-{
-    m_vpinball->SetObjectPosCur(m_d.m_Center.x, m_d.m_Center.y);
-}
-
-void Flipper::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_Center.x += dx;
-   m_d.m_Center.y += dy;
+   m_d.m_Center.x += offset.x;
+   m_d.m_Center.y += offset.y;
 }
 
 Vertex2D Flipper::GetCenter() const
 {
    return m_d.m_Center;
-}
-
-void Flipper::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_Center = pv;
 }
 
 STDMETHODIMP Flipper::InterfaceSupportsErrorInfo(REFIID riid)
@@ -517,6 +330,8 @@ STDMETHODIMP Flipper::RotateToEnd() // power stroke to hit ball, key/button down
    if (m_phitflipper)
    {
       m_phitflipper->m_flipperMover.m_enableRotateEvent = 1;
+      if (!m_phitflipper->m_flipperMover.m_solState)
+         g_pplayer->m_pininput.PlayFlipperButtonRumble(); // The solenoid energizes: this is what a player feels in the cabinet, not the button
       m_phitflipper->m_flipperMover.SetSolenoidState(true);
    }
 
@@ -536,7 +351,7 @@ STDMETHODIMP Flipper::RotateToStart() // return to park, key/button up/released
 
 void Flipper::ExportMesh(ObjLoader& loader)
 {
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
 
    Matrix3D matTrafo = Matrix3D::MatrixIdentity();
    matTrafo._41 = m_d.m_Center.x;
@@ -849,7 +664,7 @@ void Flipper::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteInt(FID(TMIN), m_timerInterval);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
    writer.WriteString(FID(MATR), m_d.m_szMaterial);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteString(FID(RUMA), m_d.m_szRubberMaterial);
    writer.WriteInt(FID(RTHK), (int)m_d.m_rubberthickness); //!! deprecated, remove
    writer.WriteFloat(FID(RTHF), m_d.m_rubberthickness);
@@ -899,7 +714,7 @@ void Flipper::Load(IObjectReader& reader)
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
          case FID(MATR): m_d.m_szMaterial = reader.AsString(); break;
          case FID(RUMA): m_d.m_szRubberMaterial = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(RTHK): //!! deprecated, remove
          {
             int rt;
@@ -1300,6 +1115,7 @@ STDMETHODIMP Flipper::get_Friction(float *pVal)
 
 STDMETHODIMP Flipper::put_Friction(float newVal)
 {
+   newVal = max(newVal, 0.f); // Friction can not be negative, but may exceed 1
    if (m_phitflipper)
       m_phitflipper->SetFriction(newVal);
    else

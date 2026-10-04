@@ -189,8 +189,8 @@ Variables
 
 DMDWidth(int) - set width of DMD
 DMDHeight(int) - set height of DMD
-DMDPixels(VARIANT) - set array of (byte-)values (0..100), size needs to match the previously set width and height
-DMDColoredPixels(VARIANT) - set array of (long-)values (0..255,0..255,0..255), size needs to match the previously set width and height
+DMDPixels(VARIANT) - set array of (byte-)values (0..100), size needs to match the previously set width and height (in gamma space)
+DMDColoredPixels(VARIANT) - set array of (long-)values (0..255,0..255,0..255, in sRGB), size needs to match the previously set width and height
                             example: Dim myDMDdata
                                      myDMDdata = Array(CLng(0),CLng(&hFFFFFF),CLng(&hFFFFFF),CLng(0)) 'set 4 fully black/white pixels
                                      DMDWidth = 2
@@ -944,6 +944,7 @@ IntensityScale(float) - sets the flashers brightness/emission scale, so that one
 Color - defines the color of the element in the editor. If you don't want to colorize the image set the color to blank white (RGB 255,255,255)
 Visible(bool) - shows/hides the flasher
 AddBlend(bool) - use additive alpha blending instead of classical alpha blending
+AddBlendMode(int) - superset of AddBlend: 0=off, 1=additive, 2=additive; but darkening what is behind the flasher instead of brightening it, to fake a Fresnel like reflection on glass (ModulateVsAdd steers how much is absorbed)
 ImageAlignment
 ModulateVsAdd(float) - blends between modulating and additive when bulb is enabled (0..1)
 DMD(bool) - enable DMD image via script connection

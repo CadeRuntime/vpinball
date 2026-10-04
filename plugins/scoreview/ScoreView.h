@@ -84,7 +84,7 @@ private:
    };
    enum VisualType
    {
-      DMD, SegDisplay, Image
+      DMD, Screen, SegDisplay, Image
    };
    struct Visual
    {
@@ -105,12 +105,16 @@ private:
       VPXSegDisplayHint segFamilyHint;
       int nElements;
       std::vector<float> xOffsets;
-      // For DMD displays
-      ivec2 dmdSize;
+      // For DMD & screen displays
+      ivec2 displaySize;
       // Live data (not serialized)
       VPXTexture glass;
       VPXTexture dmdTex;
       int liveStyle;
+      // Identity of the frame last uploaded to dmdTex, to avoid a full copy plus a GPU re-upload every frame
+      DisplaySrcId uploadedSrc;
+      unsigned int uploadedFrameId;
+      bool hasUploadedFrame;
    };
    struct Layout
    {
@@ -128,7 +132,7 @@ private:
    bool m_invalidBestLayout = true;
    Layout* m_bestLayout = nullptr;
 
-   ResURIResolver m_resURIResolver;
+   PinballPlugin::ResURIResolver m_resURIResolver;
 
    void LoadGlass(Visual& visual);
    ankerl::unordered_dense::map<string, VPXTexture> m_images;

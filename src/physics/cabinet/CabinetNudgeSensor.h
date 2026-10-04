@@ -69,7 +69,7 @@ private:
       }
       PhysicsSensor m_sensor;
       uint64_t m_lastTimestampNs = 0;
-      int64_t m_clockDeltaUs = 0;
+      int64_t m_clockDeltaNs = 0;
       int m_restCount = 0;
       bool m_forceRest = false;
       float m_lastValue = 0.f;
@@ -90,14 +90,14 @@ private:
    ExponentialMovingAverage m_emaX;
    ExponentialMovingAverage m_emaY;
 
-   uint64_t m_timeUs = 0;
+   uint64_t m_timeNs = 0;
 
    std::unique_ptr<NudgeIntentHandler> m_nudgeIntentHandler;
    CabinetPhysics m_cabinetModel;
 
    Vertex2D m_cabinetAcceleration;
 
-   float m_cabinetMass = 1.f;
+   float m_cabinetMass = 113.f;
 
    float m_nudgeStrengthScale = 1.f;
 

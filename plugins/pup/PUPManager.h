@@ -2,10 +2,9 @@
 
 #pragma once
 
-#include "DOFStreamEvent.h"
-
 #include "common.h"
 
+#include "plugins/B2SPluginEventStream.h"
 #include "plugins/ControllerPlugin.h"
 #include "plugins/VPXPlugin.h"
 
@@ -91,10 +90,16 @@ public:
    const MsgPluginAPI* GetMsgAPI() const { return m_msgApi; }
    const std::filesystem::path& GetRootPath() const { return m_szRootPath; }
 
+   // Locate the pupvideos folder for a game id (format: ns::rom), searching
+   // each base under an optional intermediate namespace folder first --
+   // base/ns/rom -- then directly -- base/rom.
+   std::filesystem::path FindGameDir(const std::string_view& gameNs, const std::string_view& gameId) const;
+   void SetGameDir(const ControllerDef& controller);
    void SetGameDir(const string& szRomName);
+   void LoadConfig(const ControllerDef& controller);
    void LoadConfig(const string& szRomName);
    void Unload();
-   bool IsRunning() const { return m_dofEventStream != nullptr; }
+   bool IsRunning() const { return m_B2SPluginEventStream != nullptr; }
    const std::filesystem::path& GetPath() const { return m_szPath; }
    bool AddScreen(std::shared_ptr<PUPScreen> pScreen);
    bool AddScreen(int screenNum);
@@ -110,6 +115,8 @@ public:
    void Unduck();
 
 private:
+   void ApplyGameDir(const std::filesystem::path& path, const std::string_view& gameId, const ControllerDef& controller);
+   ControllerDef SelectControllerForGame(const std::string_view& gameKey);
    void UnloadFonts();
    void LoadFonts();
    void LoadPlaylists();
@@ -121,6 +128,9 @@ private:
    std::filesystem::path m_szRootPath;
    std::filesystem::path m_szPath;
    string m_szRomName;
+   // Controller the event stream is bound to, m_controllerGameId backing its gameId pointer
+   ControllerDef m_controller {};
+   string m_controllerGameId;
    vector<std::shared_ptr<PUPScreen>> m_screenOrder;
    ankerl::unordered_dense::map<int, std::shared_ptr<PUPScreen>> m_screenMap;
    vector<std::unique_ptr<PUPFont>> m_fonts;
@@ -133,17 +143,28 @@ private:
    const VPXPluginAPI* m_vpxApi = nullptr;
 
    std::unique_ptr<PUPDMD::DMD> m_dmd;
+   // Triggers in the loaded pack that only a DMD frame match can fire, and what
+   // is needed to report once that nothing can fire them.
+   unsigned int m_dmdTriggerCount = 0;
+   bool m_dmdTriggerDataLoaded = false;
+   bool m_reportedMissingIdentification = false;
    std::array<uint8_t, 128 * 32> m_idFrame;
    int ProcessDmdFrame(const DisplaySrcId& src, const uint8_t* frame);
    
-   unsigned int m_getAuxRendererId = 0;
-   unsigned int m_onAuxRendererChgId = 0;
-   unsigned int m_getVpxApiId = 0;
+   const unsigned int m_getVpxApiId;
+
+   const unsigned int m_getAuxRendererId;
+   const unsigned int m_onAuxRendererChgId;
    static int Render(VPXRenderContext2D* const renderCtx, void* context);
    static void OnGetRenderer(const unsigned int eventId, void* context, void* msgData);
 
+   const unsigned int m_getAudioSrcId;
+   const unsigned int m_onAudioSrcChangedId;
+   const AudioSrcId m_audioSrcDef;
+   static void OnGetAudioSrc(const unsigned int msgId, void* userData, void* msgData);
+
    std::mutex m_eventMutex;
-   std::unique_ptr<DOFEventStream> m_dofEventStream;
+   std::unique_ptr<B2SPluginEventStream> m_B2SPluginEventStream;
 
    int m_duckMasterScreen = -1;
    ankerl::unordered_dense::map<int, float> m_preDuckVolumes;

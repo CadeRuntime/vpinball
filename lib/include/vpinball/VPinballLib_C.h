@@ -28,10 +28,9 @@ typedef enum {
    VPINBALL_EVENT_INIT_COMPLETE,
    VPINBALL_EVENT_EXTRACT_SCRIPT,
    VPINBALL_EVENT_LOADING,
-   VPINBALL_EVENT_PRERENDERING,
-   VPINBALL_EVENT_PLAYER_STARTED,
-   VPINBALL_EVENT_RUMBLE,
+   VPINBALL_EVENT_PLAYER_READY,
    VPINBALL_EVENT_PLAYER_CLOSED,
+   VPINBALL_EVENT_PLAYER_FAILED,
    VPINBALL_EVENT_WEB_SERVER,
    VPINBALL_EVENT_COMMAND
 } VPINBALL_EVENT;
@@ -46,14 +45,14 @@ typedef enum {
 // Callbacks
 
 typedef void (*VPinballEventCallback)(VPINBALL_EVENT, const char*);
+typedef void (*VPinballRumbleCallback)(float lowFrequencySpeed, float highFrequencySpeed, unsigned int durationMs);
 typedef void (*VPinballZipCallback)(int current, int total, const char* filename);
 
 // Functions
 
 VPINBALLAPI const char* VPinballGetVersionStringFull();
-VPINBALLAPI void VPinballInit(VPinballEventCallback callback);
+VPINBALLAPI void VPinballInit(VPinballEventCallback eventCallback, VPinballRumbleCallback rumbleCallback);
 VPINBALLAPI void VPinballLog(VPINBALL_LOG_LEVEL level, const char* message);
-VPINBALLAPI void VPinballResetLog();
 
 // Settings
 
@@ -77,9 +76,8 @@ VPINBALLAPI const char* VPinballGetPath(VPINBALL_PATH pathType);
 
 // Player
 
-VPINBALLAPI VPINBALL_STATUS VPinballLoadTable(const char* pPath);
 VPINBALLAPI VPINBALL_STATUS VPinballExtractTableScript(const char* pPath);
-VPINBALLAPI VPINBALL_STATUS VPinballPlay();
+VPINBALLAPI VPINBALL_STATUS VPinballPlay(const char* pPath);
 VPINBALLAPI VPINBALL_STATUS VPinballStop();
 
 // Zip

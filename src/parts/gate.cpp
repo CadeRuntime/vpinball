@@ -4,6 +4,7 @@
 #include "gate.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/gateBracketMesh.h"
 #include "meshes/gateLongPlateMesh.h"
 #include "meshes/gatePlateMesh.h"
@@ -15,8 +16,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 Gate::~Gate()
@@ -32,7 +31,7 @@ Gate *Gate::CopyForPlay() const
 
 void Gate::SetGateType(GateType type)
 {
-    switch (m_d.m_type)
+    switch (type)
     {
     case GateWireW:
     {
@@ -72,14 +71,6 @@ void Gate::SetGateType(GateType type)
     }
 }
 
-void Gate::UpdateStatusBarInfo()
-{
-   if (!m_vpinball)
-      return;
-   const string tbuf = std::format("Length: {:.3f} | Height: {:.3f}", m_vpinball->ConvertToUnit(m_d.m_length), m_vpinball->ConvertToUnit(m_d.m_height));
-   m_vpinball->SetStatusBarUnitInfo(tbuf, true);
-}
-
 HRESULT Gate::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
 {
    SetDefaults(fromMouseClick);
@@ -88,7 +79,7 @@ HRESULT Gate::Init(const float x, const float y, const bool fromMouseClick, cons
    return S_OK;
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsGate_##prop() : Settings::GetDefaultPropsGate_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsGate_##prop() : Settings::GetDefaultPropsGate_##prop##_Default()
 void Gate::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_length, Length);
@@ -120,7 +111,7 @@ void Gate::SetDefaultPhysics(const bool fromMouseClick)
 
 void Gate::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsGate_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsGate_##prop(field, false)
    LinkProp(m_d.m_length, Length);
    LinkProp(m_d.m_height, Height);
    LinkProp(m_d.m_rotation, Rotation);
@@ -188,101 +179,6 @@ void Gate::SetCloseAngle(const float angle)
       m_d.m_angleMin = newVal;
 }
 
-void Gate::UIRenderPass1(Sur * const psur)
-{
-}
-
-void Gate::UIRenderPass2(Sur * const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 2);
-   psur->SetObject(this);
-
-   const float halflength = m_d.m_length * 0.5f;
-   const float len1 = halflength *0.5f;
-   const float len2 = len1 * 0.5f;
-   Vertex2D tmp;
-
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, halflength);
-
-   {
-      const float radangle = ANGTORAD(m_d.m_rotation);
-      {
-         const float sn = sinf(radangle);
-         const float cs = cosf(radangle);
-
-         psur->Line(m_d.m_vCenter.x + cs*halflength, m_d.m_vCenter.y + sn*halflength,
-            m_d.m_vCenter.x - cs*halflength, m_d.m_vCenter.y - sn*halflength);
-
-         // Draw Arrow
-         psur->SetLineColor(RGB(0, 0, 0), false, 1);
-
-         tmp.x = m_d.m_vCenter.x + sn*len1;
-         tmp.y = m_d.m_vCenter.y - cs*len1;
-
-         psur->Line(tmp.x, tmp.y,
-            m_d.m_vCenter.x, m_d.m_vCenter.y);
-      }
-
-   {
-      const float arrowang = radangle + 0.6f;
-      const float sn = sinf(arrowang);
-      const float cs = cosf(arrowang);
-
-      psur->Line(tmp.x, tmp.y,
-         m_d.m_vCenter.x + sn*len2, m_d.m_vCenter.y - cs*len2);
-   }
-   }
-
-   {
-      const float arrowang = ANGTORAD(m_d.m_rotation) - 0.6f;
-      const float sn = sinf(arrowang);
-      const float cs = cosf(arrowang);
-
-      psur->Line(tmp.x, tmp.y,
-         m_d.m_vCenter.x + sn*len2, m_d.m_vCenter.y - cs*len2);
-
-   }
-
-   if (m_d.m_twoWay)
-   {
-      const float radangle = ANGTORAD(m_d.m_rotation - 180.f);
-      {
-         const float sn = sinf(radangle);
-         const float cs = cosf(radangle);
-
-         // Draw Arrow
-         psur->SetLineColor(RGB(0, 0, 0), false, 1);
-
-         tmp.x = m_d.m_vCenter.x + sn*len1;
-         tmp.y = m_d.m_vCenter.y - cs*len1;
-
-         psur->Line(tmp.x, tmp.y,
-            m_d.m_vCenter.x, m_d.m_vCenter.y);
-      }
-
-       {
-          const float arrowang = radangle + 0.6f;
-          const float sn = sinf(arrowang);
-          const float cs = cosf(arrowang);
-
-          psur->Line(tmp.x, tmp.y,
-             m_d.m_vCenter.x + sn*len2, m_d.m_vCenter.y - cs*len2);
-       }
-
-       const float arrowang = radangle - 0.6f;
-       const float sn = sinf(arrowang);
-       const float cs = cosf(arrowang);
-
-       psur->Line(tmp.x, tmp.y,
-          m_d.m_vCenter.x + sn*len2, m_d.m_vCenter.y - cs*len2);
-   }
-}
-
-void Gate::RenderBlueprint(Sur *psur, const bool solid)
-{
-}
-
 
 #pragma region Physics
 
@@ -293,11 +189,28 @@ void Gate::PhysicSetup(PhysicsEngine* physics, const bool isUI)
    if (!isUI && GetPartGroup() != nullptr && GetPartGroup()->GetReferenceSpace() != PartGroupData::SpaceReference::SR_PLAYFIELD)
       return;
 
-   /* if (isUI)
+   if (isUI)
    {
-      // FIXME implement UI picking
+      // Editor picking proxy: the wire/plate hangs below the pivot axis, a thin line in top view, so use a flat quad
+      // covering the axis and the brackets at its ends, placed at the pivot height. The physics colliders are not suited
+      // for picking as they span a full ball height, which would wrongly occlude parts behind the gate.
+      const float height = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
+      const float radangle = ANGTORAD(m_d.m_rotation);
+      const Vertex2D tangent(cosf(radangle), sinf(radangle));
+      const Vertex2D normal(-tangent.y, tangent.x);
+      const float halfLength = m_d.m_length * 0.55f; // extend a bit over the axis ends to include the brackets
+      const float halfWidth = m_d.m_length * 0.1f;
+      Vertex3Ds *const rgv3D = new Vertex3Ds[4]; // CCW winding for upward facing normal
+      for (int i = 0; i < 4; i++)
+      {
+         const Vertex2D p = m_d.m_vCenter + tangent * ((i >= 2) ? halfLength : -halfLength) + normal * ((i == 1 || i == 2) ? halfWidth : -halfWidth);
+         rgv3D[i] = Vertex3Ds(p.x, p.y, height + m_d.m_height);
+      }
+      Hit3DPoly *const ph3dpoly = new Hit3DPoly(this, rgv3D, 4);
+      ph3dpoly->m_ObjType = eGate;
+      physics->AddCollider(ph3dpoly, isUI);
    }
-   else*/
+   else
    {
       const float height = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
       const float h = m_d.m_height; // relative height of the gate
@@ -422,11 +335,11 @@ void Gate::Render(const unsigned int renderMask)
    || (isReflectionPass && !m_d.m_reflectionEnabled))
       return;
 
-   if (m_phitgate->m_gateMover.m_angle != m_vertexbuffer_angle)
+   if (float angle = m_phitgate ? m_phitgate->m_gateMover.m_angle : 0.f; angle != m_vertexbuffer_angle)
    {
-      m_vertexbuffer_angle = m_phitgate->m_gateMover.m_angle;
+      m_vertexbuffer_angle = angle;
 
-      const Matrix3D fullMatrix = Matrix3D::MatrixRotateX(m_d.m_twoWay ? m_phitgate->m_gateMover.m_angle : -m_phitgate->m_gateMover.m_angle)
+      const Matrix3D fullMatrix = Matrix3D::MatrixRotateX(m_d.m_twoWay ? angle : -angle)
                                 * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotation));
       const Matrix3D vertMatrix = (fullMatrix
                                  * Matrix3D::MatrixScale(m_d.m_length, m_d.m_length, m_d.m_length))
@@ -491,7 +404,7 @@ void Gate::Render(const unsigned int renderMask)
 
 void Gate::ExportMesh(ObjLoader& loader)
 {
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
    m_baseHeight = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
 
    if (m_d.m_showBracket)
@@ -538,25 +451,15 @@ void Gate::GenerateWireMesh(Vertex3D_NoTex2 *buf) const
    world.TransformVertices(m_vertices, buf, m_numVertices);
 }
 
-void Gate::SetObjectPos()
+void Gate::Translate(const Vertex2D &offset)
 {
-   m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
-}
-
-void Gate::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_vCenter.x += dx;
-   m_d.m_vCenter.y += dy;
+   m_d.m_vCenter.x += offset.x;
+   m_d.m_vCenter.y += offset.y;
 }
 
 Vertex2D Gate::GetCenter() const
 {
    return m_d.m_vCenter;
-}
-
-void Gate::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_vCenter = pv;
 }
 
 void Gate::Save(IObjectWriter& writer, const bool saveForUndo)
@@ -578,7 +481,7 @@ void Gate::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteFloat(FID(AFRC), m_d.m_damping);
    writer.WriteFloat(FID(GGFC), m_d.m_gravityfactor);
    writer.WriteBool(FID(GVSB), m_d.m_visible);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteBool(FID(TWWA), m_d.m_twoWay);
    writer.WriteBool(FID(REEN), m_d.m_reflectionEnabled);
    writer.WriteInt(FID(GATY), m_d.m_type);
@@ -616,7 +519,7 @@ void Gate::Load(IObjectReader& reader)
          case FID(GVSB): m_d.m_visible = reader.AsBool(); break;
          case FID(REEN): m_d.m_reflectionEnabled = reader.AsBool(); break;
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(ELAS): m_d.m_elasticity = reader.AsFloat(); break;
          case FID(GAMA): m_d.m_angleMax = reader.AsFloat(); break;
          case FID(GAMI): m_d.m_angleMin = reader.AsFloat(); break;
@@ -876,14 +779,14 @@ STDMETHODIMP Gate::Move(int dir, float speed, float angle)
       m_plineseg->m_enabled = false;
 
    if (speed <= 0.0f)
-      speed = 0.2f;                     // default gate angle speed
+      speed = 0.2f;                   // default gate angle speed
    else
-      speed *= (float)(M_PI / 180.0);   // convert to radians
+      speed *= (float)(M_PI / 180.0); // convert to radians
 
    if (dir == 0 || angle != 0) // if no direction or non-zero angle
    {
       angle = clamp(angle * (float)(M_PI / 180.0), m_d.m_angleMin, m_d.m_angleMax);
-      const float da = angle - m_phitgate->m_gateMover.m_angle; //calc true direction
+      const float da = angle - m_phitgate->m_gateMover.m_angle; // calc true direction
       if (da > 1.0e-5f)
          dir = +1;
       else if (da < -1.0e-5f)
@@ -891,7 +794,7 @@ STDMETHODIMP Gate::Move(int dir, float speed, float angle)
       else
       {
          dir = 0;                                  // do nothing
-         m_phitgate->m_gateMover.m_anglespeed = 0; //stop 
+         m_phitgate->m_gateMover.m_anglespeed = 0; // stop
       }
    }
    else
@@ -925,7 +828,7 @@ STDMETHODIMP Gate::get_Friction(float *pVal)
 
 STDMETHODIMP Gate::put_Friction(float newVal)
 {
-   m_d.m_friction = saturate(newVal);
+   m_d.m_friction = max(newVal, 0.f); // Friction can not be negative, but may exceed 1
    return S_OK;
 }
 

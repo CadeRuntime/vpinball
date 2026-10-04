@@ -6,6 +6,7 @@
 
 #include "parts/Collection.h"
 #include "parts/pintable.h"
+#include "physics/hitable.h"
 #include "renderer/Renderable.h"
 #include "physics/hittimer.h"
 #include "utils/eventproxy.h"
@@ -28,29 +29,27 @@ public:
    FontDesc m_font;
 };
 
-class Decal :
-   public IDispatchImpl<IDecal, &IID_IDecal, &LIBID_VPinballLib>,
-   public CComObjectRoot,
-   public CComCoClass<Decal, &CLSID_Decal>,
-   public EventProxy<Decal, &DIID_IDecalEvents>,
-   public IConnectionPointContainerImpl<Decal>,
-   public IProvideClassInfo2Impl<&CLSID_Decal, &DIID_IDecalEvents, &LIBID_VPinballLib>,
-   public ISelect,
-   public IEditable,
-   //public Hitable, // FIXME implement UI picking
-   public IRenderable,
-   public IScriptable,
-   public IFireEvents,
-   public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
+class Decal : public IDispatchImpl<IDecal, &IID_IDecal, &LIBID_VPinballLib>,
+              public CComObjectRoot,
+              public CComCoClass<Decal, &CLSID_Decal>,
+              public EventProxy<Decal, &DIID_IDecalEvents>,
+              public IConnectionPointContainerImpl<Decal>,
+              public IProvideClassInfo2Impl<&CLSID_Decal, &DIID_IDecalEvents, &LIBID_VPinballLib>,
+              public IEditable,
+              public IHitable, // only used for UI picking
+              public IRenderable,
+              public IScriptable,
+              public IFireEvents,
+              public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
    HRESULT FireDispID(const DISPID dispid, DISPPARAMS * const pdispparams) final;
 #endif
-   Decal() { m_wzName = L"Decal"sv; }
+   Decal() { m_name = "Decal"s; }
    virtual ~Decal();
 
    BEGIN_COM_MAP(Decal)
@@ -62,17 +61,19 @@ public:
       COM_INTERFACE_ENTRY(IProvideClassInfo2)
    END_COM_MAP()
 
-   STANDARD_EDITABLE_DECLARES_NO_HITABLE(Decal, eItemDecal, DECAL, VIEW_PLAYFIELD | VIEW_BACKGLASS)
+   STANDARD_EDITABLE_DECLARES(Decal, eItemDecal, DECAL)
 
    BEGIN_CONNECTION_POINT_MAP(Decal)
       CONNECTION_POINT_ENTRY(DIID_IDecalEvents)
    END_CONNECTION_POINT_MAP()
 
-   void MoveOffset(const float dx, const float dy) final { m_d.m_vCenter.x += dx; m_d.m_vCenter.y += dy; }
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final
+   {
+      m_d.m_vCenter.x += offset.x;
+      m_d.m_vCenter.y += offset.y;
+   }
    // Multi-object manipulation
    Vertex2D GetCenter() const final { return m_d.m_vCenter; }
-   void PutCenter(const Vertex2D& pv) final { m_d.m_vCenter = pv; }
    float GetDepth(const Vertex3Ds &viewDir) const final;
    void Rotate(const float ang, const Vertex2D &pvCenter, const bool useElementCenter) final;
 
@@ -83,6 +84,9 @@ public:
    void EnsureSize();
 
    DecalData m_d;
+
+   // Computes the 4 vertices of the rotated quad of this decal for editor display
+   void GetEditorQuad(Vertex2D rgv[4]) const;
 
 private:
    void GetTextSize(int * const px, int * const py);

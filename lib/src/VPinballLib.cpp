@@ -10,6 +10,7 @@
 #include "core/VPXPluginAPIImpl.h"
 #include "parts/pintable.h"
 #include "renderer/Renderer.h"
+#include "ui/LoadProgress.h"
 #include "VPXProgress.h"
 #include "WebServer.h"
 
@@ -102,7 +103,9 @@ int VPinballLib::AppInit(int argc, char** argv)
 void VPinballLib::AppIterate()
 {
    if (m_gameLoop) {
+      m_inAppIterate = true;
       m_gameLoop();
+      m_inAppIterate = false;
 
       if (g_pplayer && (g_pplayer->GetCloseState() == Player::CS_PLAYING
          || g_pplayer->GetCloseState() == Player::CS_USER_INPUT))
@@ -116,7 +119,8 @@ void VPinballLib::AppIterate()
          string imageFilename = tablePath.stem().string() + ".jpg";
          std::filesystem::path imagePath = tablePath.parent_path() / imageFilename;
 
-         if (std::filesystem::exists(imagePath)) {
+         std::error_code ec;
+         if (std::filesystem::exists(imagePath, ec)) {
             g_pplayer->SetCloseState(Player::CS_CLOSE_APP);
             return;
          }
@@ -144,11 +148,26 @@ void VPinballLib::AppIterate()
 
       m_gameLoop = nullptr;
 
+      // If the session was ended by a table switch request to a different base table, take it over and
+      // restart a new player on the requested table (all played tables are CComObject<PinTable> instances)
+      Player::PlayMode nextMode = Player::PlayMode::Play;
+      PinTable* const nextTable = g_pplayer->TakeTableSwitch(nextMode);
+
       delete g_pplayer;
       g_pplayer = nullptr;
+      SendEvent(VPINBALL_EVENT_PLAYER_CLOSED, nullptr);
 
       m_pTable->Release();
       m_pTable = nullptr;
+
+      if (nextTable != nullptr)
+      {
+         m_pTable = static_cast<CComObject<PinTable>*>(nextTable);
+         static LoadProgress loadProgress;
+         m_playerReadySent = false;
+         new Player(m_pTable, nextMode, loadProgress);
+         OnPlayerCreated();
+      }
    }
 }
 
@@ -170,20 +189,62 @@ void VPinballLib::AppEvent(SDL_Event* event)
    }
 }
 
-bool VPinballLib::PollAppEvent(SDL_Event& event)
+void VPinballLib::OnPlayerCreated()
 {
-   std::lock_guard<std::mutex> lock(m_eventMutex);
-   if (m_eventQueue.empty())
-      return false;
-
-   event = m_eventQueue.front();
-   m_eventQueue.pop();
-   return true;
+   if (g_pplayer == nullptr) {
+      SendEvent(VPINBALL_EVENT_PLAYER_FAILED, nullptr);
+      return;
+   }
+   g_pplayer->GameLoop();
+   if (!m_playerReadySent) {
+      m_playerReadySent = true;
+      SendEvent(VPINBALL_EVENT_PLAYER_READY, nullptr);
+   }
 }
 
-void VPinballLib::Init(VPinballEventCallback callback)
+bool VPinballLib::PollAppEvent(SDL_Event& event)
 {
-   SetEventCallback(callback);
+   {
+      std::lock_guard<std::mutex> lock(m_eventMutex);
+      if (!m_eventQueue.empty()) {
+         event = m_eventQueue.front();
+         m_eventQueue.pop();
+         return true;
+      }
+   }
+
+   if (m_inAppIterate)
+      return false;
+
+   if (!m_playerReadySent && g_pplayer && g_pplayer->m_isLoading) {
+      m_playerReadySent = true;
+      SendEvent(VPINBALL_EVENT_PLAYER_READY, nullptr);
+   }
+
+   const uint64_t now = SDL_GetTicksNS();
+   if (now - m_lastPumpNs >= 2000000) {
+      m_lastPumpNs = now;
+#ifdef __APPLE__
+      PumpIOSEvents();
+#endif
+      SDL_PumpEvents();
+   }
+   while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
+#ifdef __APPLE__
+      if (event.type == SDL_EVENT_DROP_FILE && event.drop.data) {
+         VPinball_CallIOSOpenURLHandler(event.drop.data);
+         continue;
+      }
+#endif
+      return true;
+   }
+   return false;
+}
+
+void VPinballLib::Init(VPinballEventCallback eventCallback, VPinballRumbleCallback rumbleCallback)
+{
+   SetEventCallback(eventCallback);
+   SetRumbleCallback(rumbleCallback);
 
    SDL_RunOnMainThread([](void* userdata) {
       auto* lib = static_cast<VPinballLib*>(userdata);
@@ -208,19 +269,9 @@ void VPinballLib::SetEventCallback(VPinballEventCallback callback)
       if (data != nullptr) {
          switch(event) {
             case VPINBALL_EVENT_LOADING:
-            case VPINBALL_EVENT_PRERENDERING:
             case VPINBALL_EVENT_EXTRACT_SCRIPT: {
                ProgressData* progressData = (ProgressData*)data;
                j["progress"] = progressData->progress;
-               jsonString = j.dump();
-               jsonData = jsonString.c_str();
-               break;
-            }
-            case VPINBALL_EVENT_RUMBLE: {
-               RumbleData* rumbleData = (RumbleData*)data;
-               j["lowFrequencyRumble"] = rumbleData->lowFrequencyRumble;
-               j["highFrequencyRumble"] = rumbleData->highFrequencyRumble;
-               j["durationMs"] = rumbleData->durationMs;
                jsonString = j.dump();
                jsonData = jsonString.c_str();
                break;
@@ -250,13 +301,20 @@ void VPinballLib::SetEventCallback(VPinballEventCallback callback)
    };
 }
 
+void VPinballLib::PlayRumble(float lowFrequencySpeed, float highFrequencySpeed, unsigned int durationMs)
+{
+   auto callback = Instance().m_rumbleCallback;
+   if (callback)
+      callback(lowFrequencySpeed, highFrequencySpeed, durationMs);
+}
+
 void VPinballLib::SendEvent(VPINBALL_EVENT event, void* data)
 {
    auto callback = Instance().m_eventCallback;
    if (callback)
       callback(event, data);
 
-   if (event == VPINBALL_EVENT_PLAYER_STARTED || event == VPINBALL_EVENT_PLAYER_CLOSED)
+   if (event == VPINBALL_EVENT_PLAYER_READY || event == VPINBALL_EVENT_PLAYER_CLOSED)
       WebServer::BroadcastStatus();
 }
 
@@ -310,11 +368,6 @@ void VPinballLib::Log(VPINBALL_LOG_LEVEL level, const string& message)
    }
 }
 
-void VPinballLib::ResetLog()
-{
-   Logger::GetInstance()->Truncate();
-}
-
 int VPinballLib::LoadValueInt(const string& sectionName, const string& key, int defaultValue)
 {
    if (const auto existingId = Settings::GetRegistry().GetPropertyId(sectionName, key); existingId.has_value())
@@ -323,23 +376,23 @@ int VPinballLib::LoadValueInt(const string& sectionName, const string& key, int 
       if (existingProp->m_type == VPX::Properties::PropertyDef::Type::Enum ||
           existingProp->m_type == VPX::Properties::PropertyDef::Type::Int ||
           existingProp->m_type == VPX::Properties::PropertyDef::Type::Bool)
-         return g_app->m_settings.GetInt(existingId.value());
+         return g_settingsService.GetAppSettings().GetInt(existingId.value());
 
       PLOGW << "LoadValueInt: property " << sectionName << '.' << key << " exists but is not int-compatible type";
       return defaultValue;
    }
 
    const auto propId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::IntPropertyDef>(sectionName, key, ""s, ""s, true, INT_MIN, INT_MAX, defaultValue));
-   return g_app->m_settings.GetInt(propId);
+   return g_settingsService.GetAppSettings().GetInt(propId);
 }
 
 void VPinballLib::SaveValueInt(const string& sectionName, const string& key, int value)
 {
    if (const auto existingId = Settings::GetRegistry().GetPropertyId(sectionName, key); existingId.has_value())
-      g_app->m_settings.Set(existingId.value(), value, false);
+      g_settingsService.GetAppSettings().Set(existingId.value(), value, false);
    else
-      g_app->m_settings.Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::IntPropertyDef>(sectionName, key, ""s, ""s, true, INT_MIN, INT_MAX, value)), value, false);
-   g_app->m_settings.Save();
+      g_settingsService.GetAppSettings().Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::IntPropertyDef>(sectionName, key, ""s, ""s, true, INT_MIN, INT_MAX, value)), value, false);
+   g_settingsService.GetAppSettings().Save();
 }
 
 float VPinballLib::LoadValueFloat(const string& sectionName, const string& key, float defaultValue)
@@ -348,23 +401,23 @@ float VPinballLib::LoadValueFloat(const string& sectionName, const string& key, 
    {
       const auto* existingProp = Settings::GetRegistry().GetProperty(existingId.value());
       if (existingProp->m_type == VPX::Properties::PropertyDef::Type::Float)
-         return g_app->m_settings.GetFloat(existingId.value());
+         return g_settingsService.GetAppSettings().GetFloat(existingId.value());
 
       PLOGW << "LoadValueFloat: property " << sectionName << '.' << key << " exists but is not float type";
       return defaultValue;
    }
 
-   const auto propId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(sectionName, key, ""s, ""s, true, FLT_MIN, FLT_MAX, 0.f, defaultValue));
-   return g_app->m_settings.GetFloat(propId);
+   const auto propId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(sectionName, key, ""s, ""s, true, -FLT_MAX, FLT_MAX, 0.f, defaultValue));
+   return g_settingsService.GetAppSettings().GetFloat(propId);
 }
 
 void VPinballLib::SaveValueFloat(const string& sectionName, const string& key, float value)
 {
    if (const auto existingId = Settings::GetRegistry().GetPropertyId(sectionName, key); existingId.has_value())
-      g_app->m_settings.Set(existingId.value(), value, false);
+      g_settingsService.GetAppSettings().Set(existingId.value(), value, false);
    else
-      g_app->m_settings.Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(sectionName, key, ""s, ""s, true, FLT_MIN, FLT_MAX, 0.f, value)), value, false);
-   g_app->m_settings.Save();
+      g_settingsService.GetAppSettings().Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::FloatPropertyDef>(sectionName, key, ""s, ""s, true, -FLT_MAX, FLT_MAX, 0.f, value)), value, false);
+   g_settingsService.GetAppSettings().Save();
 }
 
 string VPinballLib::LoadValueString(const string& sectionName, const string& key, const string& defaultValue)
@@ -373,23 +426,23 @@ string VPinballLib::LoadValueString(const string& sectionName, const string& key
    {
       const auto* existingProp = Settings::GetRegistry().GetProperty(existingId.value());
       if (existingProp->m_type == VPX::Properties::PropertyDef::Type::String)
-         return g_app->m_settings.GetString(existingId.value());
+         return g_settingsService.GetAppSettings().GetString(existingId.value());
 
       PLOGW << "LoadValueString: property " << sectionName << '.' << key << " exists but is not string type";
       return defaultValue;
    }
 
    const auto propId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::StringPropertyDef>(sectionName, key, ""s, ""s, true, defaultValue));
-   return g_app->m_settings.GetString(propId);
+   return g_settingsService.GetAppSettings().GetString(propId);
 }
 
 void VPinballLib::SaveValueString(const string& sectionName, const string& key, const string& value)
 {
    if (const auto existingId = Settings::GetRegistry().GetPropertyId(sectionName, key); existingId.has_value())
-      g_app->m_settings.Set(existingId.value(), value, false);
+      g_settingsService.GetAppSettings().Set(existingId.value(), value, false);
    else
-      g_app->m_settings.Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::StringPropertyDef>(sectionName, key, ""s, ""s, true, value)), value, false);
-   g_app->m_settings.Save();
+      g_settingsService.GetAppSettings().Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::StringPropertyDef>(sectionName, key, ""s, ""s, true, value)), value, false);
+   g_settingsService.GetAppSettings().Save();
 }
 
 bool VPinballLib::LoadValueBool(const string& sectionName, const string& key, bool defaultValue)
@@ -398,34 +451,37 @@ bool VPinballLib::LoadValueBool(const string& sectionName, const string& key, bo
    {
       const auto* existingProp = Settings::GetRegistry().GetProperty(existingId.value());
       if (existingProp->m_type == VPX::Properties::PropertyDef::Type::Bool)
-         return g_app->m_settings.GetBool(existingId.value());
+         return g_settingsService.GetAppSettings().GetBool(existingId.value());
 
       PLOGW << "LoadValueBool: property " << sectionName << '.' << key << " exists but is not bool type";
       return defaultValue;
    }
 
    const auto propId = Settings::GetRegistry().Register(std::make_unique<VPX::Properties::BoolPropertyDef>(sectionName, key, ""s, ""s, true, defaultValue));
-   return g_app->m_settings.GetBool(propId);
+   return g_settingsService.GetAppSettings().GetBool(propId);
 }
 
 void VPinballLib::SaveValueBool(const string& sectionName, const string& key, bool value)
 {
    if (const auto existingId = Settings::GetRegistry().GetPropertyId(sectionName, key); existingId.has_value())
-      g_app->m_settings.Set(existingId.value(), value, false);
+      g_settingsService.GetAppSettings().Set(existingId.value(), value, false);
    else
-      g_app->m_settings.Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::BoolPropertyDef>(sectionName, key, ""s, ""s, true, value)), value, false);
-   g_app->m_settings.Save();
+      g_settingsService.GetAppSettings().Set(Settings::GetRegistry().Register(std::make_unique<VPX::Properties::BoolPropertyDef>(sectionName, key, ""s, ""s, true, value)), value, false);
+   g_settingsService.GetAppSettings().Save();
 }
 
 VPINBALL_STATUS VPinballLib::ResetIni()
 {
    std::filesystem::path iniFilePath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences, "VPinballX.ini");
-   if (!std::filesystem::remove(iniFilePath))
-    return VPINBALL_STATUS_FAILURE;
+   std::error_code ec;
+   if (!std::filesystem::remove(iniFilePath, ec)) {
+      PLOGE.printf("Failed to reset ini: path=%s, error=%s", iniFilePath.string().c_str(), ec.message().c_str());
+      return VPINBALL_STATUS_FAILURE;
+   }
 
-   g_app->m_settings.SetIniPath(iniFilePath.string());
-   g_app->m_settings.Load(true);
-   g_app->m_settings.Save();
+   g_settingsService.GetAppSettings().SetIniPath(iniFilePath.string());
+   g_settingsService.GetAppSettings().Load(true);
+   g_settingsService.GetAppSettings().Save();
    return VPINBALL_STATUS_SUCCESS;
 }
 
@@ -457,6 +513,9 @@ VPINBALL_STATUS VPinballLib::LoadTable(const string& tablePath)
       m_pTable = nullptr;
    }
 
+   if (g_settingsService.GetAppSettings().GetGlobal_ResetLogOnPlay())
+      Logger::Truncate();
+
    CComObject<PinTable>::CreateInstance(&m_pTable);
    m_pTable->AddRef();
 
@@ -473,7 +532,7 @@ VPINBALL_STATUS VPinballLib::LoadTable(const string& tablePath)
 
 VPINBALL_STATUS VPinballLib::ExtractTableScript(const string& tablePath)
 {
-   ProgressData progressData = { 50 };
+   ProgressData progressData = { 50u };
    SendEvent(VPINBALL_EVENT_EXTRACT_SCRIPT, &progressData);
 
    ExportVBSCommand cmd(tablePath);
@@ -484,26 +543,35 @@ VPINBALL_STATUS VPinballLib::ExtractTableScript(const string& tablePath)
    if (!FileExists(scriptFilename))
       return VPINBALL_STATUS_FAILURE;
 
-   progressData.progress = 100;
+   progressData.progress = 100u;
    SendEvent(VPINBALL_EVENT_EXTRACT_SCRIPT, &progressData);
 
    return VPINBALL_STATUS_SUCCESS;
 }
 
-VPINBALL_STATUS VPinballLib::Play()
+VPINBALL_STATUS VPinballLib::Play(const string& tablePath)
 {
-   if (m_gameLoop)
+   if (m_gameLoop || m_playPending.exchange(true))
       return VPINBALL_STATUS_FAILURE;
 
-   if (!m_pTable)
-      return VPINBALL_STATUS_FAILURE;
+   std::thread([this, tablePath]() {
+      if ((!tablePath.empty() && LoadTable(tablePath) != VPINBALL_STATUS_SUCCESS) || !m_pTable) {
+         m_playPending = false;
+         SendEvent(VPINBALL_EVENT_PLAYER_FAILED, nullptr);
+         return;
+      }
+      SDL_RunOnMainThread([](void*) {
+         auto& lib = VPinballLib::Instance();
+         // The player outlives this lambda, being stepped from AppIterate and deleted there
+         static LoadProgress loadProgress;
+         lib.m_playerReadySent = false;
+         new Player(lib.m_pTable, Player::PlayMode::Play, loadProgress);
+         lib.OnPlayerCreated();
+         lib.m_playPending = false;
+      }, nullptr, false);
+   }).detach();
 
-   return SDL_RunOnMainThread([](void*) {
-      auto& lib = VPinballLib::Instance();
-      new Player(lib.m_pTable, Player::PlayMode::Play);
-      if (g_pplayer)
-         g_pplayer->GameLoop();
-   }, nullptr, true) ? VPINBALL_STATUS_SUCCESS : VPINBALL_STATUS_FAILURE;
+   return VPINBALL_STATUS_SUCCESS;
 }
 
 VPINBALL_STATUS VPinballLib::Stop()

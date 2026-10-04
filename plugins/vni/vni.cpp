@@ -1,291 +1,409 @@
 // license:GPLv3+
 
+#include "plugins/MsgPlugin.h"
+#include "plugins/VPXPlugin.h"
+#include "plugins/ControllerPlugin.h"
+#include "plugins/LoggingPlugin.h"
+#include "pinmame/PinMAMEPlugin.h"
+#include "common.h"
+#include "vni.h"
+
+#include <atomic>
 #include <cassert>
-#include <cstdlib>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <thread>
 #include <random>
 
-#include "plugins/MsgPlugin.h"
-#include "plugins/VPXPlugin.h"
-#include "plugins/ControllerPlugin.h"
-#include "common.h"
-#include "vni.h"
+#include "plugins/PluginStrings.h"
 
-#include <filesystem>
+namespace Vni
+{
 
-#include "plugins/LoggingPlugin.h"
-
-namespace Vni {
+using namespace PinballPlugin::Controller;
 
 LPI_IMPLEMENT_CPP // Implement shared log support
 
 static const MsgPluginAPI* msgApi = nullptr;
 static VPXPluginAPI* vpxApi = nullptr;
-
 static uint32_t endpointId;
-static unsigned int onControllerGameStartId, onControllerGameEndId;
-static unsigned int onDmdSrcChangedId, getDmdSrcId;
-
-static bool isRunning = false;
-static std::mutex sourceMutex;
-static std::mutex stateMutex;
-static std::thread colorizeThread;
-static DisplaySrcId dmdId = {};
-
-static Vni_Context* pVni = nullptr;
 
 static std::minstd_rand std_rand;
 
+static std::unique_ptr<CtrlItemConsumer<ControllerDef>> controllers;
+static std::unique_ptr<class VNIColorizer> colorizer;
+
 MSGPI_STRING_VAL_SETTING(vniPathProp, "VniPath", "VNI Path", "Folder that contains VNI colorization files (PAL, VNI)", true, "", 1024);
 
-class ColorizationState final
+class VNIColorizer
 {
 public:
-   ColorizationState(unsigned int width, unsigned int height)
-      : m_colorFrame(new uint8_t[width * height * 3])
-      , m_width(width), m_height(height)
+   VNIColorizer(const std::filesystem::path& palPath, const std::filesystem::path& vniPath, uint32_t controllerEndpointId)
+      : m_controllerEndpointId(controllerEndpointId)
+      , m_palPath(palPath)
+      , m_vniPath(vniPath)
+      , m_colorizedDmd(msgApi, endpointId, CTLPI_DISPLAY_GET_SRC_MSG, CTLPI_DISPLAY_ON_SRC_CHG_MSG)
+      , m_onConsoleDataId(msgApi->GetMsgID(PMPI_NAMESPACE, PMPI_EVT_ON_CONSOLE_DATA))
       , m_colorizedframeId(std_rand())
+      , m_dmdSource(
+           msgApi, endpointId, CTLPI_DISPLAY_GET_SRC_MSG, CTLPI_DISPLAY_ON_SRC_CHG_MSG, [this](std::vector<DisplaySrcId>& items) { FilterDmdSource(items); },
+           [this]() { StopColorizeThread(); }, [this]() { StartColorizeThread(); })
    {
-      assert(m_width > 0);
-      assert(m_height > 0);
+         msgApi->SubscribeMsg(endpointId, m_onConsoleDataId, OnConsoleDataStatic, this);
+         m_dmdSource.Subscribe();
    }
 
-   ~ColorizationState()
+   ~VNIColorizer()
    {
-      delete[] m_colorFrame;
+      StopColorizeThread();
+      m_dmdSource.Unsubscribe();
+      msgApi->UnsubscribeMsg(m_onConsoleDataId, OnConsoleDataStatic, this);
+      msgApi->ReleaseMsgID(m_onConsoleDataId);
    }
 
-   void UpdateFrame(const Vni_Frame_Struc* frame)
+private:
+   void FilterDmdSource(std::vector<DisplaySrcId>& items)
    {
-      if (!frame || !frame->has_frame || !frame->frame || !frame->palette)
-         return;
-      for (unsigned int i = 0; i < m_width * m_height; i++)
-         memcpy(&(m_colorFrame[i * 3]), &frame->palette[frame->frame[i] * 3], 3);
-      m_colorizedframeId++;
-   }
-
-   uint8_t* const m_colorFrame;
-   const unsigned int m_width, m_height;
-   unsigned int m_colorizedframeId = 0;
-};
-
-static ColorizationState* state = nullptr;
-
-static void ColorizeThread()
-{
-   SetThreadName("Vni.ColorizeThread"s);
-   unsigned int lastFrameId = 0;
-   while (isRunning)
-   {
-      std::this_thread::sleep_for(std::chrono::microseconds(16666));
-
-      std::lock_guard<std::mutex> lock1(sourceMutex);
-      if (dmdId.id.id == 0)
-         continue;
-
-      const DisplayFrame frame = dmdId.GetIdentifyFrame(dmdId.id);
-      if (frame.frame == nullptr)
-         break;
-
-      if (frame.frameId != lastFrameId)
+      // Only keep dmd corresponding to selected controller (or overriden from selected controller to support alphanumeric rendered DMD for example)
+      const std::function<bool(const DisplaySrcId&, unsigned int)> isFromController = [&](const DisplaySrcId& src, unsigned int depth)
       {
-         lastFrameId = frame.frameId;
-         const uint32_t result = Vni_Colorize(pVni, static_cast<const uint8_t*>(frame.frame), dmdId.width, dmdId.height, 2);
-         if (result)
+         if (src.id.endpointId == m_controllerEndpointId)
+            return true;
+         if (src.overrideId.id != 0)
          {
-            const Vni_Frame_Struc* vniFrame = Vni_GetFrame(pVni);
-            if (vniFrame && vniFrame->has_frame)
+            if (src.overrideId.endpointId == m_controllerEndpointId)
+               return true;
+            if (depth == 0)
+               return false;
+            for (const DisplaySrcId& item : items)
+               if (item.id == src.overrideId)
+                  return isFromController(item, depth - 1);
+         }
+         return false;
+      };
+
+      DisplaySrcId selected { };
+      for (const DisplaySrcId& item : items)
+         if (isFromController(item, 8)) // We have the colorization data for this DMD source
+            if (item.GetIdentifyFrame != nullptr && item.width >= 128) // The DMD source is supported
+               selected = item;
+
+      items.clear();
+      if (selected.id.id != 0)
+         items.push_back(selected);
+   }
+
+   void StartColorizeThread()
+   {
+      m_dmdSource.With(
+         [this](const std::vector<DisplaySrcId>& items)
+         {
+            if (items.empty())
             {
-               std::lock_guard<std::mutex> lock2(stateMutex);
-               bool newState = false;
-               unsigned int outWidth = vniFrame->width;
-               unsigned int outHeight = vniFrame->height;
-               if (state == nullptr)
-               {
-                  state = new ColorizationState(outWidth, outHeight);
-                  newState = true;
-               }
-               else if (state->m_width != outWidth || state->m_height != outHeight)
-               {
-                  delete state;
-                  state = new ColorizationState(outWidth, outHeight);
-                  newState = true;
-               }
+               LOGI("VNI DMD colorizer stopped");
+            }
+            else
+            {
+               const DisplaySrcId& dmdSrc = items.front();
+               LOGI(std::format("VNI colorizer source selected [endpointId={}.{}, {}x{} fmt={}]", dmdSrc.id.endpointId, dmdSrc.id.resId, dmdSrc.width, dmdSrc.height, dmdSrc.frameFormat));
+               m_isRunning = true;
+               m_colorizeThread = std::thread(&VNIColorizer::ColorizeThread, this, dmdSrc);
+            }
+         });
+   }
 
-               state->UpdateFrame(vniFrame);
+   void StopColorizeThread()
+   {
+      m_isRunning = false;
+      if (m_colorizeThread.joinable())
+         m_colorizeThread.join();
+      // Run a queued advertisement while this instance is alive (a no-op once stopped)
+      msgApi->FlushPendingCallbacks(endpointId);
+      {
+         std::lock_guard lock(m_consoleDataMutex);
+         m_consoleDataSize = 0;
+      }
+      m_colorizedDmd.ClearItems();
+      m_pendingAdvertisement = false;
+      m_advertisedWidth = 0;
+      m_advertisedHeight = 0;
+   }
 
-               if (newState)
-                  msgApi->RunOnMainThread(endpointId, 0, [](void* userData) { msgApi->BroadcastMsg(endpointId, onDmdSrcChangedId, nullptr); }, nullptr);
+   void ColorizeThread(DisplaySrcId dmdId)
+   {
+      const std::string palPath = PluginStrings::PathToNative(m_palPath);
+      const std::string vniPath = PluginStrings::PathToNative(m_vniPath);
+      Vni_Context* const pVNI = Vni_LoadFromPaths(palPath.c_str(), m_vniPath.empty() ? nullptr : vniPath.c_str(), nullptr, nullptr);
+      if (pVNI == nullptr)
+      {
+         LOGE("Failed to load colorization data");
+         m_isRunning = false;
+         return;
+      }
+      {
+         std::lock_guard stateLock(m_stateMutex); // OnConsoleData uses the context from the main thread
+         m_pVNI = pVNI;
+      }
+
+      SetThreadName("VNI.ColorizeThread"s);
+      unsigned int lastFrameId = 0;
+      while (m_isRunning)
+      {
+         // Original PinMAME code would evaluate DMD frames at a fixed 60 FPS and color rotation are also based on a 60FPS rate. So update at this pace.
+         std::this_thread::sleep_for(std::chrono::microseconds(16666));
+
+         {
+            std::lock_guard stateLock(m_stateMutex);
+
+            if (m_pendingAdvertisement)
+               continue;
+
+            // Process incoming frames from DMD source
+            const Vni_Frame_Struc* vniFrame = nullptr;
+            m_dmdSource.With(
+               [&](const std::vector<DisplaySrcId>& items)
+               {
+                  const DisplayFrame frame = dmdId.GetIdentifyFrame(dmdId.callContext);
+                  if (frame.frame == nullptr)
+                  {
+                     m_isRunning = false;
+                     return;
+                  }
+
+                  if (frame.frameId == lastFrameId)
+                     return;
+                  lastFrameId = frame.frameId;
+
+                  const uint8_t bitlen = dmdId.identifyFormat == CTLPI_DISPLAY_ID_FORMAT_BITPLANE4 ? 4 : 2;
+                  const uint8_t* indexed = static_cast<const uint8_t*>(frame.frame);
+                  const uint32_t result = Vni_Colorize(m_pVNI, indexed, dmdId.width, dmdId.height, bitlen);
+                  if (!result)
+                     return;
+
+                  vniFrame = Vni_GetFrame(m_pVNI);
+               });
+
+            if (!vniFrame || !vniFrame->has_frame)
+               continue;
+
+            if (vniFrame->width != m_advertisedWidth || vniFrame->height != m_advertisedHeight)
+            {
+               // Frames are skipped until the main thread has resized the buffer and advertised it
+               // (StopColorizeThread flushes the callback, so it never outlives this instance)
+               m_pendingAdvertisement = true;
+               m_pendingDmd = {
+                  .id = { { endpointId, 0 } }, //
+                  .overrideId = dmdId.id, //
+                  .width = vniFrame->width, //
+                  .height = vniFrame->height, //
+                  .hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED, //
+                  .callContext = this, //
+                  .frameFormat = CTLPI_DISPLAY_FORMAT_SRGB888, //
+                  .GetRenderFrame = &Trampoline<&VNIColorizer::GetRenderFrame>::Call //
+               };
+               msgApi->RunOnMainThread(endpointId, 0, [](void* userData) { static_cast<VNIColorizer*>(userData)->AdvertiseColorizedDmd(); }, this);
+               continue;
+            }
+
+            for (unsigned int i = 0; i < vniFrame->width * vniFrame->height; i++)
+               memcpy(&(m_colorFrame[i * 3]), &vniFrame->palette[vniFrame->frame[i] * 3], 3);
+            m_colorizedframeId++;
+         }
+      }
+      {
+         std::lock_guard stateLock(m_stateMutex);
+         Vni_Dispose(m_pVNI);
+         m_pVNI = nullptr;
+      }
+      m_isRunning = false;
+   }
+
+   // Main thread: publish the output requested by the colorize thread
+   void AdvertiseColorizedDmd()
+   {
+      if (!m_isRunning) // Stopped meanwhile (flushed from StopColorizeThread, or the thread ended on its own)
+         return;
+      // Broadcast without m_stateMutex, as consumers call GetRenderFrame under their own lock. The output is withdrawn first, so that no consumer uses the frame buffer while it is reallocated
+      m_colorizedDmd.ClearItems();
+      DisplaySrcId coloredDmd;
+      {
+         std::lock_guard stateLock(m_stateMutex);
+         coloredDmd = m_pendingDmd;
+         m_colorFrame.resize(coloredDmd.width * coloredDmd.height * 3);
+         m_advertisedWidth = coloredDmd.width;
+         m_advertisedHeight = coloredDmd.height;
+         m_pendingAdvertisement = false;
+      }
+      m_colorizedDmd.SetItem(coloredDmd);
+   }
+
+   // Note that to be fully clean we should do a copy of the render (since the direct data is updated asynchronously, so eventually while it is read by consumer)
+   DisplayFrame GetRenderFrame()
+   {
+      std::lock_guard targetLock(m_stateMutex);
+      return { m_colorizedframeId, m_colorFrame.data() };
+   }
+
+   static int HexDigit(const uint8_t value)
+   {
+      if (value >= '0' && value <= '9')
+         return value - '0';
+      if (value >= 'A' && value <= 'F')
+         return value - 'A' + 10;
+      if (value >= 'a' && value <= 'f')
+         return value - 'a' + 10;
+      return -1;
+   }
+
+   static void OnConsoleDataStatic(const unsigned int msgId, void* context, void* msgData)
+   {
+      static_cast<VNIColorizer*>(context)->OnConsoleData(static_cast<PinMAMEConsoleDataMsg*>(msgData));
+   }
+
+   void OnConsoleData(PinMAMEConsoleDataMsg* msg)
+   {
+      if (msg == nullptr || msg->data == nullptr || msg->size == 0)
+         return;
+
+      std::lock_guard targetLock(m_stateMutex);
+      std::lock_guard consoleLock(m_consoleDataMutex);
+      for (uint32_t i = 0; i < msg->size; i++)
+      {
+         if (m_consoleDataSize < 4)
+            m_consoleData[m_consoleDataSize++] = msg->data[i];
+         else
+         {
+            m_consoleData[0] = m_consoleData[1];
+            m_consoleData[1] = m_consoleData[2];
+            m_consoleData[2] = m_consoleData[3];
+            m_consoleData[3] = msg->data[i];
+         }
+
+         if (m_consoleDataSize == 4 && m_consoleData[0] == 'P')
+         {
+            const int hi = HexDigit(m_consoleData[1]);
+            const int lo = HexDigit(m_consoleData[2]);
+            if (hi >= 0 && lo >= 0)
+            {
+               if (m_pVNI != nullptr)
+                  Vni_SetPalette(m_pVNI, static_cast<uint32_t>((hi << 4) | lo));
             }
          }
       }
    }
-   isRunning = false;
-}
 
-static DisplayFrame GetRenderFrame(const CtlResId id)
-{
-   std::lock_guard<std::mutex> lock(stateMutex);
-   if (state == nullptr)
-      return { 0, nullptr };
-   return { state->m_colorizedframeId, state->m_colorFrame };
-}
+   const uint32_t m_controllerEndpointId;
+   const std::filesystem::path m_palPath;
+   const std::filesystem::path m_vniPath;
 
-static void OnGetRenderDMDSrc(const unsigned int eventId, void* userData, void* msgData)
+   CtrlItemProvider<DisplaySrcId> m_colorizedDmd;
+
+   std::atomic_bool m_isRunning { false };
+   std::thread m_colorizeThread;
+   Vni_Context* m_pVNI = nullptr;
+
+   const unsigned int m_onConsoleDataId;
+   std::mutex m_consoleDataMutex;
+   uint8_t m_consoleData[4] = { };
+   uint32_t m_consoleDataSize = 0;
+
+   std::mutex m_stateMutex;
+   std::vector<uint8_t> m_colorFrame;
+   bool m_pendingAdvertisement = false;
+   DisplaySrcId m_pendingDmd { };
+   unsigned int m_advertisedWidth = 0;
+   unsigned int m_advertisedHeight = 0;
+   unsigned int m_colorizedframeId = 0;
+
+   CtrlItemConsumer<DisplaySrcId> m_dmdSource;
+};
+
+// Locate the .pal (mandatory) and .vni (optional) files for a game id in a
+// single per-game folder, rom-named first then pin2dmd-named.
+static bool FindColorizationIn(const std::filesystem::path& gameDir, const std::string_view& gameId, std::filesystem::path& palPath, std::filesystem::path& vniPath)
 {
-   if (pVni == nullptr || state == nullptr || dmdId.id.id == 0)
-      return;
-   GetDisplaySrcMsg& msg = *static_cast<GetDisplaySrcMsg*>(msgData);
-   if (state->m_colorFrame && state->m_width && state->m_height)
+   const std::string rom = std::string(gameId);
+   if (auto pal = find_case_insensitive_file_path(gameDir / PluginStrings::PathFromUTF8(rom + ".pal")); !pal.empty())
    {
-      if (msg.count < msg.maxEntryCount)
-      {
-         msg.entries[msg.count] = {};
-         msg.entries[msg.count].id = { { endpointId, 0 } };
-         msg.entries[msg.count].overrideId = dmdId.id;
-         msg.entries[msg.count].width = state->m_width;
-         msg.entries[msg.count].height = state->m_height;
-         msg.entries[msg.count].hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED;
-         msg.entries[msg.count].frameFormat = CTLPI_DISPLAY_FORMAT_SRGB888;
-         msg.entries[msg.count].GetRenderFrame = &GetRenderFrame;
-      }
-      msg.count++;
+      palPath = pal;
+      vniPath = find_case_insensitive_file_path(gameDir / PluginStrings::PathFromUTF8(rom + ".vni"));
+      return true;
    }
+   if (auto pal = find_case_insensitive_file_path(gameDir / "pin2dmd.pal"sv); !pal.empty())
+   {
+      palPath = pal;
+      vniPath = find_case_insensitive_file_path(gameDir / "pin2dmd.vni"sv);
+      return true;
+   }
+   return false;
 }
 
-static void OnDmdSrcChanged(const unsigned int, void*, void*)
+// Locate a colorization for a controller game id (format: ns::rom). Each base
+// folder is searched under an optional intermediate namespace folder first --
+// base/ns/rom/... -- then directly -- base/rom/... -- so legacy layouts keep
+// working. pinmame/altcolor is a legacy base only defined for pinmame
+// controllers, so it is searched for them alone, directly (the pinmame folder
+// already carries the namespace).
+static bool GetColorization(const std::string_view& gameNs, const std::string_view& gameId, std::filesystem::path& palPath, std::filesystem::path& vniPath)
 {
-   if (pVni == nullptr)
-      return;
-   std::lock_guard<std::mutex> lock(sourceMutex);
-   dmdId.id.id = 0;
-   GetDisplaySrcMsg getSrcMsg = { 0, 0, nullptr };
-   msgApi->BroadcastMsg(endpointId, getDmdSrcId, &getSrcMsg);
-   if (getSrcMsg.count == 0)
-      return;
-   getSrcMsg = { getSrcMsg.count, 0, new DisplaySrcId[getSrcMsg.count] };
-   msgApi->BroadcastMsg(endpointId, getDmdSrcId, &getSrcMsg);
-   for (unsigned int i = 0; i < getSrcMsg.count; i++)
-   {
-      if (getSrcMsg.entries[i].GetIdentifyFrame != nullptr && getSrcMsg.entries[i].width >= 128)
-      {
-         dmdId = getSrcMsg.entries[i];
-         break;
-      }
-   }
-   delete[] getSrcMsg.entries;
-}
-
-static void StopColorization()
-{
-   isRunning = false;
-   if (colorizeThread.joinable())
-      colorizeThread.join();
-   if (pVni)
-   {
-      delete state;
-      state = nullptr;
-      Vni_Dispose(pVni);
-      pVni = nullptr;
-      msgApi->BroadcastMsg(endpointId, onDmdSrcChangedId, nullptr);
-   }
-   dmdId.id.id = 0;
-}
-
-static void OnControllerGameStart(const unsigned int eventId, void* userData, void* msgData)
-{
-   // FIXME: Temp fix for issues 3298, 3309, and maybe 3322?
-   if (isRunning)
-   {
-      LOGW("Ignoring game start, already running"s);
-      return;
-   }
-   StopColorization();
-   const CtlOnGameStartMsg* msg = static_cast<const CtlOnGameStartMsg*>(msgData);
-   assert(msg != nullptr && msg->gameId != nullptr);
-
-   VPXTableInfo tableInfo;
+   VPXTableInfo tableInfo {};
    vpxApi->GetTableInfo(&tableInfo);
-   std::filesystem::path tablePath = tableInfo.path;
+   const std::filesystem::path tablePath = PluginStrings::PathFromNative(tableInfo.path);
+   const std::filesystem::path vniBasePath = PluginStrings::PathFromUTF8OrNative(vniPathProp_Get());
 
-   std::filesystem::path vniBasePath = vniPathProp_Get();
-   const std::string gameId = msg->gameId;
-   const std::filesystem::path palFile = gameId + ".pal";
-   const std::filesystem::path vniFile = gameId + ".vni";
-   const std::filesystem::path pin2dmdPal = "pin2dmd.pal"s;
-   const std::filesystem::path pin2dmdVni = "pin2dmd.vni"s;
+   std::vector<std::filesystem::path> gameDirs;
+   const auto addBases = [&gameDirs](const std::filesystem::path& base, const std::string_view& ns, const std::string_view& rom)
+   {
+      if (!ns.empty())
+         gameDirs.push_back(base / PluginStrings::PathFromUTF8(ns) / PluginStrings::PathFromUTF8(rom));
+      gameDirs.push_back(base / PluginStrings::PathFromUTF8(rom));
+   };
+   if (!tablePath.empty())
+   {
+      addBases(tablePath.parent_path() / "vni"sv, gameNs, gameId);
+      if (gameNs == "pinmame"sv)
+         gameDirs.push_back(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / PluginStrings::PathFromUTF8(gameId));
+   }
+   if (!vniBasePath.empty())
+      addBases(vniBasePath, gameNs, gameId);
 
-   std::filesystem::path palPath, vniPath;
-
-   // Priority 1: vni/<rom>/<rom>.pal and vni/<rom>/<rom>.vni
-   if (auto path1 = find_case_insensitive_file_path(tablePath.parent_path() / "vni"sv / gameId / palFile); !path1.empty())
-   {
-      palPath = path1;
-      if (auto path2 = find_case_insensitive_file_path(tablePath.parent_path() / "vni"sv / gameId / vniFile); !path2.empty())
-         vniPath = path2;
-   }
-   // Priority 2: vni/<rom>/pin2dmd.pal and vni/<rom>/pin2dmd.vni
-   else if (auto path3 = find_case_insensitive_file_path(tablePath.parent_path() / "vni"sv / gameId / pin2dmdPal); !path3.empty())
-   {
-      palPath = path3;
-      if (auto path4 = find_case_insensitive_file_path(tablePath.parent_path() / "vni"sv / gameId / pin2dmdVni); !path4.empty())
-         vniPath = path4;
-   }
-   // Priority 3: pinmame/altcolor/<rom>/<rom>.pal and pinmame/altcolor/<rom>/<rom>.vni
-   else if (auto path5 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / gameId / palFile); !path5.empty())
-   {
-      palPath = path5;
-      if (auto path6 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / gameId / vniFile); !path6.empty())
-         vniPath = path6;
-   }
-   // Priority 4: pinmame/altcolor/<rom>/pin2dmd.pal and pinmame/altcolor/<rom>/pin2dmd.vni
-   else if (auto path7 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / gameId / pin2dmdPal); !path7.empty())
-   {
-      palPath = path7;
-      if (auto path8 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / gameId / pin2dmdVni); !path8.empty())
-         vniPath = path8;
-   }
-   // Priority 5: global setting path
-   else if (!vniBasePath.empty())
-   {
-      if (auto path9 = find_case_insensitive_file_path(vniBasePath / gameId / palFile); !path9.empty())
-      {
-         palPath = path9;
-         if (auto path10 = find_case_insensitive_file_path(vniBasePath / gameId / vniFile); !path10.empty())
-            vniPath = path10;
-      }
-   }
-
-   if (palPath.empty())
-   {
-      LOGI("No PAL file found for " + gameId);
-      return;
-   }
-
-   LOGI("Loading PAL from " + palPath.string());
-
-   if (!vniPath.empty())
-      LOGI("Loading VNI from " + vniPath.string());
-
-   pVni = Vni_LoadFromPaths(palPath.string().c_str(), vniPath.empty() ? nullptr : vniPath.string().c_str(), nullptr, nullptr);
-   OnDmdSrcChanged(onDmdSrcChangedId, nullptr, nullptr);
-   if (pVni)
-   {
-      isRunning = true;
-      colorizeThread = std::thread(ColorizeThread);
-   }
-   else
-   {
-      LOGE("Failed to load colorization data");
-   }
+   for (const std::filesystem::path& gameDir : gameDirs)
+      if (FindColorizationIn(gameDir, gameId, palPath, vniPath))
+         return true;
+   return false;
 }
 
-static void OnControllerGameEnd(const unsigned int eventId, void* userData, void* msgData)
+static void OnControllersChanged()
 {
-   StopColorization();
+   controllers->With(
+      [](const std::vector<ControllerDef>& items)
+      {
+         if (items.empty())
+         {
+            LOGI("VNI/PAL colorizer stopped");
+            return;
+         }
+
+         const ControllerDef& selectedController = items.front();
+         const std::string_view currentGameId = PinballPlugin::Controller::CtrlGetGameKey(selectedController.gameId);
+
+         std::filesystem::path palPath, vniPath;
+         if (!GetColorization(PinballPlugin::Controller::CtrlGetGameNamespace(selectedController.gameId), currentGameId, palPath, vniPath))
+         {
+            LOGI(std::format("No PAL file found for {}", selectedController.gameId));
+            return;
+         }
+
+         LOGI("Loading PAL from " + PluginStrings::PathToUTF8(palPath));
+
+         if (!vniPath.empty())
+            LOGI("Loading VNI from " + PluginStrings::PathToUTF8(vniPath));
+
+         colorizer = std::make_unique<VNIColorizer>(palPath, vniPath, selectedController.endpointId);
+      });
 }
 
 }
@@ -305,23 +423,40 @@ MSGPI_EXPORT void MSGPIAPI VNIPluginLoad(const uint32_t sessionId, const MsgPlug
    msgApi->BroadcastMsg(endpointId, getVpxApiId, &vpxApi);
    msgApi->ReleaseMsgID(getVpxApiId);
 
-   msgApi->SubscribeMsg(endpointId, onControllerGameStartId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_START), OnControllerGameStart, nullptr);
-   msgApi->SubscribeMsg(endpointId, onControllerGameEndId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_END), OnControllerGameEnd, nullptr);
-   msgApi->SubscribeMsg(endpointId, onDmdSrcChangedId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_ON_SRC_CHG_MSG), OnDmdSrcChanged, nullptr);
-   msgApi->SubscribeMsg(endpointId, getDmdSrcId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_GET_SRC_MSG), OnGetRenderDMDSrc, nullptr);
+   controllers = std::make_unique<CtrlItemConsumer<ControllerDef>>(
+      msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG,
+      [](std::vector<ControllerDef>& items)
+      {
+         // Keep only controllers for which we actually have the assets, a
+         // pinmame:: one winning over other namespaces when several match the
+         // same game key (selection order is otherwise undefined).
+         const ControllerDef* selected = nullptr;
+         for (const ControllerDef& controller : items)
+         {
+            const std::string_view gameId = PinballPlugin::Controller::CtrlGetGameKey(controller.gameId);
+            std::filesystem::path palPath, vniPath;
+            if (gameId.empty() || !GetColorization(PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId), gameId, palPath, vniPath))
+               continue;
+            if (PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId) == "pinmame"sv)
+            {
+               selected = &controller;
+               break;
+            }
+            if (selected == nullptr)
+               selected = &controller;
+         }
+         items.clear();
+         if (selected != nullptr)
+            items.push_back(*selected);
+      },
+      []() { colorizer = nullptr; }, []() { OnControllersChanged(); });
+   controllers->Subscribe();
 }
 
 MSGPI_EXPORT void MSGPIAPI VNIPluginUnload()
 {
-   StopColorization();
-   msgApi->UnsubscribeMsg(getDmdSrcId, OnGetRenderDMDSrc, nullptr);
-   msgApi->UnsubscribeMsg(onDmdSrcChangedId, OnDmdSrcChanged, nullptr);
-   msgApi->UnsubscribeMsg(onControllerGameStartId, OnControllerGameStart, nullptr);
-   msgApi->UnsubscribeMsg(onControllerGameEndId, OnControllerGameEnd, nullptr);
-   msgApi->ReleaseMsgID(onControllerGameStartId);
-   msgApi->ReleaseMsgID(onControllerGameEndId);
-   msgApi->ReleaseMsgID(onDmdSrcChangedId);
-   msgApi->ReleaseMsgID(getDmdSrcId);
+   controllers->Unsubscribe();
+   controllers = nullptr;
    msgApi->FlushPendingCallbacks(endpointId);
    msgApi = nullptr;
 }

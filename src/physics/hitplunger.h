@@ -19,7 +19,7 @@ public:
    void SetObjects(const float len);
 
    void PullBack(float speed);
-   void Fire(float startPos);
+   void Fire(float startPos); // startPos is a relative position (1 = fully retracted, 0 = fully extended, rest position is somewhere in between likely near 0)
    void Fire() { Fire((m_pos - m_frameEnd) / (m_frameStart - m_frameEnd)); }
 
    void PullBackandRetract(float speed);
@@ -38,15 +38,15 @@ public:
    HitLineZ m_jointBase[2];
    HitLineZ m_jointEnd[2];
 
-   // Current rod position, in table distance units.  This represents
-   // the location of the tip of the plunger.
+   // Current rod position, in VPU (location of the tip of the plunger)
    float m_pos;
 
-   // current rod speed, in table distance units per second(?)
+   // Current rod speed, in VPU/VPT
+   // FIXME validate this unit as it used tobe advertised VPU/s but the code say otherwise
    float m_speed;
 
    // Forward travel limit.  When we're about to collide with a ball,
-   // we'll temporarily set this so the collision location.  We set
+   // we'll temporarily set this to the collision location.  We set
    // this in HitTest(), and use it (and reset it) in the next call 
    // to UpdateDisplacements().  This is expressed in absolute
    // position coordinates, so the default value (which allows full
@@ -60,7 +60,7 @@ public:
    // collision.  But this was a bit limiting; the physical process
    // we're modeling is really a transfer of momentum, not velocity.
    // With the addition of the Momentum Transfer property and the new
-   // accounting for the relative mass ofthe ball, the ball can now
+   // accounting for the relative mass of the ball, the ball can now
    // come out of the collision with a slower speed than the plunger
    // had going in.)
    //
@@ -75,7 +75,7 @@ public:
    // explicitly prevent the plunger from going past that until the
    // next displacement update, when the ball will have been moved
    // as well.
-   float m_travelLimit;
+   float m_travelLimit; // VPU
 
    // Mass of the moving parts.  This is in arbitrary units, and serves
    // as a scaling factor in some of the plunger speed calculations.
@@ -186,19 +186,16 @@ public:
    // spring (or, if already in the bounce, the next reversal).
    float m_fireBounce;
 
-   // Relative rest position, as a fraction of the full range.  For
-   // historical reasons, this is the park position if "mech enabled"
-   // is true in the plunger's properties, or the maximum forward
-   // position if not.
+   // Relative rest position as a fraction of the full frame range (0 is maximum forward position, 1 is maximum retracted position). Prior to VP10.0, non-mech plungers parked at 0.0 instead.
    float m_restPos;
 
-   // maximum retracted position, in absolute table coordinates
+   // Maximum retracted position, in VPU
    float m_frameStart;
 
-   // maximum forward position, in absolute table coordinates
+   // Maximum forward position, in VPU
    float m_frameEnd;
 
-   // frame length
+   // Frame length between maximym forward and retracted positions in VPU
    float m_frameLen;
 
    // Stroke Events are armed.  We use this for a hysteresis system
@@ -212,29 +209,6 @@ public:
    // exact end, and ensures that we don't fire the event repeatedly
    // if we stop at one of the ends for a while.
    bool m_strokeEventsArmed;
-
-   // Recent history of mechanical plunger readings.  We keep the
-   // last few distinct readings so that we can make a better guess
-   // at the true starting point of a release motion when we detect
-   // that the analog plunger is moving rapidly forward.  We
-   // usually detect a release motion by seeing a rapid forward
-   // position change between two consecutive USB samples.  However,
-   // the real plunger moves so quickly that the first of these
-   // two samples is usually already somewhat forward of the point
-   // where the release actually started.  The history lets us go
-   // back to the position where the plunger was hovering before
-   // being released.  In most cases, the user moves the plunger
-   // slowly enough for our USB samples to keep up and give us an
-   // accurate position reading; it's only on release that it starts
-   // moving too fast.
-   struct MechSample
-   {
-      float pos;
-      uint64_t ts;
-   };
-   std::array<MechSample, 32> m_mech {};
-   int m_mechPos = 0;
-   float m_mechSpeed = 0.f;
 
    // scatter velocity (degree of randomness in the impulse when
    // the plunger strikes the ball, to approximate the mechanical
@@ -267,6 +241,10 @@ public:
    void DrawUI(std::function<Vertex2D(Vertex3Ds)> project, ImDrawList* drawList, bool fill) const override { } // FIXME implement
  
    PlungerMoverObject m_plungerMover;
+   uint32_t m_lastStrikeRumbleMs = 0; // one contact pulse per landing, see PlayContactRumble()
+   float m_lastContactImpact = 0.f;
+   void PlayContactRumble(const float impactSpeed);
+   void OnBallWallHit(const HitBall& ball, const Vertex3Ds& hitNormal, const float impactSpeed); // a ball landing on the lane end in front of the parked tip
 
    Plunger *m_pplunger;
 };

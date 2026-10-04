@@ -9,7 +9,7 @@
 #include "ui/win/resource.h"
 
 
-BallVisualsProperty::BallVisualsProperty(const VectorProtected<ISelect> *pvsel)
+BallVisualsProperty::BallVisualsProperty(const vector<IWinUIPart *> *pvsel)
    : BasePropertyDialog(IDD_PROPBALL_VISUALS, pvsel)
 {
    m_imageCombo.SetDialog(this);
@@ -24,11 +24,11 @@ BallVisualsProperty::BallVisualsProperty(const VectorProtected<ISelect> *pvsel)
 
 void BallVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
 {
-   for (int i = 0; i < m_pvsel->size(); i++)
+   for (int i = 0; i < SelCount(); i++)
    {
-      if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemBall))
+      if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemBall))
          continue;
-      Ball *const ball = (Ball *)m_pvsel->ElementAt(i);
+      Ball *const ball = (Ball *)SelAt(i)->GetEditable();
       if (dispid == IDC_USE_TABLE_SETTINGS || dispid == -1)
       {
          PropertyDialog::SetCheckboxState(m_hUseTableSettings, ball->m_d.m_useTableRenderSettings);
@@ -71,11 +71,11 @@ void BallVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
 
 void BallVisualsProperty::UpdateProperties(const int dispid)
 {
-   for (int i = 0; i < m_pvsel->size(); i++)
+   for (int i = 0; i < SelCount(); i++)
    {
-      if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemBall))
+      if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemBall))
          continue;
-      Ball *const ball = (Ball *)m_pvsel->ElementAt(i);
+      Ball *const ball = (Ball *)SelAt(i)->GetEditable();
       switch (dispid)
       {
       case IDC_USE_TABLE_SETTINGS: CHECK_UPDATE_ITEM(ball->m_d.m_useTableRenderSettings, PropertyDialog::GetCheckboxState(m_hUseTableSettings), ball); break;
@@ -91,7 +91,7 @@ void BallVisualsProperty::UpdateProperties(const int dispid)
       case IDC_RADIUS_EDIT: CHECK_UPDATE_ITEM(ball->m_hitBall.m_d.m_radius, PropertyDialog::GetFloatTextbox(m_radiusEdit), ball); break;
       case IDC_COLOR_BUTTON1:
       {
-         CComObject<PinTable> *const ptable = g_pvp->GetActiveTable();
+         CComObject<PinTable> *const ptable = GetTable();
          if (ptable == nullptr)
             break;
          CHOOSECOLOR cc = m_colorDialog.GetParameters();

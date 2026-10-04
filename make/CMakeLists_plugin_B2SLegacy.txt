@@ -105,6 +105,7 @@ set(B2SLEGACY_PLUGIN_SOURCES
    plugins/b2slegacy/forms/FormBackglass.cpp
    plugins/b2slegacy/forms/FormDMD.h
    plugins/b2slegacy/forms/FormDMD.cpp
+
    plugins/plugins/ResURIResolver.h
    plugins/plugins/ResURIResolver.cpp
 
@@ -122,6 +123,12 @@ if(BUILD_SHARED)
       src/core
       src
    )
+
+   if(NOT (PLATFORM STREQUAL "windows" OR PLATFORM STREQUAL "windows-mingw"))
+      target_compile_definitions(B2SLegacyPlugin PRIVATE
+         "__forceinline=__attribute__((always_inline)) inline"
+      )
+   endif()
 
    if(PLATFORM STREQUAL "windows" OR PLATFORM STREQUAL "windows-mingw")
       if(MSVC)
@@ -180,29 +187,31 @@ if(BUILD_SHARED)
       target_link_libraries(B2SLegacyPlugin PUBLIC SDL3)
    endif()
 
+   set_target_properties(B2SLegacyPlugin PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PLUGINS_DIR}/b2slegacy"
+   )
+
    add_custom_command(TARGET B2SLegacyPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/b2slegacy/plugin.cfg" "${PLUGINS_DIR}/b2slegacy/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:B2SLegacyPlugin>" "${PLUGINS_DIR}/b2slegacy"
-      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:B2SLegacyPlugin>"
+      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/b2slegacy/plugin.cfg" "${PLUGINS_DIR}/b2slegacy/plugin.cfg"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS)
       if(PLATFORM STREQUAL "windows")
          if (ARCH STREQUAL "x64")
             add_custom_command(TARGET B2SLegacyPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/b2slegacy/SDL364.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/b2slegacy/SDL364.dll"
             )
          elseif (ARCH STREQUAL "x86")
             add_custom_command(TARGET B2SLegacyPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL3.dll" "${PLUGINS_DIR}/b2slegacy/SDL3.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL3.dll" "${PLUGINS_DIR}/b2slegacy/SDL3.dll"
             )
          endif()
       elseif(PLATFORM STREQUAL "windows-mingw")
          add_custom_command(TARGET B2SLegacyPlugin POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/b2slegacy/SDL364.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/b2slegacy/libgcc_s_seh-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/b2slegacy/libstdc++-6.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/b2slegacy/libwinpthread-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/SDL364.dll" "${PLUGINS_DIR}/b2slegacy/SDL364.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/b2slegacy/libgcc_s_seh-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/b2slegacy/libstdc++-6.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/b2slegacy/libwinpthread-1.dll"
          )
       elseif(PLATFORM STREQUAL "linux")
          add_custom_command(TARGET B2SLegacyPlugin POST_BUILD
@@ -224,6 +233,10 @@ if(BUILD_STATIC)
       plugins/b2slegacy
       src/core
       src
+   )
+
+   target_compile_definitions(B2SLegacyPlugin PRIVATE
+      "__forceinline=__attribute__((always_inline)) inline"
    )
 
    set_target_properties(B2SLegacyPlugin PROPERTIES

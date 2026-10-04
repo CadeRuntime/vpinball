@@ -5,9 +5,7 @@
 #pragma once
 
 
-#include <atomic>
-
-#include "core/pinundo.h"
+#include "math/matrix.h"
 #include "parts/Collection.h"
 #include "parts/pinbinary.h"
 #include "renderer/RenderProbe.h"
@@ -15,13 +13,20 @@
 #include "unordered_dense.h"
 #include "utils/eventproxy.h"
 #include "utils/fileio.h"
+#include "utils/JSONSerializer.h"
 #include "utils/hash.h"
-#include "utils/vector.h"
+
+#include "pole/pole.h"
+
+#include <atomic>
+#include <utility>
 
 #ifdef __STANDALONE__
 #include <iostream>
 class Light;
 #endif
+
+class TableHash;
 
 
 
@@ -51,9 +56,17 @@ class Sound;
 class Texture;
 class Material;
 class Collection;
+class Flipper;
 
 class VPXFileFeedback;
 namespace VPX::InGameUI { class InGameUIItem; }
+
+// How name conflicts with existing table assets are resolved when importing a pack
+enum class PartImportMergeStrategy
+{
+   ExistingWins, // Imported parts share the same named assets already in the table (existing asset is kept)
+   RenameConflict, // Imported assets sharing the name of a different existing asset are renamed (references updated)
+};
 
 class PinTable : public CComObjectRootEx<CComSingleThreadModel>,
                  public IDispatchImpl<ITable, &IID_ITable, &LIBID_VPinballLib>,
@@ -63,13 +76,12 @@ class PinTable : public CComObjectRootEx<CComSingleThreadModel>,
                  // allowing VBScript to get the set of events to sync to.
                  // VBA does not need this interface for some reason
                  public IProvideClassInfo2Impl<&CLSID_Table, &DIID_ITableEvents, &LIBID_VPinballLib>,
-                 public ISelect,
                  public IScriptable,
                  public IEditable,
                  public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -188,10 +200,6 @@ public:
    STDMETHOD(put_GlassHeight)(/*[in]*/ float newVal);
    STDMETHOD(get_TableHeight)(/*[out, retval]*/ float *pVal);
    STDMETHOD(put_TableHeight)(/*[in]*/ float newVal);
-   STDMETHOD(get_DisplayBackdrop)(/*[out, retval]*/ VARIANT_BOOL *pVal);
-   STDMETHOD(put_DisplayBackdrop)(/*[in]*/ VARIANT_BOOL newVal);
-   STDMETHOD(get_DisplayGrid)(/*[out, retval]*/ VARIANT_BOOL *pVal);
-   STDMETHOD(put_DisplayGrid)(/*[in]*/ VARIANT_BOOL newVal);
    STDMETHOD(get_Image)(/*[out, retval]*/ BSTR *pVal);
    STDMETHOD(put_Image)(/*[in]*/ BSTR newVal);
 
@@ -220,9 +228,6 @@ public:
    STDMETHOD(put_OverridePhysics)(/*[in]*/ PhysicsSet newVal);
    STDMETHOD(get_OverridePhysicsFlippers)(/*[out, retval]*/ VARIANT_BOOL *pVal);
    STDMETHOD(put_OverridePhysicsFlippers)(/*[in]*/ VARIANT_BOOL newVal);
-
-   STDMETHOD(ImportPhysics)();
-   STDMETHOD(ExportPhysics)();
 
    STDMETHOD(get_MaxSeparation)(/*[out, retval]*/ float *pVal);
    STDMETHOD(put_MaxSeparation)(/*[in]*/ float newVal);
@@ -302,44 +307,20 @@ public:
    PinTable();
    ~PinTable() override;
 
-private:
-   PinTable *CopyForPlay() const final { assert(!"const CopyForPlay not implemented"); return nullptr; } // inherited via IEditable
 public:
-   PinTable *CopyForPlay();
-
-   EventProxyBase *GetEventProxyBase() final { return (EventProxyBase *)this; }
-
    void RemoveInvalidReferences();
 
-   HRESULT GetTypeName(BSTR *pVal) const final;
-
-   void SetMouseCapture();
-
-   // IEditable
-   void UIRenderPass2(Sur *const psur) final { }
-
-   // ISelect
-   bool IsUILocked() const final { return false; }
-   void SetUILock(bool lock) final { }
-   bool IsUIVisible() const final { return true; }
-   void SetUIVisible(bool visible) final { }
-
-   void OnLButtonDown(int x, int y) final;
-   void OnLButtonUp(int x, int y) final { }
-   void SetDirtyDraw() final;
+   void SetDirtyDraw();
 
    bool GetDecalsEnabled()  const { return m_renderDecals; }  // Enable backdrop image, decals and lights on backdrop
    bool GetEMReelsEnabled() const { return m_renderEMReels; } // Enable dispreel on backdrop
 
-   void Copy(int x, int y);
-   void Paste(const bool atLocation, const int x, const int y);
-
-   void ExportTableMesh();
-   void ImportBackdropPOV(const std::filesystem::path &filename);
-   void ExportBackdropPOV() const;
+   void ImportBackdropPOV(const std::filesystem::path &filename, const bool toUserSettings);
+   void ExportBackdropPOV(const std::filesystem::path &filename) const;
 
    static std::array<string, 18> VPPelementNames; // names of the fields in a .vpp file
    void ImportVPP(const std::filesystem::path &filename);
+   void ExportVPP(const std::filesystem::path &filename, Flipper *const flipper);
 
    enum class OptionEventType { Initialized, Changed, Reseted, EndOfEdit };
    void FireOptionEvent(OptionEventType event);
@@ -348,7 +329,6 @@ public:
    void ReImportSound(VPX::Sound *const pps, const std::filesystem::path &filename);
    bool ExportSound(VPX::Sound *const pps, const std::filesystem::path &filename);
    void RemoveSound(VPX::Sound *const pps);
-   static bool ExportImage(const Texture *const ppi, const string &filename);
    Texture* ImportImage(const std::filesystem::path &filename, const string &imageName);
    void RemoveImage(Texture *const ppi);
 
@@ -365,143 +345,132 @@ public:
 
    void ParseScript(const string &script, vector<string> &functions, vector<string> &identifiers, const std::function<void(const string &, int)>& onDuplicate) const;
    string AuditTable(bool log) const;
+   void SanitizePhysicsData(); // Fix invalid physics values of a loaded table, noted for the audit
+   vector<string> m_loadFixes; // Invalid data fixed when the table was loaded (reported by AuditTable)
 
-   void ListCustomInfo(HWND hwndListView);
-   int AddListItem(HWND hwndListView, const string &szName, const string &szValue1, LPARAM lparam);
-
-   void ImportFont(HWND hwndListView, const string &filename);
-   void ListFonts(HWND hwndListView);
-   int AddListBinary(HWND hwndListView, PinBinary *ppb);
+   void AddFont(PinFont *const ppf);
    void RemoveFont(PinFont *const ppf);
-
-   void NewCollection(const HWND hwndListView, const bool fFromSelection);
-   void ListCollections(HWND hwndListView);
-   int AddListCollection(HWND hwndListView, CComObject<Collection> *pcol);
-
-#ifndef __STANDALONE__
-   void DoCommand(int icmd, int x, int y) final;
-#endif
-   bool FMutilSelLocked();
+   const vector<PinFont *> &GetFontList() const { return m_vfont; }
 
    // Expected by CodeViewer
-   void SelectItem(IScriptable *piscript);
-   void DoCodeViewCommand(int command);
    void SetDirtyScript(SaveDirtyState sds);
 
    void ExportMesh(ObjLoader &loader) final;
 
-   // Multi-object manipulation
-   Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
-   void FlipY(const Vertex2D &pvCenter) final;
-   void FlipX(const Vertex2D &pvCenter) final;
-   void Rotate(const float ang, const Vertex2D &pvCenter, const bool useElementCenter) final;
-   void Scale(const float scalex, const float scaley, const Vertex2D &pvCenter, const bool useElementCenter) final;
-   void Translate(const Vertex2D &pvOffset) final;
-
-   // IFireEvents
-   IDispatch *GetIDispatch() final { return (IDispatch *)this; }
-   const IDispatch *GetIDispatch() const final { return (const IDispatch *)this; }
-
-   // IEditable (mostly bogus for now)
-   IFireEvents *GetIFireEvents() final { return (IFireEvents *)this; }
-   void UIRenderPass1(Sur *const psur) final { }
-   void ClearForOverwrite() final;
-   void Load(IObjectReader &reader) final;
-   void Save(IObjectWriter& writer, const bool saveForUndo) final;
+#pragma region IEditable
+public:
+   PinTable *GetPTable() final { return this; }
+   const PinTable *GetPTable() const final { return this; }
    IHitable *GetIHitable() final { return nullptr; }
    const IHitable *GetIHitable() const final { return nullptr; }
    IRenderable *GetIRenderable() final { return nullptr; }
    const IRenderable *GetIRenderable() const final { return nullptr; }
-   ISelect *GetISelect() final { return (ISelect *)this; }
-   const ISelect *GetISelect() const final { return (const ISelect *)this; }
-   void SetDefaults(const bool fromMouseClick) final { }
-   void WriteRegDefaults() final { }
-   IScriptable *GetIScriptable() final { return (IScriptable *)this; }
-   const IScriptable *GetIScriptable() const final { return (const IScriptable *)this; }
-   void BeginUndo() final;
-   void EndUndo() final;
-   void Undo();
-   void Delete() final { } // Can't delete table itself
-   void Uncreate() final { }
-
-   // ISelect
-   void SetDefaultPhysics(const bool fromMouseClick) final;
-   IEditable *GetIEditable() final { return (IEditable *)this; }
-   const IEditable *GetIEditable() const final { return (const IEditable *)this; }
-
-   // FIXME both ISelect and IEditable
+   IScriptable *GetIScriptable() final { return static_cast<IScriptable *>(this); }
+   const IScriptable *GetIScriptable() const final { return static_cast<const IScriptable *>(this); }
+   IFireEvents *GetIFireEvents() final { return nullptr; }
    ItemTypeEnum GetItemType() const final { return eItemTable; }
-   PinTable *GetPTable() final { return this; }
-   const PinTable *GetPTable() const final { return this; }
+   static inline constexpr ItemTypeEnum ItemType = eItemTable;
+   void SetDefaults(const bool fromMouseClick) final { }
+   void SetDefaultPhysics(const bool fromMouseClick) final;
+   void WriteRegDefaults() final { }
+   EventProxyBase *GetEventProxyBase() final { return static_cast<EventProxyBase *>(this); }
+   void Save(IObjectWriter &writer, const bool saveForUndo) final;
+   void ClearForOverwrite() final;
+   void Load(IObjectReader &reader) final;
+   PinTable *CopyForPlay() const final; // Not exactly const as we add a reference, and copied table keeps a non const reference on this
+   Vertex2D GetCenter() const final { return { 0.f, 0.f }; }
+   void FlipY(const Vertex2D &pvCenter) final { }
+   void FlipX(const Vertex2D &pvCenter) final { }
+   void Rotate(const float ang, const Vertex2D &pvCenter, const bool useElementCenter) final { }
+   void Scale(const float scalex, const float scaley, const Vertex2D &pvCenter, const bool useElementCenter) final { }
+   void Translate(const Vertex2D &offset) final { }
+#pragma endregion
 
+#pragma region IScriptable
+   IDispatch *GetIDispatch() final { return static_cast<IDispatch *>(this); }
+   const IDispatch *GetIDispatch() const final { return static_cast<const IDispatch *>(this); }
+#pragma endregion
 
-   static string GetElementName(IEditable *pedit);
+#pragma region IPerPropertyBrowsing
+   // FIXME Remove as this is unmaintained deadcode (no internal property page, no will for VPX to offer a data model for an external COM editor)
+   STDMETHOD(GetDisplayString)(DISPID dispID, BSTR *pbstr) { return ResultFromScode(E_NOTIMPL); }
+   STDMETHOD(MapPropertyToPage)(DISPID dispID, CLSID *pclsid) { return ResultFromScode(E_NOTIMPL); }
+   STDMETHOD(GetPredefinedStrings)(DISPID dispID, CALPOLESTR *pcaStringsOut, CADWORD *pcaCookiesOut);
+   STDMETHOD(GetPredefinedValue)(DISPID dispID, DWORD dwCookie, VARIANT *pVarOut);
+   STDMETHOD(GetPredefinedStrings)(DISPID dispID, CALPOLESTR *pcaStringsOut, CADWORD *pcaCookiesOut, IEditable *piedit);
+   STDMETHOD(GetPredefinedValue)(DISPID dispID, DWORD dwCookie, VARIANT *pVarOut, IEditable *piedit);
+#pragma endregion
 
-   IEditable *GetElementByName(const char *const name) const;
-   void OnDelete();
-
-   void UseTool(int x, int y, int tool);
-
-   void AssignSelectionToPartGroup(PartGroup *group);
-
-   // Transform editor window coordinates to table coordinates
-   Vertex2D TransformPoint(int x, int y) const;
-
-   void ClearMultiSel(ISelect *newSel = nullptr);
-   bool MultiSelIsEmpty() const;
-   ISelect *GetSelectedItem() const { return m_vmultisel.ElementAt(0); }
-   void AddMultiSel(ISelect *psel, const bool add, const bool update, const bool contextClick);
-
-   HRESULT Save();
-   HRESULT SaveToStorage(IStorage *pstg);
-   HRESULT SaveToStorage(IStorage *pstg, VPXFileFeedback& feedback);
-   HRESULT LoadGameFromFilename(const std::filesystem::path &filename);
+   HRESULT Save(VPXFileFeedback &feedback);
+   HRESULT SaveToStorage(InMemStructuredStorage *pstg, VPXFileFeedback &feedback);
+   // Saves the table as a VPZ pack: a folder when path is a directory (or has no extension),
+   // a zip archive otherwise (".vpz" extension expected)
+   HRESULT SaveToJSON(const std::filesystem::path &path, VPXFileFeedback &feedback);
+   // Saves a partial pack holding only the given parts and the assets they reference (for library/export)
+   HRESULT SavePartsToJSONPack(const std::filesystem::path &path, const vector<IEditable *> &selection, VPXFileFeedback &feedback);
+   // Imports the parts of another table (typically a partial VPZ pack), merging assets by name. Returns the imported parts
+   vector<IEditable *> ImportParts(PinTable *const source, PartGroup *const targetGroup);
    HRESULT LoadGameFromFilename(const std::filesystem::path &filename, VPXFileFeedback &feedback);
+   // Loads a pack through the given deserializer (a decorated one may be used, e.g. to remap asset names on import)
+   HRESULT LoadGameFromJSONPack(JSONSerializer::Deserializer &pack, VPXFileFeedback &feedback);
+   // Creates a pack reader for importing: with RenameConflict, assets sharing the name of a different
+   // table asset are renamed on load and the references of the imported parts are updated accordingly
+   std::unique_ptr<JSONSerializer::Deserializer> CreateImportDeserializer(const std::filesystem::path &filename, PartImportMergeStrategy strategy);
    void LoadScriptOverride(const std::filesystem::path& scriptPath);
 
 private:
-   HRESULT SaveInfo(IStorage *pstg, HCRYPTHASH hcrypthash);
-   HRESULT SaveCustomInfo(IStorage *pstg, IStream *pstmTags, HCRYPTHASH hcrypthash);
-   static HRESULT WriteInfoValue(IStorage *pstg, const wstring &wzName, const string &szValue, HCRYPTHASH hcrypthash);
-   static HRESULT ReadInfoValue(IStorage *pstg, const wstring &wzName, string &output, HCRYPTHASH hcrypthash);
-   HRESULT LoadInfo(IStorage *pstg, HCRYPTHASH hcrypthash, int version);
-   HRESULT LoadCustomInfo(IStorage *pstg, IStream *pstmTags, HCRYPTHASH hcrypthash, int version);
+   HRESULT LoadGameFromVPXStorage(VPXFileFeedback &feedback);
+   HRESULT LoadGameFromJSONPack(VPXFileFeedback &feedback);
+   void FinalizeLoadedParts(vector<IEditable *> &parts);
+   void ApplyLoadedVersionFixups(int loadfileversion);
+
+   HRESULT SaveInfo(InMemStructuredStorage *pstg, TableHash *const hash);
+   HRESULT SaveCustomInfo(InMemStructuredStorage *pstg, InMemStream *pstmTags, TableHash *const hash);
+   static HRESULT WriteInfoValue(InMemStructuredStorage *pstg, const string &name, const string &szValue, TableHash *const hash);
+   static void ReadInfoValue(POLE::Storage &storage, const string &wzName, string &output, TableHash *const hash);
+   void LoadInfo(POLE::Storage &storage, TableHash *const hash, int version);
+   void LoadCustomInfo(POLE::Storage &storage, TableHash *const hash, int version);
 
 public:
    void Uncreate(IEditable *pie);
    void Undelete(IEditable *pie);
 
-   STDMETHOD(GetDisplayString)(DISPID dispID, BSTR *pbstr) { return ResultFromScode(E_NOTIMPL); }
-   STDMETHOD(MapPropertyToPage)(DISPID dispID, CLSID *pclsid) { return ResultFromScode(E_NOTIMPL); }
-   STDMETHOD(GetPredefinedStrings)(DISPID dispID, CALPOLESTR *pcaStringsOut, CADWORD *pcaCookiesOut);
-   STDMETHOD(GetPredefinedValue)(DISPID dispID, DWORD dwCookie, VARIANT *pVarOut);
+   void ReorderParts(bool isDrawingOrder);
 
-   STDMETHOD(GetPredefinedStrings)(DISPID dispID, CALPOLESTR *pcaStringsOut, CADWORD *pcaCookiesOut, IEditable *piedit);
-   STDMETHOD(GetPredefinedValue)(DISPID dispID, DWORD dwCookie, VARIANT *pVarOut, IEditable *piedit);
-
-   const vector<IEditable *>& GetParts() const { return m_vedit; }
+#pragma region Scene Parts
+public:
+   const vector<IEditable *> &GetParts() const { return m_vedit; }
    bool HasPart(IEditable *part) const { return std::ranges::find(m_vedit, part) != m_vedit.end(); }
    void AddPart(IEditable *part);
    void RemovePart(IEditable *part);
-   void RenamePart(IEditable *part, const wstring& newName);
+   void RenamePart(IEditable *part, const string& newName); // Part or the table itself (see HasRegisteredName)
+   bool HasRegisteredName(IEditable *part) const { return part == this ? m_nameRegistered : HasPart(part); }
    void MovePartToFront(IEditable *part);
    void MovePartToBack(IEditable *part);
-   void ReorderParts(bool isDrawingOrder);
-   void AddCollection(Collection *collection);
-   void RemoveCollection(Collection *collection);
-   void RenameCollection(Collection *collection, const wstring &newName);
-   bool IsNameUnique(const wstring &wzName) const;
-   void GetUniqueName(const ItemTypeEnum type, wstring& wzUniqueName) const;
-   wstring GetUniqueName(const wstring &wzRoot) const;
+   IEditable *GetElementByName(const char *const name) const;
 
 private:
-   ankerl::unordered_dense::map<wstring, IEditable *> m_scriptableNames;
    vector<IEditable *> m_vedit;
+#pragma endregion
+
+
+#pragma region Unique name ids
+public:
+   bool IsNameUnique(const string &name) const;
+   void GetUniqueName(const ItemTypeEnum type, string &uniqueName) const;
+   string GetUniqueName(const string &root) const;
+
+private:
+   ankerl::unordered_dense::set<string> m_scriptableNames; // Lower case names taken in the script: table, parts, collections, global methods
+   bool m_nameRegistered = false; // The table's own name is registered once loaded (not in a live copy)
+#pragma endregion
+
 
 public:
-
    float GetSurfaceHeight(const string &name, float x, float y) const;
+   // Parts placed on a surface or ramp reference it by name: retarget them after it was renamed from oldName.
+   // beforeChange is called for each part before it is modified (e.g. to mark it for undo)
+   void UpdateSurfaceReferences(const IEditable *surface, const string &oldName, const std::function<void(IEditable *)> &beforeChange);
 
    void SetLoadDefaults();
 
@@ -512,11 +481,6 @@ public:
 
    VPX::Sound *GetSound(const string &name) const;
 
-   void UpdateCollection(const int index);
-   void MoveCollectionUp(CComObject<Collection> *pcol);
-   void MoveCollectionDown(CComObject<Collection> *pcol);
-   void UpdatePropertyImageList();
-   void UpdatePropertyMaterialList();
    int GetDetailLevel() const { return m_settings.GetPlayer_AlphaRampAccuracy(); } // used for rubber, ramp and ball
 
    FRect3D GetBoundingBox() const;
@@ -540,30 +504,49 @@ public:
    CONNECTION_POINT_ENTRY(DIID_ITableEvents)
    END_CONNECTION_POINT_MAP()
 
-   void ListMaterials(HWND hwndListView);
-   int AddListMaterial(HWND hwndListView, Material *const pmat);
+#pragma region Material
+public:
    void RemoveMaterial(Material *const pmat);
    void AddMaterial(Material *const pmat);
-
    bool IsMaterialNameUnique(const string &name) const;
    Material *GetMaterial(const string &name) const;
-   Material *GetSurfaceMaterial(const wstring &name) const;
-   Texture *GetSurfaceImage(const wstring &name) const;
+   Material *GetSurfaceMaterial(const string &name) const;
+   Texture *GetSurfaceImage(const string &name) const;
+   bool IsDummyMaterial(const Material *const mat) const { return mat == m_dummyMaterial.get(); }
 
+private:
    std::unique_ptr<Material> m_dummyMaterial;
+#pragma endregion
 
-   bool GetCollectionIndex(const ISelect *const element, int &collectionIndex, int &elementIndex);
 
-   Vertex2D EvaluateGlassHeight() const;
+#pragma region Collection
+public:
+   void AddCollection(CComObject<Collection> *collection);
+   void RemoveCollection(CComObject<Collection> *collection);
+   void RenameCollection(Collection *collection, const string &newName);
+   void MoveCollectionUp(CComObject<Collection> *pcol);
+   void MoveCollectionDown(CComObject<Collection> *pcol);
+   const vector<CComObject<Collection> *> &GetCollections() const { return m_vcollection; }
+   bool GetCollectionIndex(const IEditable *const element, int &collectionIndex, int &elementIndex);
+   void ToggleCollectionMembership(const int colIndex, const vector<IEditable *> &selection);
+   const string &GetCollectionNameByElement(const IEditable *const element) const;
+   // Collection content edition, keeping the parts' m_vCollection/m_viCollection cross references in sync
+   void AddPartToCollection(Collection *collection, IEditable *part);
+   void RemovePartFromCollection(Collection *collection, IEditable *part);
+   void SetCollectionContent(Collection *collection, const vector<IEditable *> &parts);
 
-   void LockElements();
+private:
+   vector<CComObject<Collection> *> m_vcollection;
+#pragma endregion
 
+
+public:
    std::filesystem::path m_filename;
    string m_title;
 
    // Flag that disables all table edition. Lock toggles are counted to identify version changes in a table (for example to guarantee untouched table for tournament)
    bool IsLocked() const { return (m_tablelocked & 1) != 0; }
-   void ToggleLock() { BeginUndo(); MarkForUndo(); m_tablelocked++; EndUndo(); SetDirtyDraw(); }
+   void ToggleLock() { m_tablelocked++; }
 
    bool TournamentModePossible() const { return IsLocked() && !FDirty() && m_external_script_name.empty(); }
 
@@ -605,29 +588,40 @@ public:
       return tableIni;
    }
 
-   Settings m_settings; // Settings for this table (apply overrides above application settings)
+   // Settings for this table (apply overrides above application settings)
+   Settings &GetSettings() { return m_settings; }
+   const Settings &GetSettings() const { return m_settings; }
 
    PinTable * m_liveBaseTable = nullptr; // Defined when this table is a live shallow copy of another table
-   template <class T> T *GetLiveFromStartup(T *obj) { return static_cast<T *>(m_startupToLive[obj]); }
-   template <class T> T *GetStartupFromLive(T *obj) { return static_cast<T *>(m_liveToStartup[obj]); }
+   template <class T> T *GetLiveFromStartup(T *obj)
+   {
+      const auto it = m_startupToLive.find(obj);
+      return it != m_startupToLive.end() ? static_cast<T *>(it->second) : nullptr;
+   }
+   template <class T> T *GetStartupFromLive(T *obj)
+   {
+      const auto it = m_liveToStartup.find(obj);
+      return it != m_liveToStartup.end() ? static_cast<T *>(it->second) : nullptr;
+   }
 
    // FIXME circular dependency with PinTableWnd, needed while splitting Win32 editor from core parts, but must be removed afterward
+   // Only ever set by PinTableWnd's constructor, so this stays null in a build without the Win32 editor
    class PinTableWnd *m_tableEditor = nullptr;
 
 private:
+   Settings m_settings;
    std::filesystem::path m_iniFileName;
 
    ankerl::unordered_dense::map<void *, void *> m_startupToLive; // For live table, maps back and forth to startup table editable parts, materials,...
    ankerl::unordered_dense::map<void *, void *> m_liveToStartup;
 
 public:
-   VectorProtected<ISelect> m_vmultisel;
-
    float m_left = 0.f; // always zero for now
    float m_top = 0.f; // always zero for now
    float m_right = 0.f;
    float m_bottom = 0.f;
 
+   Vertex2D EvaluateGlassHeight() const;
    float m_glassBottomHeight = 210.f; // Height of glass above playfield at bottom of playfield
    float m_glassTopHeight = 210.f; // Height of glass above playfield at top of playfield
 
@@ -702,8 +696,6 @@ public:
 
    string m_envImage;
 
-   vector<ISelect *> m_allHitElements;
-
    vector<Texture *> m_vimage;
    vector<Texture *> m_vliveimage;
    const vector<Texture *> &GetImageList() const { return m_vimage; }
@@ -713,10 +705,6 @@ public:
    const vector<Material *> &GetMaterialList() const { return m_materials; }
 
    vector<VPX::Sound *> m_vsound;
-
-   vector<PinFont *> m_vfont;
-
-   VectorProtected<CComObject<Collection>> m_vcollection;
 
    vector<RenderProbe *> m_vrenderprobe;
    void RemoveRenderProbe(RenderProbe *pb) { std::erase(m_vrenderprobe, pb); }
@@ -736,10 +724,10 @@ public:
 
    FRect m_rcDragRect; // Multi-select
 
-   PinUndo m_undo;
-
    string m_original_table_script; // Script defined in the loaded file
    std::filesystem::path m_external_script_name; // if defined, file that override internal script
+   bool m_external_script_bom = false;    // That file starts with a UTF-8 BOM (kept when saving)
+   bool m_external_script_cp1252 = false; // That file is legacy Windows-1252 (kept when saving, while all characters fit)
    string m_script_text; // Actual script (either a copy of the original or the one loaded from the override file)
 
    CComObject<class ScriptGlobalTable> *m_psgt; // Object to expose to script for global functions
@@ -763,8 +751,7 @@ public:
    string m_dateSaved;
    unsigned int m_numTimesSaved = 0;
 
-   vector<string> m_vCustomInfoTag;
-   vector<string> m_vCustomInfoContent;
+   vector<std::pair<string, string>> m_customInfo;
 
    LightSource m_Light[MAX_LIGHT_SOURCES];
    COLORREF m_lightAmbient;
@@ -816,9 +803,6 @@ public:
    float GetPlayfieldSlope() const;
    float GetPlayfieldOverridenSlope() const;
 
-   const wstring& GetCollectionNameByElement(const ISelect *const element) const;
-   void RefreshProperties();
-
    void SetNotesText(const string &text)
    {
       m_notesText = text;
@@ -850,6 +834,8 @@ private:
 
    PinBinary *m_pbTempScreenshot = nullptr; // Holds contents of screenshot image until the image asks for it
    int m_loadTemp[5] = { 0, 0, 0, 0, 0 }; // Used to temporarily store the number of elements loaded for each type (subobjects, sounds, textures, fonts, collections) during loading phase
+
+   vector<PinFont *> m_vfont;
 
    ankerl::unordered_dense::set<std::string> m_loggedSoundErrors;
 

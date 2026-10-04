@@ -6,6 +6,7 @@
 #include "plugins/MsgPluginManager.h"
 #include "core/VPXPluginAPIImpl.h"
 #include "parts/pintable.h"
+#include "utils/denormals.h"
 
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 #define MA_ENABLE_CUSTOM
@@ -170,11 +171,10 @@ static ma_node_vtable vpx_node_vtable = { vpx_node_process_pcm_frames, nullptr, 
 
 MA_API ma_result vpx_node_init(ma_node_graph* pNodeGraph, const vpx_node_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, vpx_node* pNode)
 {
-   ma_node_config baseConfig;
    if (pNode == nullptr)
       return MA_INVALID_ARGS;
    memset(pNode, 0, sizeof(vpx_node));
-   baseConfig = pConfig->nodeConfig;
+   ma_node_config baseConfig = pConfig->nodeConfig;
    baseConfig.vtable = &vpx_node_vtable;
    baseConfig.pInputChannels = &pConfig->inChannels;
    baseConfig.pOutputChannels = &pConfig->outChannels;
@@ -203,13 +203,13 @@ SoundPlayer* SoundPlayer::Create(const AudioPlayer* audioPlayer, Sound* sound)
    return new SoundPlayer(audioPlayer, sound);
 }
 
-SoundPlayer* SoundPlayer::Create(const AudioPlayer* audioPlayer, const string& filename)
+SoundPlayer* SoundPlayer::Create(const AudioPlayer* audioPlayer, const std::filesystem::path& filename)
 {
    // Decode and resample the sound on the ancillary thread as this is fairly heavy
    return new SoundPlayer(audioPlayer, filename);
 }
 
-SoundPlayer::SoundPlayer(const AudioPlayer* audioPlayer, const string& filename)
+SoundPlayer::SoundPlayer(const AudioPlayer* audioPlayer, const std::filesystem::path& filename)
    : m_audioPlayer(audioPlayer)
    , m_outputTarget(SoundOutTypes::SNDOUT_BACKGLASS)
    , m_commandQueue(1)
@@ -217,9 +217,12 @@ SoundPlayer::SoundPlayer(const AudioPlayer* audioPlayer, const string& filename)
 {
    m_commandQueue.enqueue([this, filename]()
    {
-      SetThreadName("VPX.SoundPlayer ["s.append(filename).append(1, ']'));
+      SetThreadName("VPX.SoundPlayer ["s.append(PathToUTF8(filename.filename())).append(1, ']'));
+      set_denormals_flush_to_zero(); // FPU mode is per thread
 
       ma_engine* engine = m_audioPlayer->GetEngine(m_outputTarget);
+      if (engine == nullptr)
+         return;
 
       // Add custom node for channel mixing
       m_vpxMixNode = std::make_unique<vpx_node>();
@@ -241,7 +244,11 @@ SoundPlayer::SoundPlayer(const AudioPlayer* audioPlayer, const string& filename)
 
       m_sound = std::make_unique<ma_sound>();
       ma_sound_config config = ma_sound_config_init_2(engine);
+      #ifdef _WIN32
+      config.pFilePathW = filename.c_str(); // Wide path (miniaudio opens narrow ones with the process code page)
+      #else
       config.pFilePath = filename.c_str();
+      #endif
       config.channelsOut = 2;
       config.monoExpansionMode = ma_mono_expansion_mode_stereo_only;
       config.endCallback = OnSoundEnd;
@@ -270,8 +277,11 @@ SoundPlayer::SoundPlayer(const AudioPlayer* audioPlayer, Sound* sound)
       [this, sound]()
    {
       SetThreadName("VPX.SoundPlayer ["s.append(sound->GetName()).append(1, ']'));
+      set_denormals_flush_to_zero(); // FPU mode is per thread
 
       ma_engine* engine = m_audioPlayer->GetEngine(m_outputTarget);
+      if (engine == nullptr)
+         return;
 
       // Add custom node for channel mixing
       m_vpxMixNode = std::make_unique<vpx_node>();
@@ -501,7 +511,7 @@ void SoundPlayer::OnSoundEnd(void* pUserData, ma_sound* pSound)
                      g_pplayer->m_ptable->FireVoidEvent(DISPID_GameEvents_MusicDone);
                   else
                   {
-                     CComVariant rgvar[1] = { CComVariant(callbackId->c_str()) };
+                     CComVariant rgvar[1] = { CComVariant(MakeWString(*callbackId).c_str()) }; // The sound name is UTF-8 (a narrow CComVariant would read it as ANSI)
                      DISPPARAMS dispparams = { rgvar, nullptr, 1, 0 };
                      g_pplayer->m_ptable->FireDispID(DISPID_GameEvents_SoundDone, &dispparams);
                   }

@@ -5,17 +5,14 @@
 
 #include "math/math.h"
 #include "renderer/Renderer.h"
-#include "ui/win/WinEditor.h"
+#include "renderer/TextureCompressor.h"
 #include "utils/BiffReader.h"
 #include "utils/lzwreader.h"
 
-#ifndef __STANDALONE__
-#include "FreeImage.h"
-#else
-#include <SDL3_image/SDL_image.h>
-#include <SDL3/SDL_surface.h>
-#include "standalone/FreeImage.h"
+#ifdef __STANDALONE__
+#define _WINDOWS_
 #endif
+#include "FreeImage.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG // only use the SSE2-JPG path from stbi, as all others are not faster than FreeImage //!! can remove stbi again if at some point FreeImage incorporates libjpeg-turbo or something similar
@@ -27,6 +24,8 @@
 #include <fstream>
 #include <iostream>
 #endif
+
+#include <atomic>
 
 #define QOI_API static
 #define QOI_IMPLEMENTATION
@@ -51,14 +50,20 @@ static inline int GetPixelSize(const BaseTexture::Format format)
    }
 }
 
-BaseTexture::BaseTexture(const unsigned int w, const unsigned int h, const Format format)
+static inline uint64_t NextLiveHash()
+{
+   static std::atomic<uint64_t> s_counter { 1 };
+   return s_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+BaseTexture::BaseTexture(const unsigned int w, const unsigned int h, const Format format, const bool allocate)
    : m_realWidth(w)
    , m_realHeight(h)
    , m_format(format)
    , m_width(w)
    , m_height(h)
-   , m_liveHash(((size_t)this) ^ usec() ^ ((uint64_t)w << 16) ^ ((uint64_t)h << 32) ^ format)
-   , m_data(reinterpret_cast<uint8_t*>(SDL_aligned_alloc(16, w * h * GetPixelSize(format))))
+   , m_liveHash(NextLiveHash())
+   , m_data(allocate ? reinterpret_cast<uint8_t*>(SDL_aligned_alloc(16, w * h * GetPixelSize(format))) : nullptr)
 {
 }
 
@@ -90,6 +95,17 @@ std::shared_ptr<BaseTexture> BaseTexture::Create(const unsigned int w, const uns
    return result;
 }
 
+#if defined(ENABLE_BGFX)
+std::shared_ptr<BaseTexture> BaseTexture::CreateCompressedOnly(std::shared_ptr<const CompressedTexture> compressed, const Format format, const bool isOpaque) noexcept
+{
+   auto result = std::shared_ptr<BaseTexture>(new BaseTexture(compressed->width, compressed->height, format, false));
+   result->m_selfPointer = result;
+   result->m_compressed = std::move(compressed);
+   result->SetIsOpaque(isOpaque);
+   return result;
+}
+#endif
+
 std::shared_ptr<BaseTexture> BaseTexture::CreateFromFile(const std::filesystem::path& filename, unsigned int maxTexDimension, bool resizeOnLowMem) noexcept
 {
    if (filename.empty())
@@ -105,7 +121,7 @@ std::shared_ptr<BaseTexture> BaseTexture::CreateFromData(const void* data, const
 
    if (data == nullptr || size == 0)
       return nullptr;
-   
+
    // Try to load using fast JPG path via stbi if no texture resize must be triggered
    if (maxTexDimension == 0 && !resizeOnLowMem)
    {
@@ -154,16 +170,16 @@ std::shared_ptr<BaseTexture> BaseTexture::CreateFromData(const void* data, const
          return nullptr;
       }
       // Load
-      FIBITMAP * const dib = FreeImage_LoadFromMemory(fif, dataHandle, 0);
+      FIBITMAP * const dib = FreeImage_LoadFromMemory(fif, dataHandle, (fif == FIF_PNG ? PNG_IGNOREGAMMA : 0) | (fif == FIF_EXR ? EXR_ALLOW_FOR_FP16 : 0));
       FreeImage_CloseMemory(dataHandle);
       tex = dib ? BaseTexture::CreateFromFreeImage(dib, isImageData, maxTexDimension, resizeOnLowMem) : nullptr;
    }
-   
+
    #ifdef __OPENGLES__
    if (tex && (tex->m_format == SRGB || tex->m_format == RGB_FP16 || tex->m_format == RGB_FP32))
       tex = tex->NewWithAlpha();
    #endif
-   
+
    return tex;
 }
 
@@ -415,42 +431,6 @@ std::shared_ptr<BaseTexture> BaseTexture::CreateFromFreeImage(FIBITMAP* dib, con
    return tex;
 }
 
-std::shared_ptr<BaseTexture> BaseTexture::CreateFromHBitmap(const HBITMAP hbmp, unsigned int maxTexDim, bool with_alpha) noexcept
-{
-   #ifdef __STANDALONE__
-      return nullptr;
-   #else
-      // from the FreeImage FAQ page
-      BITMAP bm;
-      GetObject(hbmp, sizeof(BITMAP), &bm);
-      FIBITMAP* dib = FreeImage_Allocate(bm.bmWidth, bm.bmHeight, bm.bmBitsPixel);
-      if (!dib)
-         return nullptr;
-      // The GetDIBits function clears the biClrUsed and biClrImportant BITMAPINFO members (don't know why)
-      // So we save these infos below. This is needed for palettized images only.
-      const int nColors = FreeImage_GetColorsUsed(dib);
-      const HDC dc = GetDC(nullptr);
-      /*const int Success =*/ GetDIBits(dc, hbmp, 0, FreeImage_GetHeight(dib),
-         FreeImage_GetBits(dib), FreeImage_GetInfo(dib), DIB_RGB_COLORS);
-      ReleaseDC(nullptr, dc);
-      // restore BITMAPINFO members
-      FreeImage_GetInfoHeader(dib)->biClrUsed = nColors;
-      FreeImage_GetInfoHeader(dib)->biClrImportant = nColors;
-
-      if (!dib)
-         return nullptr;
-      if (with_alpha && FreeImage_GetBPP(dib) == 24)
-      {
-         FIBITMAP* dibConv = FreeImage_ConvertTo32Bits(dib);
-         FreeImage_Unload(dib);
-         dib = dibConv;
-         if (!dib)
-            return nullptr;
-      }
-      return BaseTexture::CreateFromFreeImage(dib, true, maxTexDim, true);
-   #endif
-}
-
 void BaseTexture::Update(std::shared_ptr<BaseTexture>& tex, const unsigned int width, const unsigned int height, const Format texFormat, const void* image)
 {
    const int pixelSize = GetPixelSize(texFormat);
@@ -463,7 +443,10 @@ void BaseTexture::Update(std::shared_ptr<BaseTexture>& tex, const unsigned int w
          assert(tex->pitch() * tex->height() == width * height * pixelSize);
          if (tex->data() != image && image)
             memcpy(tex->data(), image, width * height * pixelSize);
-         tex->m_aliases.clear();
+         {
+            std::lock_guard lock(tex->m_aliasMutex);
+            tex->m_aliases.clear();
+         }
          if (g_pplayer)
             g_pplayer->m_renderer->m_renderDevice->m_texMan.SetDirty(tex.get());
          return;
@@ -499,7 +482,7 @@ bool BaseTexture::Save(const std::filesystem::path& filepath) const
    if ((m_format != SRGBA) && (m_format != SRGB))
       return false;
 
-   const string ext = lowerCase(filepath.extension().string());
+   const string ext = lowerCase(PathToUTF8(filepath.extension()));
    bool success = false;
 
    // Create parent directory if needed
@@ -509,7 +492,7 @@ bool BaseTexture::Save(const std::filesystem::path& filepath) const
    {
       if (SDL_Surface* pSurface = ToSDLSurface(); pSurface)
       {
-         success = SDL_SaveBMP(pSurface, filepath.string().c_str());
+         success = SDL_SaveBMP(pSurface, PathToUTF8(filepath).c_str()); // SDL expects UTF-8
          SDL_DestroySurface(pSurface);
       }
    }
@@ -531,27 +514,13 @@ bool BaseTexture::Save(const std::filesystem::path& filepath) const
          }
          catch (const std::filesystem::filesystem_error& e)
          {
-            PLOGE << "Failed to save file " << filepath.string().c_str() << ": " << e.what();
+            PLOGE << "Failed to save file " << PathToUTF8(filepath) << ": " << e.what();
          }
          QOI_FREE(encoded);
       }
    }
    else
    {
-   #ifdef __STANDALONE__
-      if (SDL_Surface* pSurface = ToSDLSurface(); pSurface)
-      {
-         if (ext == ".png")
-            success = IMG_SavePNG(pSurface, filepath.string().c_str());
-         else if (ext == ".jpg" || ext == ".jpeg")
-            success = IMG_SaveJPG(pSurface, filepath.string().c_str(), 75);
-         // Needs latest SDL3_image for WEBP support
-         //else if (ext == ".webp")
-         //   success = IMG_SaveWEBP(pSurface, filepath.string().c_str(), 75);
-         SDL_DestroySurface(pSurface);
-      }
-
-   #else
       FIBITMAP* bitmap = FreeImage_Allocate(m_width, m_height, m_format == SRGB ? 24 : 32);
       if (bitmap)
       {
@@ -561,16 +530,20 @@ bool BaseTexture::Save(const std::filesystem::path& filepath) const
          else
             copy_bgra_rgba<false>((unsigned int*)bits, (const unsigned int*)m_data, m_width * m_height);
          FreeImage_FlipVertical(bitmap);
+         #ifdef _WIN32
+         const auto save = [&](FREE_IMAGE_FORMAT fif, int flags) { return FreeImage_SaveU(fif, bitmap, filepath.c_str(), flags); }; // Wide path
+         #else
+         const auto save = [&](FREE_IMAGE_FORMAT fif, int flags) { return FreeImage_Save(fif, bitmap, filepath.c_str(), flags); };
+         #endif
          if (ext == ".png")
-            success = FreeImage_Save(FIF_PNG, bitmap, filepath.string().c_str(), PNG_Z_DEFAULT_COMPRESSION);
+            success = save(FIF_PNG, PNG_Z_DEFAULT_COMPRESSION);
          else if (ext == ".jpg" || ext == ".jpeg")
-            success = FreeImage_Save(FIF_JPEG, bitmap, filepath.string().c_str(), JPEG_QUALITYGOOD);
+            success = save(FIF_JPEG, JPEG_QUALITYGOOD);
          else if (ext == ".webp")
-            //success = FreeImage_Save(FIF_WEBP, bitmap, _filePath, WEBP_LOSSLESS); // Very slow and very large files (but would be better for our regression tests)
-            success = FreeImage_Save(FIF_WEBP, bitmap, filepath.string().c_str(), WBMP_DEFAULT);
+            //success = save(FIF_WEBP, WEBP_LOSSLESS); // Very slow and very large files (but would be better for our regression tests)
+            success = save(FIF_WEBP, WBMP_DEFAULT);
          FreeImage_Unload(bitmap);
       }
-   #endif
    }
 
    return success;
@@ -578,8 +551,8 @@ bool BaseTexture::Save(const std::filesystem::path& filepath) const
 
 std::shared_ptr<BaseTexture> BaseTexture::GetAlias(Format format) const
 {
-   auto it = m_aliases.find(format);
-   if (it == m_aliases.end())
+   std::lock_guard lock(m_aliasMutex);
+   if (auto it = m_aliases.find(format); it == m_aliases.end())
    {
       std::shared_ptr<BaseTexture> alias = Convert(format);
       if (!m_isOpaqueDirty)
@@ -674,7 +647,7 @@ std::shared_ptr<BaseTexture> BaseTexture::Convert(Format format) const
          default: break;
       }
       break;
-   
+
    case RGB_FP32:
       switch (format)
       {
@@ -906,7 +879,7 @@ Texture::Texture(string name, PinBinary* ppb, unsigned int width, unsigned int h
    , m_width(width)
    , m_height(height)
    , m_ppb(ppb)
-   , m_liveHash(((size_t)this) ^ ((uint64_t)ppb) ^ usec() ^ ((uint64_t)width << 16) ^ ((uint64_t)height << 32))
+   , m_liveHash(NextLiveHash())
 {
    assert(m_ppb != nullptr);
    assert(m_width > 0);
@@ -948,13 +921,17 @@ Texture* Texture::CreateFromObjectReader(IObjectReader& reader, PinTable* const 
             // The 'BITS' field is deprecated and only used in pre 10.8.1 files which were all BIFF streams so we can safely cast here
             BiffReader& br = (BiffReader&)reader;
 
+            // This is a legacy deprecated and largely unused feature, moreover bmp are not supposed to enter this codeblock (no undo or copy/paste)
+            // so the reader is expected to always be backed by a POLE storage stream
+            assert(br.m_stream != nullptr);
+
             // Old files used to store some bitmaps as a 32-bit SBGRA picture, we now (10.8.1+) always use a compressed file format. Convert here to simplify the code
             const size_t size = (size_t)height * width;
             assert(ppb == nullptr && size != 0);
 
             // Uncompress to RGBA image
             uint8_t* const __restrict tmp = new uint8_t[size * 4];
-            const LZWReader lzwreader(br.m_pistream, tmp, width * 4);
+            const LZWReader lzwreader(br.m_stream, tmp, width * 4);
 
             // Find out if all alpha values are 0x00 or 0xFF
             bool has_alpha = false;
@@ -980,6 +957,7 @@ Texture* Texture::CreateFromObjectReader(IObjectReader& reader, PinTable* const 
                else
                   copy_rgba_rgb<false>(dst, src, width); // copy without alpha channel
             }
+            delete[] tmp;
 
             // Convert to a lossless webp
             auto memStream = FreeImage_OpenMemory();
@@ -993,7 +971,7 @@ Texture* Texture::CreateFromObjectReader(IObjectReader& reader, PinTable* const 
                path.erase(path.length() - ext.length());
                path += "webp"sv;
             }
-            ppb->m_path = PathFromString(path);
+            ppb->m_path = PathFromUTF8(path);
             FreeImage_SeekMemory(memStream, 0, SEEK_SET);
             FreeImage_ReadMemory(ppb->m_buffer.data(), 1, static_cast<unsigned int>(ppb->m_buffer.size()), memStream);
             FreeImage_CloseMemory(memStream);
@@ -1008,6 +986,8 @@ Texture* Texture::CreateFromObjectReader(IObjectReader& reader, PinTable* const 
             if (reader.HasError())
             {
                assert(!"Invalid binary image file");
+               delete ppb; // Partially loaded, do not create a texture from it
+               ppb = nullptr;
                return false;
             }
             break;
@@ -1035,7 +1015,10 @@ Texture* Texture::CreateFromObjectReader(IObjectReader& reader, PinTable* const 
       });
 
    if (ppb == nullptr)
+   {
+      PLOGE << "Failed to load image '" << name << "': no image data";
       return nullptr;
+   }
 
    Texture* const tex = new Texture(name, ppb, width, height);
    tex->m_alphaTestValue = alphaTestValue;
@@ -1068,19 +1051,12 @@ Texture* Texture::CreateFromFile(const std::filesystem::path& filename, const bo
 Texture::~Texture()
 {
    delete m_ppb;
-   #ifndef __STANDALONE__
-      if (m_hbmGDIVersion)
-      {
-         if(m_hbmGDIVersion != g_pvp->m_hbmInPlayMode)
-             DeleteObject(m_hbmGDIVersion);
-      }
-   #endif
 }
 
 void Texture::Save(IObjectWriter& writer, PinTable* pt) const
 {
    writer.WriteString(FID(NAME), m_name);
-   writer.WriteString(FID(PATH), m_ppb->m_path.string());
+   writer.WriteString(FID(PATH), PathToUTF8(m_ppb->m_path));
    writer.WriteInt(FID(WDTH), m_width);
    writer.WriteInt(FID(HGHT), m_height);
    if (pt && pt->GetImageLink(this))
@@ -1102,7 +1078,7 @@ bool Texture::IsHDR() const
    if (buffer)
       return buffer->m_format == BaseTexture::RGB_FP16 || buffer->m_format == BaseTexture::RGBA_FP16
           || buffer->m_format == BaseTexture::RGB_FP32 || buffer->m_format == BaseTexture::RGBA_FP32;
-   const string ext = lowerCase(m_ppb->m_path.extension().string());
+   const string ext = lowerCase(PathToUTF8(m_ppb->m_path.extension()));
    return (ext == ".exr") || (ext == ".hdr");
 }
 
@@ -1125,16 +1101,19 @@ std::shared_ptr<const BaseTexture> Texture::GetRawBitmap(bool resizeOnLowMem, un
       return buffer;
    //PLOGD << "Decoding image " << m_name;
    buffer = std::shared_ptr<BaseTexture>(BaseTexture::CreateFromData(m_ppb->m_buffer.data(), m_ppb->m_buffer.size(), true, maxTexDimension, resizeOnLowMem));
-   if (buffer && m_width != buffer->m_realWidth)
+   if (buffer == nullptr)
+      return nullptr;
+   if (m_width != buffer->m_realWidth)
    {
       PLOGE << "Corrupted file: image '" << m_name << "' width (" << buffer->m_realWidth << ") does not match the width (" << m_width << ") of the image datablock.";
       const_cast<Texture*>(this)->m_width = buffer->m_realWidth;
    }
-   if (buffer && m_height != buffer->m_realHeight)
+   if (m_height != buffer->m_realHeight)
    {
       PLOGE << "Corrupted file: image '" << m_name << "' height (" << buffer->m_realHeight << ") does not match the height (" << m_height << ") of the image datablock.";
       const_cast<Texture*>(this)->m_height = buffer->m_realHeight;
    }
+   buffer->SetName(GetName());
    m_imageBuffer = buffer;
    UpdateOpaque();
    return buffer;
@@ -1142,26 +1121,13 @@ std::shared_ptr<const BaseTexture> Texture::GetRawBitmap(bool resizeOnLowMem, un
 
 HBITMAP Texture::GetGDIBitmap() const
 {
-#ifndef __STANDALONE__
+#ifdef VPX_ENABLE_WIN32_EDITOR
    if (m_hbmGDIVersion)
       return m_hbmGDIVersion;
 
-   // GDI is only available and used by Win32 editor
-   assert(g_pvp);
-
-   // only do anything in here (and waste memory/time on it) if UI needed (i.e. if not just -Play via command line is triggered or selected on VPX start with the file popup!)
-   if (g_pvp->m_table_played_via_SelectTableOnStart)
-   {
-      m_hbmGDIVersion = g_pvp->m_hbmInPlayMode;
-      return m_hbmGDIVersion;
-   }
-
    const auto buffer = GetRawBitmap(false, 0);
    if (buffer == nullptr)
-   {
-      m_hbmGDIVersion = g_pvp->m_hbmInPlayMode; // We should return an error bitmap
-      return m_hbmGDIVersion;
-   }
+      return NULL;
 
    const HDC hdcScreen = GetDC(nullptr);
    m_hbmGDIVersion = CreateCompatibleBitmap(hdcScreen, m_width, m_height);

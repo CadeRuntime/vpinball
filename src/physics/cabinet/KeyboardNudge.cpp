@@ -19,6 +19,7 @@ PushRetractKeyboardNudge::PushRetractKeyboardNudge(float nudgeStrength)
 {
    m_cabinetAcceleration.SetZero();
    m_cabinetPosition.SetZero();
+   m_impulse.SetZero();
 }
 
 PushRetractKeyboardNudge::~PushRetractKeyboardNudge() { }
@@ -85,6 +86,8 @@ BoxModelKeyboardNudge::BoxModelKeyboardNudge(float nudgeStrength)
    : m_strength(nudgeStrength)
 {
    m_cabinetAcceleration.SetZero();
+   m_cabinetVelocity.SetZero();
+   m_cabinetPrevVelocity.SetZero();
    m_cabinetPositionVPU.SetZero();
    m_cabinetPosition.SetZero();
 
@@ -159,12 +162,14 @@ bool CabModelKeyboardNudge::IsActive() const { return m_deactivationDelay > 0; }
 
 void CabModelKeyboardNudge::Nudge(float angle, float force)
 {
-   m_deactivationDelay = 10000;
+   constexpr float coreScriptStrength = 2.f; // Value hardcoded in core script, also used by most tables as a reference (no unit)
+   constexpr float baseScale = NudgeSensor::StrongNudgeAcceleration / coreScriptStrength; // Scale to match the base script force value to the peak acceleration of a strong nudge
+   const float actualStrength = force * m_strength * baseScale;
    const float a = ANGTORAD(angle);
-   // 6 is a magic number to match the legacy force value, hardcoded to 2 (no unit), to the 12 m/s^2 observed on strong nudges
-   const float xForce =  sinf(a) * (force * m_strength * 6.f);
-   const float yForce = -cosf(a) * (force * m_strength * 6.f);
+   const float xForce =  sinf(a) * actualStrength;
+   const float yForce = -cosf(a) * actualStrength;
    m_impulses.emplace_back(25, Vertex2D { xForce, yForce });
+   m_deactivationDelay = 10000;
 }
 
 CabModelKeyboardNudge::Impulse::Impulse(const int length, Vertex2D impulse)
@@ -173,7 +178,7 @@ CabModelKeyboardNudge::Impulse::Impulse(const int length, Vertex2D impulse)
 {
 }
 
-Vertex2D CabModelKeyboardNudge::Impulse::GetImpulseAceleration() const
+Vertex2D CabModelKeyboardNudge::Impulse::GetImpulseAcceleration() const
 {
    if (!IsInProgress())
       return { 0.f, 0.f };
@@ -192,7 +197,7 @@ void CabModelKeyboardNudge::StepOneMillisecond()
       it->StepOneMillisecond();
       if (it->IsInProgress())
       {
-         impulse += it->GetImpulseAceleration();
+         impulse += it->GetImpulseAcceleration();
          it++;
       }
       else

@@ -4,6 +4,7 @@
 #include "bumper.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/bumperBaseMesh.h"
 #include "meshes/bumperCapMesh.h"
 #include "meshes/bumperRingMesh.h"
@@ -14,8 +15,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 Bumper::~Bumper()
@@ -37,7 +36,7 @@ HRESULT Bumper::Init(const float x, const float y, const bool fromMouseClick, co
    return S_OK;
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsBumper_##prop() : Settings::GetDefaultPropsBumper_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsBumper_##prop() : Settings::GetDefaultPropsBumper_##prop##_Default()
 void Bumper::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_radius, Radius);
@@ -67,7 +66,7 @@ void Bumper::SetDefaultPhysics(const bool fromMouseClick)
 
 void Bumper::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsBumper_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsBumper_##prop(field, false)
    LinkProp(m_d.m_radius, Radius);
    LinkProp(m_d.m_heightScale, HeightScale);
    LinkProp(m_d.m_ringSpeed, RingSpeed);
@@ -99,89 +98,6 @@ STDMETHODIMP Bumper::InterfaceSupportsErrorInfo(REFIID riid)
 
    return S_FALSE;
 }
-
-void Bumper::UIRenderPass1(Sur * const psur)
-{
-   psur->SetBorderColor(-1, false, 0);
-
-   psur->SetObject(this);
-   const float radangle = ANGTORAD(m_d.m_orientation);
-   const float sn = sinf(radangle);
-   const float cs = cosf(radangle);
-
-   const float x1 = m_d.m_vCenter.x - cs*(m_d.m_radius + 10.f);
-   const float y1 = m_d.m_vCenter.y - sn*(m_d.m_radius + 10.f);
-   const float x2 = m_d.m_vCenter.x + cs*(m_d.m_radius + 10.f);
-   const float y2 = m_d.m_vCenter.y + sn*(m_d.m_radius + 10.f);
-   psur->Ellipse(x1, y1, 10.0f);
-   psur->Ellipse(x2, y2, 10.0f);
-
-   if (m_ptable->m_renderSolid)
-   {
-      const Material * const mat = m_ptable->GetMaterial(m_d.m_szCapMaterial);
-      psur->SetFillColor(mat->m_cBase);
-   }
-   else
-      psur->SetFillColor(-1);
-
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius*1.5f);
-   if (m_ptable->m_renderSolid)
-   {
-      const Material * const mat = m_ptable->GetMaterial(m_d.m_szBaseMaterial);
-      psur->SetFillColor(mat->m_cBase);
-   }
-   else
-      psur->SetFillColor(-1);
-
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius);
-}
-
-void Bumper::UIRenderPass2(Sur * const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(-1);
-   psur->SetObject(this);
-   psur->SetObject(nullptr);
-   const float radangle = ANGTORAD(m_d.m_orientation - 90.f);
-   const float sn = sinf(radangle);
-   const float cs = cosf(radangle);
-
-   const float x1 = m_d.m_vCenter.x - cs*(m_d.m_radius + 10.f);
-   const float y1 = m_d.m_vCenter.y - sn*(m_d.m_radius + 10.f);
-   const float x2 = m_d.m_vCenter.x + cs*(m_d.m_radius + 10.f);
-   const float y2 = m_d.m_vCenter.y + sn*(m_d.m_radius + 10.f);
-   psur->Ellipse(x1, y1, 10.0f);
-   psur->Ellipse(x2, y2, 10.0f);
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius*1.5f);
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius);
-
-   if (m_vpinball->m_alwaysDrawLightCenters)
-   {
-      psur->Line(m_d.m_vCenter.x - 10.0f, m_d.m_vCenter.y, m_d.m_vCenter.x + 10.0f, m_d.m_vCenter.y);
-      psur->Line(m_d.m_vCenter.x, m_d.m_vCenter.y - 10.0f, m_d.m_vCenter.x, m_d.m_vCenter.y + 10.0f);
-   }
-}
-
-void Bumper::RenderBlueprint(Sur *psur, const bool solid)
-{
-   psur->SetFillColor(solid ? BLUEPRINT_SOLID_COLOR : -1);
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetObject(this);
-   psur->SetObject(nullptr);
-   const float radangle = ANGTORAD(m_d.m_orientation - 90.f);
-   const float sn = sinf(radangle);
-   const float cs = cosf(radangle);
-
-   const float x1 = m_d.m_vCenter.x - cs*(m_d.m_radius + 10.f);
-   const float y1 = m_d.m_vCenter.y - sn*(m_d.m_radius + 10.f);
-   const float x2 = m_d.m_vCenter.x + cs*(m_d.m_radius + 10.f);
-   const float y2 = m_d.m_vCenter.y + sn*(m_d.m_radius + 10.f);
-   psur->Ellipse(x1, y1, 10.0f);
-   psur->Ellipse(x2, y2, 10.0f);
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius*1.5f);
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius);
-}
-
 
 #pragma region Physics
 
@@ -464,7 +380,7 @@ void Bumper::UpdateSkirt(const bool doCalculation)
 
 void Bumper::ExportMesh(ObjLoader& loader)
 {
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
 
    m_baseHeight = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
    m_fullMatrix = Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_orientation));
@@ -616,7 +532,7 @@ void Bumper::GenerateCapMesh(Vertex3D_NoTex2 *buf) const
 void Bumper::UpdateAnimation(const float diff_time_msec)
 {
    if (m_pbumperhitcircle->m_bumperanim_hitEvent)
-      g_pplayer->m_pininput.PlayRumble(0.1f, 0.05f, 100);
+      g_pplayer->m_pininput.PlayBumperRumble();
 
    const int state = m_pbumperhitcircle->m_bumperanim_hitEvent ? 1 : 0; // 0 = not hit, 1 = hit
    m_pbumperhitcircle->m_bumperanim_hitEvent = false;
@@ -710,25 +626,15 @@ void Bumper::UpdateAnimation(const float diff_time_msec)
 #pragma endregion
 
 
-void Bumper::SetObjectPos()
+void Bumper::Translate(const Vertex2D &offset)
 {
-    m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
-}
-
-void Bumper::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_vCenter.x += dx;
-   m_d.m_vCenter.y += dy;
+   m_d.m_vCenter.x += offset.x;
+   m_d.m_vCenter.y += offset.y;
 }
 
 Vertex2D Bumper::GetCenter() const
 {
    return m_d.m_vCenter;
-}
-
-void Bumper::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_vCenter = pv;
 }
 
 void Bumper::Save(IObjectWriter& writer, const bool saveForUndo)
@@ -749,7 +655,7 @@ void Bumper::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteString(FID(SKMA), m_d.m_szSkirtMaterial);
    writer.WriteString(FID(RIMA), m_d.m_szRingMaterial);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
 
    writer.WriteBool(FID(CAVI), m_d.m_capVisible);
    writer.WriteBool(FID(BSVS), m_d.m_baseVisible);
@@ -790,7 +696,7 @@ void Bumper::Load(IObjectReader& reader)
          case FID(ORIN): m_d.m_orientation = reader.AsFloat(); break;
          case FID(RDLI): m_d.m_ringDropOffset = reader.AsFloat(); break;
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(BVIS):
          {
             // backwards compatibility when loading old VP9 tables
@@ -979,9 +885,6 @@ STDMETHODIMP Bumper::put_SkirtMaterial(BSTR newVal)
 STDMETHODIMP Bumper::get_X(float *pVal)
 {
    *pVal = m_d.m_vCenter.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 

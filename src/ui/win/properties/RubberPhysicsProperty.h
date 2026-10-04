@@ -7,7 +7,7 @@
 class RubberPhysicsProperty final : public BasePropertyDialog
 {
 public:
-    RubberPhysicsProperty(const VectorProtected<ISelect> *pvsel);
+    RubberPhysicsProperty(const vector<IWinUIPart *> *pvsel);
     ~RubberPhysicsProperty() override { }
 
     void UpdateVisuals(const int dispid=-1) override;

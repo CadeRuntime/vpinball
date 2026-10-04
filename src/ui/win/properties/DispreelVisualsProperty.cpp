@@ -9,7 +9,7 @@
 #include "ui/win/WinEditor.h"
 
 
-DispreelVisualsProperty::DispreelVisualsProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPDISPREEL_VISUALS, pvsel)
+DispreelVisualsProperty::DispreelVisualsProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPDISPREEL_VISUALS, pvsel)
 {
     m_singleDigitRangeEdit.SetDialog(this);
     m_imagePerRowEdit.SetDialog(this);
@@ -24,11 +24,11 @@ DispreelVisualsProperty::DispreelVisualsProperty(const VectorProtected<ISelect> 
 
 void DispreelVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemDispReel))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemDispReel))
             continue;
-        DispReel * const reel = (DispReel *)m_pvsel->ElementAt(i);
+        DispReel * const reel = (DispReel *)SelAt(i)->GetEditable();
 
         if (dispid == IDC_BACK_TRANSP_CHECK || dispid == -1)
             PropertyDialog::SetCheckboxState(m_hBackgroundTransparentCheck, reel->m_d.m_transparent);
@@ -60,11 +60,11 @@ void DispreelVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void DispreelVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemDispReel))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemDispReel))
             continue;
-        DispReel * const reel = (DispReel *)m_pvsel->ElementAt(i);
+        DispReel * const reel = (DispReel *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case IDC_BACK_TRANSP_CHECK:
@@ -99,27 +99,27 @@ void DispreelVisualsProperty::UpdateProperties(const int dispid)
                 break;
             case IDC_COLOR_BUTTON1:
             {
-                CComObject<PinTable>* const ptable = g_pvp->GetActiveTable();
-                if (ptable == nullptr)
-                    break;
-                CHOOSECOLOR cc = m_colorDialog.GetParameters();
-                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-                m_colorDialog.SetParameters(cc);
-                m_colorDialog.SetColor(reel->m_d.m_backcolor);
-                m_colorDialog.SetCustomColors(ptable->m_rgcolorcustom);
-                if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
-                {
-                    reel->m_d.m_backcolor= m_colorDialog.GetColor();
-                    m_colorButton.SetColor(reel->m_d.m_backcolor);
-                    memcpy(ptable->m_rgcolorcustom, m_colorDialog.GetCustomColors(), sizeof(ptable->m_rgcolorcustom));
-                }
+               CComObject<PinTable> *const ptable = GetTable();
+               if (ptable == nullptr)
+                  break;
+               CHOOSECOLOR cc = m_colorDialog.GetParameters();
+               cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+               m_colorDialog.SetParameters(cc);
+               m_colorDialog.SetColor(reel->m_d.m_backcolor);
+               m_colorDialog.SetCustomColors(ptable->m_rgcolorcustom);
+               if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
+               {
+                  reel->m_d.m_backcolor = m_colorDialog.GetColor();
+                  m_colorButton.SetColor(reel->m_d.m_backcolor);
+                  memcpy(ptable->m_rgcolorcustom, m_colorDialog.GetCustomColors(), sizeof(ptable->m_rgcolorcustom));
+               }
                 break;
             }
             default:
                 UpdateBaseProperties(reel, &reel->m_d, dispid);
                 break;
         }
-        reel->UpdateStatusBarInfo();
+        PropertyDialog::UpdateStatusBarInfo(reel);
     }
     UpdateVisuals();
 }

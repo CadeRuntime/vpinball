@@ -25,8 +25,25 @@
 
 #define COMPRESS_MESHES // uses miniz for compressing the meshes
 
+// Intent named capabilities derived from the target selection (win32ui+com or standalone builds)
 #ifndef __STANDALONE__
 #define CRASH_HANDLER
+// The win32xx based table editor (src/ui/win): its window, the script editor, the
+// debugger and layer panes, and the undo stack that backs them. Only this build can
+// edit a table, so PinTable::m_tableEditor is null everywhere else
+#define VPX_ENABLE_WIN32_EDITOR
+// A registered typelib lets oleaut32 serve IDispatch for every scriptable class by
+// reflecting over ITypeInfo, which is also how IScriptable enumerates method and event names
+#define VPX_HAS_REGISTERED_TYPELIB
+// IProcessDebugManager / IActiveScriptSiteDebug: attaching a script debugger, and recovering a stack trace when a table script faults. Windows Active Script only
+#define VPX_HAS_SCRIPT_DEBUGGER
+// IObjectSafety / IInternetHostSecurityManager: vetting the ActiveX controls a table script instantiates. Windows Active Script only
+#define VPX_HAS_ACTIVEX_SECURITY
+// CryptoAPI, table hashing no longer needs it (utils/TableHash.h only cross checks against it), but the legacy VP8/VP9 script decryption still does
+#define VPX_HAS_CRYPTOAPI
+#else
+// No registered typelib, so scriptable classes instead carry a hand written IDispatch implementation generated from the IDL (see tools/idl/)
+#define VPX_MANUAL_SCRIPT_DISPATCH
 #endif
 
 //#define _CRTDBG_MAP_ALLOC
@@ -139,12 +156,6 @@
 #endif
 
 #include "main.h"
-
-#ifndef __STANDALONE__
-#ifdef _WIN32
-__forceinline void ListView_SetItemText_Safe(HWND hwndLV, WPARAM iItem, int iSubItem, LPCSTR pszText) { ListView_SetItemText(hwndLV, iItem, iSubItem, (LPSTR)pszText); }
-#endif
-#endif
 
 //{{AFX_INSERT_LOCATION}}
 // Microsoft Visual C++ will insert additional declarations immediately before the previous line.

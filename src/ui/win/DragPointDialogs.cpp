@@ -5,27 +5,23 @@
 
 #include "core/VPApp.h"
 #include "parts/pintable.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/WinEditor.h"
 
 
 namespace VPX::WinUI
 {
 
-RotatePointsDialog::RotatePointsDialog(ISelect *psel)
+RotatePointsDialog::RotatePointsDialog(PinTableWnd *editor)
 {
-   DialogBoxParam(
-      g_app->GetInstanceHandle(),
-      MAKEINTRESOURCE(IDD_ROTATE),
-      g_pvp->GetHwnd(),
-      RotateProc,
-      (size_t)psel);
+   DialogBoxParam(g_app->GetInstanceHandle(), MAKEINTRESOURCE(IDD_ROTATE), editor->m_vpxEditor->GetHwnd(), RotateProc, (size_t)editor);
 }
 
 int RotatePointsDialog::m_applyCount = 0;
 
 INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-   ISelect *psel;
+   PinTableWnd *editor;
 
    switch (uMsg)
    {
@@ -34,13 +30,13 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
       m_applyCount = 0;
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
 
-      psel = (ISelect *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
-      const float angle = psel->GetRotate();
+      editor = (PinTableWnd *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+      const float angle = editor->GetSelectedItem()->GetEditable()->GetRotate();
 
       SendDlgItemMessage(hwndDlg, IDC_CHECK_ROTATE_CENTER, BM_SETCHECK, BST_CHECKED, 0);
 
       SetDlgItemText(hwndDlg, IDC_ROTATEBY, f2sz(angle).c_str());
-      const Vertex2D v = psel->GetCenter();
+      const Vertex2D v = editor->GetMultiSelCenter();
       SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(v.x).c_str());
       SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(v.y).c_str());
    }
@@ -52,7 +48,7 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
       break;
 
    case WM_COMMAND:
-      psel = (ISelect *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+      editor = (PinTableWnd *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
       switch (LOWORD(wParam))
       {
       case IDC_CHECK_ROTATE_CENTER:
@@ -63,12 +59,12 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
             {
                if (SendDlgItemMessage(hwndDlg, IDC_CHECK_ROTATE_CENTER, BM_GETCHECK, 0, 0) != BST_CHECKED)
                {
-                  SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(g_pvp->m_mouseCursorPosition.x).c_str());
-                  SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(g_pvp->m_mouseCursorPosition.y).c_str());
+                  SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(editor->m_vpxEditor->m_mouseCursorPosition.x).c_str());
+                  SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(editor->m_vpxEditor->m_mouseCursorPosition.y).c_str());
                }
                else
                {
-                  const Vertex2D v = psel->GetCenter();
+                  const Vertex2D v = editor->GetMultiSelCenter();
                   SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(v.x).c_str());
                   SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(v.y).c_str());
                }
@@ -76,7 +72,7 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
             }
             default:
                break;
-          }
+            }
       }
       default:
          break;
@@ -103,7 +99,7 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
                GetDlgItemText(hwndDlg, IDC_CENTERY, szT, 255);
                v.y = sz2f(szT);
 
-               psel->Rotate(f, v, useElementCenter);
+               editor->RotateMultiSel(f, v, useElementCenter);
             }
             EndDialog(hwndDlg, TRUE);
             break;
@@ -122,8 +118,7 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
             GetDlgItemText(hwndDlg, IDC_CENTERY, szT, 255);
             v.y = sz2f(szT);
 
-            psel->Rotate(f, v, useElementCenter);
-            psel->GetPTable()->SetDirtyDraw();
+            editor->RotateMultiSel(f, v, useElementCenter);
             break;
          }
          case IDC_ROTATE_UNDO_BUTTON:
@@ -131,8 +126,8 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
             if (m_applyCount > 0)
             {
                m_applyCount--;
-               psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+               editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             break;
          }
@@ -140,8 +135,8 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
             if (m_applyCount > 0)
             {
                for (int i = 0; i < m_applyCount; i++)
-                  psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+                  editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             EndDialog(hwndDlg, FALSE);
             break;
@@ -155,21 +150,16 @@ INT_PTR CALLBACK RotatePointsDialog::RotateProc(HWND hwndDlg, UINT uMsg, WPARAM 
 }
 
 
-ScalePointsDialog::ScalePointsDialog(ISelect *psel)
+ScalePointsDialog::ScalePointsDialog(PinTableWnd *editor)
 {
-   DialogBoxParam(
-      g_app->GetInstanceHandle(),
-      MAKEINTRESOURCE(IDD_SCALE),
-      g_pvp->GetHwnd(),
-      ScaleProc,
-      (size_t)psel);
+   DialogBoxParam(g_app->GetInstanceHandle(), MAKEINTRESOURCE(IDD_SCALE), editor->m_vpxEditor->GetHwnd(), ScaleProc, (size_t)editor);
 }
 
 int ScalePointsDialog::m_applyCount = 0;
 
 INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-   ISelect *psel;
+   PinTableWnd *editor;
 
    switch (uMsg)
    {
@@ -177,13 +167,13 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
    {
       m_applyCount = 0;
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
-      psel = (ISelect *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+      editor = (PinTableWnd *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
 
-      Vertex2D v = psel->GetScale();
+      Vertex2D v = editor->GetSelectedItem()->GetEditable()->GetScale();
 
       SetDlgItemText(hwndDlg, IDC_SCALEFACTOR, f2sz(v.x).c_str());
       SetDlgItemText(hwndDlg, IDC_SCALEY, f2sz(v.y).c_str());
-      v = psel->GetCenter();
+      v = editor->GetMultiSelCenter();
 
       SendDlgItemMessage(hwndDlg, IDC_CHECK_SCALE_CENTER, BM_SETCHECK, BST_CHECKED, 0);
 
@@ -203,7 +193,7 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
       break;
 
    case WM_COMMAND:
-      psel = (ISelect *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+      editor = (PinTableWnd *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
       switch (LOWORD(wParam))
       {
          case IDC_CHECK_SCALE_CENTER:
@@ -214,12 +204,12 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
             {
                if (SendDlgItemMessage(hwndDlg, IDC_CHECK_SCALE_CENTER, BM_GETCHECK, 0, 0) != BST_CHECKED)
                {
-                  SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(g_pvp->m_mouseCursorPosition.x).c_str());
-                  SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(g_pvp->m_mouseCursorPosition.y).c_str());
+                  SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(editor->m_vpxEditor->m_mouseCursorPosition.x).c_str());
+                  SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(editor->m_vpxEditor->m_mouseCursorPosition.y).c_str());
                }
                else
                {
-                  const Vertex2D v = psel->GetCenter();
+                  const Vertex2D v = editor->GetMultiSelCenter();
                   SetDlgItemText(hwndDlg, IDC_CENTERX, f2sz(v.x).c_str());
                   SetDlgItemText(hwndDlg, IDC_CENTERY, f2sz(v.y).c_str());
                }
@@ -264,8 +254,7 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
                v.y = sz2f(szT);
 
                const bool useElementCenter = (SendDlgItemMessage(hwndDlg, IDC_CHECK_SCALE_CENTER, BM_GETCHECK, 0, 0) == BST_CHECKED);
-               //pihdp->ScalePoints(fx, fy, &v);
-               psel->Scale(fx, fy, v, useElementCenter);
+               editor->ScaleMultiSel(fx, fy, v, useElementCenter);
             }
             EndDialog(hwndDlg, TRUE);
             break;
@@ -296,9 +285,7 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
 
             const bool useElementCenter = (SendDlgItemMessage(hwndDlg, IDC_CHECK_SCALE_CENTER, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
-            //pihdp->ScalePoints(fx, fy, &v);
-            psel->Scale(fx, fy, v, useElementCenter);
-            psel->GetPTable()->SetDirtyDraw();
+            editor->ScaleMultiSel(fx, fy, v, useElementCenter);
             break;
          }
          case IDC_SCALE_UNDO_BUTTON:
@@ -306,8 +293,8 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
             if (m_applyCount > 0)
             {
                m_applyCount--;
-               psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+               editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             break;
          }
@@ -315,8 +302,8 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
             if (m_applyCount > 0)
             {
                for (int i = 0; i < m_applyCount; i++)
-                  psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+                  editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             EndDialog(hwndDlg, FALSE);
             break;
@@ -338,29 +325,22 @@ INT_PTR CALLBACK ScalePointsDialog::ScaleProc(HWND hwndDlg, UINT uMsg, WPARAM wP
 }
 
 
-TranslatePointsDialog::TranslatePointsDialog(ISelect *psel)
+TranslatePointsDialog::TranslatePointsDialog(PinTableWnd *editor)
 {
-   DialogBoxParam(
-      g_app->GetInstanceHandle(),
-      MAKEINTRESOURCE(IDD_TRANSLATE),
-      g_pvp->GetHwnd(),
-      TranslateProc,
-      (size_t)psel);
+   DialogBoxParam(g_app->GetInstanceHandle(), MAKEINTRESOURCE(IDD_TRANSLATE), editor->m_vpxEditor->GetHwnd(), TranslateProc, (size_t)editor);
 }
 
 int TranslatePointsDialog::m_applyCount = 0;
 
 INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-   ISelect *psel;
+   PinTableWnd *editor = nullptr;
 
    switch (uMsg)
    {
    case WM_INITDIALOG:
    {
       m_applyCount = 0;
-      SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
-
       SetWindowLongPtr(hwndDlg, GWLP_USERDATA, lParam);
 
       SetDlgItemText(hwndDlg, IDC_OFFSETX, f2sz(0.f).c_str());
@@ -374,7 +354,7 @@ INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, W
       break;
 
    case WM_COMMAND:
-      psel = (ISelect *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
+      editor = (PinTableWnd *)GetWindowLongPtr(hwndDlg, GWLP_USERDATA);
       switch (HIWORD(wParam))
       {
       case BN_CLICKED:
@@ -390,7 +370,7 @@ INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, W
                v.x = sz2f(szT);
                GetDlgItemText(hwndDlg, IDC_OFFSETY, szT, 255);
                v.y = sz2f(szT);
-               psel->Translate(v);
+               editor->TranslateMultiSel(v);
             }
             EndDialog(hwndDlg, TRUE);
             break;
@@ -404,8 +384,7 @@ INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, W
             v.x = sz2f(szT);
             GetDlgItemText(hwndDlg, IDC_OFFSETY, szT, 255);
             v.y = sz2f(szT);
-            psel->Translate(v);
-            psel->GetPTable()->SetDirtyDraw();
+            editor->TranslateMultiSel(v);
             break;
          }
          case IDC_TRANSLATE_UNDO_BUTTON:
@@ -413,8 +392,8 @@ INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, W
             if (m_applyCount > 0)
             {
                m_applyCount--;
-               psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+               editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             break;
          }
@@ -422,8 +401,8 @@ INT_PTR CALLBACK TranslatePointsDialog::TranslateProc(HWND hwndDlg, UINT uMsg, W
             if (m_applyCount > 0)
             {
                for (int i = 0; i < m_applyCount; i++)
-                  psel->GetPTable()->Undo();
-               psel->GetPTable()->SetDirtyDraw();
+                  editor->Undo();
+               editor->m_table->SetDirtyDraw();
             }
             EndDialog(hwndDlg, FALSE);
             break;

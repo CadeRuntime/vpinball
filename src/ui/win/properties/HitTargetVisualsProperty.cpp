@@ -8,7 +8,7 @@
 #include "ui/win/resource.h"
 
 
-HitTargetVisualsProperty::HitTargetVisualsProperty(const VectorProtected<ISelect> *pvsel):BasePropertyDialog(IDD_PROPHITTARGET_VISUALS, pvsel)
+HitTargetVisualsProperty::HitTargetVisualsProperty(const vector<IWinUIPart *> *pvsel):BasePropertyDialog(IDD_PROPHITTARGET_VISUALS, pvsel)
 {
     m_typeList.push_back("DropTarget Beveled"s);
     m_typeList.push_back("DropTarget Simple"s);
@@ -40,11 +40,11 @@ HitTargetVisualsProperty::HitTargetVisualsProperty(const VectorProtected<ISelect
 
 void HitTargetVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemHitTarget))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemHitTarget))
             continue;
-        HitTarget * const target = (HitTarget*)m_pvsel->ElementAt(i);
+        HitTarget * const target = (HitTarget *)SelAt(i)->GetEditable();
         if (dispid == IDC_HIT_TARGET_TYPE || dispid == -1)
             PropertyDialog::UpdateComboBox(m_typeList, m_typeCombo, m_typeList[target->m_d.m_targetType - 1]);
         if (dispid == IDC_TARGET_MOVE_SPEED_EDIT || dispid == -1)
@@ -80,16 +80,16 @@ void HitTargetVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void HitTargetVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemHitTarget))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemHitTarget))
             continue;
-        HitTarget * const target = (HitTarget*)m_pvsel->ElementAt(i);
+        HitTarget * const target = (HitTarget *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case IDC_HIT_TARGET_TYPE:
                 CHECK_UPDATE_ITEM(target->m_d.m_targetType, (TargetType)(PropertyDialog::GetComboBoxIndex(m_typeCombo, m_typeList) + 1), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case IDC_TARGET_MOVE_SPEED_EDIT:
                 CHECK_UPDATE_ITEM(target->m_d.m_dropSpeed, PropertyDialog::GetFloatTextbox(m_dropSpeedEdit), target);
@@ -108,37 +108,37 @@ void HitTargetVisualsProperty::UpdateProperties(const int dispid)
                 break;
             case DISPID_POSITION_X:
                 CHECK_UPDATE_ITEM(target->m_d.m_vPosition.x, PropertyDialog::GetFloatTextbox(m_posXEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_POSITION_Y:
                 CHECK_UPDATE_ITEM(target->m_d.m_vPosition.y, PropertyDialog::GetFloatTextbox(m_posYEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_POSITION_Z:
                 CHECK_UPDATE_ITEM(target->m_d.m_vPosition.z, PropertyDialog::GetFloatTextbox(m_posZEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_SIZE_X:
                 CHECK_UPDATE_ITEM(target->m_d.m_vSize.x, PropertyDialog::GetFloatTextbox(m_scaleXEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_SIZE_Y:
                 CHECK_UPDATE_ITEM(target->m_d.m_vSize.y, PropertyDialog::GetFloatTextbox(m_scaleYEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_SIZE_Z:
                 CHECK_UPDATE_ITEM(target->m_d.m_vSize.z, PropertyDialog::GetFloatTextbox(m_scaleZEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             case DISPID_ROT_Z:
                 CHECK_UPDATE_ITEM(target->m_d.m_rotZ, PropertyDialog::GetFloatTextbox(m_orientationEdit), target);
-                target->UpdateStatusBarInfo();
+                target->TransformVertices();
                 break;
             default:
                 UpdateBaseProperties(target, &target->m_d, dispid);
                 break;
         }
-        target->UpdateStatusBarInfo();
+        target->TransformVertices();
     }
     UpdateVisuals(dispid);
 }

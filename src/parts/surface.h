@@ -4,13 +4,13 @@
 
 #pragma once
 
-#include "dragpoint.h"
+#include "core/resourceid.h"
+#include "math/dragpoint.h"
 #include "math/MeshUtils.h"
 #include "parts/Material.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 class MeshBuffer;
@@ -46,17 +46,15 @@ class Surface :
    public EventProxy<Surface, &DIID_IWallEvents>,
    public IConnectionPointContainerImpl<Surface>,
    public IProvideClassInfo2Impl<&CLSID_Wall, &DIID_IWallEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
-   public IHaveDragPoints,
    public IScriptable,
    public IFireEvents,
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -64,8 +62,8 @@ public:
 #endif
 
    Surface()
+      : m_curve(this, 3)
    {
-      m_menuid = IDR_SURFACEMENU;
       m_d.m_collidable = true;
       m_d.m_slingshotAnimation = true;
       m_d.m_isBottomSolid = false;
@@ -74,7 +72,9 @@ public:
 
    //HRESULT InitTarget(PinTable * const ptable, const float x, const float y, const bool fromMouseClick);
 
-   STANDARD_EDITABLE_DECLARES(Surface, eItemSurface, WALL, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Surface, eItemSurface, WALL)
+
+   void InitPostLoad() final;
 
    BEGIN_COM_MAP(Surface)
       COM_INTERFACE_ENTRY(IWall)
@@ -95,30 +95,22 @@ public:
 
    // IEditable
    void WriteRegDefaults() final;
-   void RenderBlueprint(Sur *psur, const bool solid) final;
 
    void GetBoundingVertices(vector<Vertex3Ds> &bounds, vector<Vertex3Ds> *const legacy_bounds) final;
    void ClearForOverwrite() final;
    // end IEditable
 
-   // ISelect
    void FlipY(const Vertex2D& pvCenter) final;
    void FlipX(const Vertex2D& pvCenter) final;
    void Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter) final;
    void Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter) final;
-   void Translate(const Vertex2D &pvOffset) final;
-   void MoveOffset(const float dx, const float dy) final;
+   void Translate(const Vertex2D &offset) final;
 
-   Vertex2D GetCenter() const final { return GetPointCenter(); }
-   void PutCenter(const Vertex2D& pv) final { PutPointCenter(pv); }
+   Vertex2D GetCenter() const final { return m_curve.GetCenter(); }
 
-#ifndef __STANDALONE__
-   void DoCommand(int icmd, int x, int y) final;
-#endif
-   // end ISelect
+   bool IsShownInEditor() const final { return m_d.m_displayTexture; }
 
    float GetDepth(const Vertex3Ds& viewDir) const final { return viewDir.z * m_d.m_heighttop; }
-   ItemTypeEnum HitableGetItemType() const final { return eItemSurface; }
 
 protected:
    void RenderSlingshots();
@@ -129,10 +121,10 @@ protected:
 public:
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader& loader) final;
-   void AddPoint(int x, int y, const bool smooth) final;
-   void UpdateStatusBarInfo() final;
 
-   float    GetSlingshotStrength() const { return m_d.m_slingshotforce * (float)(1.0/10.0); }
+   void AddPoint(const Vertex2D &v, const bool smooth);
+
+   float GetSlingshotStrength() const { return m_d.m_slingshotforce * (float)(1.0 / 10.0); }
    void     SetSlingshotStrength(const float value)
    {
        m_d.m_slingshotforce = value * 10.0f;
@@ -159,6 +151,12 @@ public:
 
    SurfaceData m_d;
    bool m_disabled = false;
+
+   // Set while loading an old table whose outer wall was modelled 'inside-out', so that InitPostLoad can compensate once the table (and so its bounds) is reachable
+   bool m_onLoadInsideOutOuterWall = false;
+
+   // The wall outline curve (drag points defining the wall shape)
+   DragPointCurve m_curve;
 
 private:
    void SetupHitObject(class PhysicsEngine *physics, HitObject *const obj, const bool isUI);

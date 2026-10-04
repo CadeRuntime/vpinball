@@ -11,6 +11,7 @@
 #include "MsgPlugin.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <list>
 #include <vector>
 #include <string>
@@ -30,7 +31,7 @@ class MsgModuleLoader
 {
 public:
    virtual ~MsgModuleLoader() { }
-   virtual void* Link(const std::string& directory, const std::string& file) = 0;
+   virtual void* Link(const std::string& directory, const std::string& file) = 0; // UTF-8 paths
    virtual void Unlink(void* dynamicModule) = 0;
    virtual void* GetFunction(void* dynamicModule, const std::string& functionName) = 0;
 };
@@ -80,8 +81,8 @@ public:
    const std::string m_link; // Web link to online information
 
    bool IsDynamicallyLinked() const { return m_loader != nullptr; }
-   const std::string m_directory; // Directory containing this plugin
-   const std::string m_library; // Library implementing this plugin for the current platform
+   const std::string m_directory; // Directory containing this plugin (UTF-8)
+   const std::string m_library; // Library implementing this plugin for the current platform (UTF-8)
 
    const uint32_t m_endpointId; // Unique 'end point' ID of the plugin, used to identify it for the lifetime of this session
 
@@ -120,6 +121,8 @@ public:
    void ProcessAsyncCallbacks();
 
    void UpdateAPIThread() { m_apiThread = std::this_thread::get_id(); }
+
+   void AssertAPIThread();
 
 private:
    static MsgPluginManager* m_pluginManager;
@@ -162,14 +165,17 @@ private:
       msgpi_timer_callback callback;
       void* userData;
       std::chrono::steady_clock::time_point time;
+      bool* done = nullptr; // Blocking request: flag on the waiting caller's stack, set under m_timerListMutex once the callback has run
    };
+   void RunTimer(const TimerEntry& timer);
    std::list<TimerEntry> m_timers;
    std::mutex m_timerListMutex;
+   std::condition_variable m_timerDone;
 
    std::function<void(const std::string& pluginId, SettingAction action, MsgSettingDef* settingDef)> m_settingHandler;
 
    MsgPluginAPI m_api;
-   
+
    std::function<void*(const std::string&, const std::string&)> m_dllLink;
    std::function<void(void*)> m_dllUnlink;
    std::function<void*(void*, const std::string&)> m_dllGetMethod;

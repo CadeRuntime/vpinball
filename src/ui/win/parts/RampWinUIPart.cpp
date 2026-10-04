@@ -1,0 +1,191 @@
+﻿// license:GPLv3+
+
+#include "core/stdafx.h"
+
+#include "parts/ramp.h"
+#include "ui/win/DragPointDialogs.h"
+#include "ui/win/sur.h"
+#include "ui/win/WinEditor.h"
+#include "ui/win/parts/RampWinUIPart.h"
+
+RampWinUIPart::RampWinUIPart(PinTableWnd* editor, Ramp* ramp)
+   : IWinUIPart(editor, ramp)
+   , m_ramp(ramp)
+   , m_pointParts(editor, &ramp->m_curve)
+{
+}
+
+void RampWinUIPart::UpdateStatusBarObjectPos()
+{
+   SetStatusBarObjectPos(0.f, 0.f);
+}
+
+void RampWinUIPart::UpdateStatusBarInfo()
+{
+   const string tbuf = std::format("TopH: {:.03f} | BottomH: {:.03f} | TopW: {:.03f} | BottomW: {:.03f} | LeftW: {:.03f} | RightW: {:.03f}",
+      m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_heighttop), m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_heightbottom),
+      m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_widthtop), m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_widthbottom),
+      m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_leftwallheightvisible), m_editor->m_vpxEditor->ConvertToUnit(m_ramp->m_d.m_rightwallheightvisible));
+   m_editor->m_vpxEditor->SetStatusBarUnitInfo(tbuf, true);
+}
+
+void RampWinUIPart::UIRenderPass1(Sur* const psur)
+{
+   // make 1-wire ramps look unique in editor - uses ramp color
+   psur->SetFillColor(m_ramp->m_ptable->RenderSolid() ? m_editor->m_vpxEditor->m_fillColor : -1);
+   psur->SetBorderColor(-1, false, 0);
+   psur->SetObject(this);
+
+   int cvertex;
+   const Vertex2D* const rgvLocal = m_ramp->GetRampVertex(cvertex, nullptr, nullptr, nullptr, nullptr, HIT_SHAPE_DETAIL_LEVEL, false);
+   psur->Polygon(rgvLocal, cvertex * 2);
+
+   delete[] rgvLocal;
+}
+
+void RampWinUIPart::UIRenderPass2(Sur* const psur)
+{
+   psur->SetFillColor(-1);
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetLineColor(RGB(0, 0, 0), false, 0);
+   psur->SetObject(this);
+   psur->SetObject(nullptr); // nullptr so this won't be hit-tested
+
+   bool* pfCross;
+   Vertex2D* middlePoints;
+   int cvertex;
+   const Vertex2D* const rgvLocal = m_ramp->GetRampVertex(cvertex, nullptr, &pfCross, nullptr, &middlePoints, HIT_SHAPE_DETAIL_LEVEL, false);
+   psur->Polygon(rgvLocal, cvertex * 2);
+
+   if (m_ramp->IsHabitrail())
+   {
+      psur->Polyline(middlePoints, cvertex);
+      if (m_ramp->m_d.m_type == RampType4Wire || m_ramp->m_d.m_type == RampType3WireRight)
+      {
+         psur->SetLineColor(RGB(0, 0, 0), false, 3);
+         psur->Polyline(rgvLocal, cvertex);
+      }
+      if (m_ramp->m_d.m_type == RampType4Wire || m_ramp->m_d.m_type == RampType3WireLeft)
+      {
+         psur->SetLineColor(RGB(0, 0, 0), false, 3);
+         psur->Polyline(&rgvLocal[cvertex], cvertex);
+      }
+   }
+   else
+   {
+      for (int i = 0; i < cvertex; i++)
+         if (pfCross[i])
+            psur->Line(rgvLocal[i].x, rgvLocal[i].y, rgvLocal[cvertex * 2 - i - 1].x, rgvLocal[cvertex * 2 - i - 1].y);
+   }
+
+   delete[] rgvLocal;
+   delete[] pfCross;
+   delete[] middlePoints;
+
+   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || m_editor->m_vpxEditor->m_alwaysDrawDragPoints);
+   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
+   if (!drawDragpoints)
+   {
+      // if any of the drag points of this object are selected then draw all the dragpoints
+      for (const auto& pdp : m_ramp->m_curve.GetPoints())
+      {
+         if (m_pointParts.IsSelected(pdp.get()))
+         {
+            drawDragpoints = true;
+            break;
+         }
+      }
+   }
+
+   if (drawDragpoints)
+   {
+      for (size_t i = 0; i < m_ramp->m_curve.GetPoints().size(); i++)
+      {
+         const auto& pdp = m_ramp->m_curve.GetPoints()[i];
+         psur->SetFillColor(-1);
+         psur->SetBorderColor(m_pointParts.IsDragging(pdp.get()) ? RGB(0, 255, 0) : ((i == 0) ? RGB(0, 0, 255) : RGB(255, 0, 0)), false, 0);
+         psur->SetObject(m_pointParts.Get(pdp.get()));
+
+         psur->Ellipse2(pdp->GetX(), pdp->GetY(), 8);
+      }
+   }
+}
+
+void RampWinUIPart::RenderBlueprint(Sur* psur, const bool solid)
+{
+   psur->SetFillColor(solid ? m_blueprintSolidColor : -1);
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetLineColor(RGB(0, 0, 0), false, 0);
+   psur->SetObject(this);
+   psur->SetObject(nullptr); // nullptr so this won't be hit-tested
+
+   bool* pfCross;
+   Vertex2D* middlePoints;
+   int cvertex;
+   const Vertex2D* const rgvLocal = m_ramp->GetRampVertex(cvertex, nullptr, &pfCross, nullptr, &middlePoints, HIT_SHAPE_DETAIL_LEVEL, false);
+   psur->Polygon(rgvLocal, cvertex * 2);
+
+   if (m_ramp->IsHabitrail())
+   {
+      psur->Polyline(middlePoints, cvertex - 1);
+      if (m_ramp->m_d.m_type == RampType4Wire || m_ramp->m_d.m_type == RampType3WireRight)
+      {
+         psur->SetLineColor(RGB(0, 0, 0), false, 3);
+         psur->Polyline(rgvLocal, cvertex);
+      }
+      if (m_ramp->m_d.m_type == RampType4Wire || m_ramp->m_d.m_type == RampType3WireLeft)
+      {
+         psur->SetLineColor(RGB(0, 0, 0), false, 3);
+         psur->Polyline(&rgvLocal[cvertex], cvertex);
+      }
+   }
+
+   for (int i = 0; i < cvertex; i++)
+      if (pfCross[i])
+         psur->Line(rgvLocal[i].x, rgvLocal[i].y, rgvLocal[cvertex * 2 - i - 1].x, rgvLocal[cvertex * 2 - i - 1].y);
+
+   delete[] rgvLocal;
+   delete[] pfCross;
+   delete[] middlePoints;
+}
+
+void RampWinUIPart::DoCommand(int icmd, int x, int y)
+{
+   IWinUIPart::DoCommand(icmd, x, y);
+
+   switch (icmd)
+   {
+   case ID_WALLMENU_FLIP:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_ramp);
+      m_ramp->FlipY(m_ramp->GetCenter());
+      m_editor->EndUndo();
+      if (m_ramp->GetPTable())
+         m_ramp->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_MIRROR:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_ramp);
+      m_ramp->FlipX(m_ramp->GetCenter());
+      m_editor->EndUndo();
+      if (m_ramp->GetPTable())
+         m_ramp->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_ROTATE: (void)VPX::WinUI::RotatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_SCALE: (void)VPX::WinUI::ScalePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_TRANSLATE: (void)VPX::WinUI::TranslatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_ADDPOINT:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_ramp);
+      m_ramp->AddPoint(m_editor->TransformPoint(x, y), true);
+      m_editor->EndUndo();
+      if (m_ramp->GetPTable())
+         m_ramp->GetPTable()->SetDirtyDraw();
+      break;
+   }
+}

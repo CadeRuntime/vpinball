@@ -5,7 +5,7 @@
 
 #define PTINRECT(x,y) ((x) >= m_rcRect.left && (x) <= m_rcRect.right && (y) > m_rcRect.top && (y) < m_rcRect.bottom)
 
-HitRectSur::HitRectSur(const HDC hdc, const float zoom, const float offx, const float offy, const int width, const int height, const FRect * const prcRect, vector<ISelect*> * const pvsel) : Sur(hdc, zoom, offx, offy, width, height)
+HitRectSur::HitRectSur(const float zoom, const float offx, const float offy, const int width, const int height, const FRect * const prcRect, vector<IWinUIPart*> * const pvsel) : Sur(zoom, offx, offy, width, height)
 {
    m_rcRect = *prcRect;
    m_pvsel = pvsel;
@@ -59,18 +59,18 @@ void HitRectSur::Ellipse2(const float centerx, const float centery, const int ra
    if (m_failedAlready)
       return;
 
-   const int ix = SCALEXf(centerx);
-   const int iy = SCALEYf(centery);
+   const int ix = ScaleX(centerx);
+   const int iy = ScaleY(centery);
 
    const int circleleft = ix - radius;
    const int circletop = iy - radius;
    const int circleright = ix + radius;
    const int circlebottom = iy + radius;
 
-   const int left = SCALEXf(m_rcRect.left);
-   const int top = SCALEYf(m_rcRect.top);
-   const int right = SCALEXf(m_rcRect.right);
-   const int bottom = SCALEYf(m_rcRect.bottom);
+   const int left = ScaleX(m_rcRect.left);
+   const int top = ScaleY(m_rcRect.top);
+   const int right = ScaleX(m_rcRect.right);
+   const int bottom = ScaleY(m_rcRect.bottom);
 
    if (circleleft < left || circletop < top || circleright > right || circlebottom > bottom)
       FailObject();
@@ -107,24 +107,36 @@ void HitRectSur::PolygonImage(const vector<RenderVertex> &rgv, HBITMAP hbm, cons
    Polygon(rgv);
 }
 
-void HitRectSur::SetObject(ISelect * const psel)
+void HitRectSur::Polyline(const Vertex2D *const rgv, const int count)
 {
-   m_pcur = psel;
+   for (int i = 0; i < count - 1; ++i)
+      Line(rgv[i].x, rgv[i].y, rgv[i + 1].x, rgv[i + 1].y);
+}
+
+void HitRectSur::Lines(const Vertex2D *const rgv, const int count)
+{
+   for (int i = 0; i < count * 2; i += 2)
+      Line(rgv[i].x, rgv[i].y, rgv[i + 1].x, rgv[i + 1].y);
+}
+
+void HitRectSur::SetObject(IWinUIPart * const part)
+{
+   m_pcur = part;
    if (m_pcur)
    {
-      if (FindIndexOf(m_vselFailed, psel) != -1)
+      if (FindIndexOf(m_vselFailed, part) != -1)
       {
          // Object failed previously - just skip this time
          m_failedAlready = true;
       }
       else
       {
-         const int index = FindIndexOf(*m_pvsel, psel);
+         const int index = FindIndexOf(*m_pvsel, part);
          if (index == -1)
          {
             // Object not in list yet - add it
             m_indexcur = m_pvsel->size();
-            m_pvsel->push_back(psel);
+            m_pvsel->push_back(part);
          }
          else
          {

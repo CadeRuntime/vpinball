@@ -1,0 +1,152 @@
+﻿// license:GPLv3+
+
+#include "core/stdafx.h"
+
+#include "parts/surface.h"
+#include "ui/win/DragPointDialogs.h"
+#include "ui/win/sur.h"
+#include "ui/win/WinEditor.h"
+#include "ui/win/parts/SurfaceWinUIPart.h"
+
+SurfaceWinUIPart::SurfaceWinUIPart(PinTableWnd* editor, Surface* surface)
+   : IWinUIPart(editor, surface)
+   , m_surface(surface)
+   , m_pointParts(editor, &surface->m_curve)
+{
+}
+
+void SurfaceWinUIPart::UpdateStatusBarInfo()
+{
+   const string tbuf = std::format(
+      "TopHeight: {:.03f} | BottomHeight: {:.03f}", m_editor->m_vpxEditor->ConvertToUnit(m_surface->m_d.m_heighttop), m_editor->m_vpxEditor->ConvertToUnit(m_surface->m_d.m_heightbottom));
+   m_editor->m_vpxEditor->SetStatusBarUnitInfo(tbuf, true);
+}
+
+void SurfaceWinUIPart::UIRenderPass1(Sur* const psur)
+{
+   psur->SetFillColor(m_surface->m_ptable->RenderSolid() ? m_editor->m_vpxEditor->m_fillColor : -1);
+   psur->SetObject(this);
+   // Don't want border color to be over-ridden when selected - that will be drawn later
+   psur->SetBorderColor(-1, false, 0);
+
+   vector<RenderVertex> vvertex;
+   m_surface->m_curve.GetRgVertex(vvertex);
+   if (!m_surface->m_ptable->RenderSolid() || !m_surface->m_d.m_displayTexture)
+      psur->Polygon(vvertex);
+   else if (const Texture* const ppi = m_surface->m_ptable->GetImage(m_surface->m_d.m_szImage); ppi && ppi->GetGDIBitmap())
+      psur->PolygonImage(vvertex, ppi->GetGDIBitmap(), m_surface->m_ptable->m_left, m_surface->m_ptable->m_top, m_surface->m_ptable->m_right, m_surface->m_ptable->m_bottom, ppi->m_width, ppi->m_height);
+   else
+      psur->Polygon(vvertex);
+}
+
+void SurfaceWinUIPart::UIRenderPass2(Sur* const psur)
+{
+   psur->SetFillColor(-1);
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetObject(this); // For selected formatting
+   psur->SetObject(nullptr);
+
+   {
+      vector<RenderVertex> vvertex; //!! check/reuse from prerender
+      m_surface->m_curve.GetRgVertex(vvertex);
+      psur->Polygon(vvertex);
+   }
+
+   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
+   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || m_editor->m_vpxEditor->m_alwaysDrawDragPoints);
+
+   if (!drawDragpoints)
+   {
+      // if any of the dragpoints of this object are selected then draw all the dragpoints
+      for (const auto& pdp : m_surface->m_curve.GetPoints())
+      {
+         if (m_pointParts.IsSelected(pdp.get()))
+         {
+            drawDragpoints = true;
+            break;
+         }
+      }
+   }
+
+   for (size_t i = 0; i < m_surface->m_curve.GetPoints().size(); i++)
+   {
+      const auto& pdp = m_surface->m_curve.GetPoints()[i];
+      if (!(drawDragpoints || pdp->m_slingshot))
+         continue;
+      psur->SetFillColor(-1);
+      psur->SetBorderColor(m_pointParts.IsDragging(pdp.get()) ? RGB(0, 255, 0) : RGB(255, 0, 0), false, 0);
+
+      if (drawDragpoints)
+      {
+         psur->SetObject(m_pointParts.Get(pdp.get()));
+         psur->Ellipse2(pdp->GetX(), pdp->GetY(), 8);
+      }
+
+      if (pdp->m_slingshot)
+      {
+         psur->SetObject(nullptr);
+         const auto& pdp2 = m_surface->m_curve.GetPoints()[(i < m_surface->m_curve.GetPoints().size() - 1) ? (i + 1) : 0];
+         psur->SetLineColor(RGB(0, 0, 0), false, 3);
+
+         psur->Line(pdp->GetX(), pdp->GetY(), pdp2->GetX(), pdp2->GetY());
+      }
+   }
+}
+
+void SurfaceWinUIPart::RenderBlueprint(Sur* psur, const bool solid)
+{
+   // Don't render dragpoints for blueprint
+   if (solid)
+      psur->SetFillColor(m_blueprintSolidColor);
+   else
+      psur->SetFillColor(-1);
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetObject(this); // For selected formatting
+   psur->SetObject(nullptr);
+
+   vector<RenderVertex> vvertex;
+   m_surface->m_curve.GetRgVertex(vvertex);
+
+   psur->Polygon(vvertex);
+}
+
+void SurfaceWinUIPart::DoCommand(int icmd, int x, int y)
+{
+   IWinUIPart::DoCommand(icmd, x, y);
+
+   switch (icmd)
+   {
+   case ID_WALLMENU_FLIP:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_surface);
+      m_surface->FlipY(m_surface->GetCenter());
+      m_editor->EndUndo();
+      if (m_surface->GetPTable())
+         m_surface->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_MIRROR:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_surface);
+      m_surface->FlipX(m_surface->GetCenter());
+      m_editor->EndUndo();
+      if (m_surface->GetPTable())
+         m_surface->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_ROTATE: (void)VPX::WinUI::RotatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_SCALE: (void)VPX::WinUI::ScalePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_TRANSLATE: (void)VPX::WinUI::TranslatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_ADDPOINT:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_surface);
+      m_surface->AddPoint(m_editor->TransformPoint(x, y), false);
+      m_editor->EndUndo();
+      if (m_surface->GetPTable())
+         m_surface->GetPTable()->SetDirtyDraw();
+      break;
+   }
+}

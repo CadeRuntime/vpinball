@@ -9,12 +9,12 @@ class ScriptGlobalTable :
    public IScriptable
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
 #endif
-   // Headers to support communication between the game and the script.
+   // Headers to support communication between the game and the script
    STDMETHOD(EndModal)();
    STDMETHOD(BeginModal)();
    STDMETHOD(GetTextFile)(BSTR FileName, /*[out, retval]*/ BSTR *pContents);
@@ -136,7 +136,9 @@ public:
 
    STDMETHOD(CreatePluginObject)(/*[in]*/ BSTR classId, /*[out, retval]*/ IDispatch **pVal);
 
-   ScriptGlobalTable() { m_wzName = L"Global"sv; }
+   STDMETHOD(PushNotification)(/*[in]*/ BSTR message, /*[in]*/ LONG durationMs, /*[in]*/ LONG reuseId, /*[out, retval]*/ LONG *pVal);
+
+   ScriptGlobalTable() { m_name = "Global"s; }
    void Init(PinTable *pt);
    ~ScriptGlobalTable();
 
@@ -149,5 +151,5 @@ public:
    END_COM_MAP()
 
 private:
-   PinTable *m_pt = nullptr;
+   PinTable * m_table = nullptr;
 };

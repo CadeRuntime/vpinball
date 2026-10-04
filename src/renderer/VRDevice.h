@@ -3,14 +3,13 @@
 #pragma once
 
 #if defined(ENABLE_XR)
+   #ifdef __STANDALONE__
+   #pragma push_macro("_WIN64")
+   #undef _WIN64
+   #endif
    #include "bx/platform.h"
-
-   #if defined(__ANDROID__) && BX_PLATFORM_WINDOWS
-      // Our setup may lead to this incorrect double definition, so fix it
-      #undef BX_PLATFORM_WINDOWS
-      #define BX_PLATFORM_WINDOWS 0
-      #undef BX_PLATFORM_ANDROID
-      #define BX_PLATFORM_ANDROID 1
+   #ifdef __STANDALONE__
+   #pragma pop_macro("_WIN64")
    #endif
 
    #if BX_PLATFORM_WINDOWS
@@ -26,6 +25,9 @@
       #define XR_USE_PLATFORM_ANDROID
       #define XR_USE_GRAPHICS_API_VULKAN
       //#define XR_USE_GRAPHICS_API_OPENGL_ES
+   #elif BX_PLATFORM_LINUX
+      #define XR_USE_TIMESPEC
+      #define XR_USE_GRAPHICS_API_VULKAN
    #endif
 
 
@@ -127,6 +129,7 @@
    #include "input/XRInputHandler.h"
 #endif
 
+#include "math/matrix.h"
 #include "parts/PartGroup.h"
 
 class MeshBuffer;
@@ -159,6 +162,8 @@ public:
 
    float GetPredictedDisplayTimestamp() const { return m_predictedDisplayTimestamp; }
 
+   void SetShowUILayer(bool show) { m_showUILayer = show; }
+
 private:
    unsigned int m_eyeWidth = 1080;
    unsigned int m_eyeHeight = 1020;
@@ -186,8 +191,12 @@ private:
    Matrix3D m_roomProj[2];
    Matrix3D m_sceneProj[2];
 
+   bool m_showUILayer = false;
+
 #ifdef ENABLE_XR
 public:
+   int GetDisplayRefreshRateMode() const { return m_displayRefreshRateMode; }
+   void SetDisplayRefreshRateMode(int mode);
    bool IsOpenXRReady() const { return m_xrInstance != XR_NULL_HANDLE; }
    void SetupHMD();
    bool IsOpenXRHMDReady() const { return m_systemID != XR_NULL_SYSTEM_ID; }
@@ -197,6 +206,7 @@ public:
    bgfx::RendererType::Enum GetGraphicContextType() const;
    void PollEvents();
    void RenderFrame(class RenderDevice* rd, const std::function<void(RenderTarget* vrRenderTarget)>& submitFrame);
+   RenderTarget* GetUIRenderTarget() const { return m_uiRenderTarget; } // Acquired swapchain target for the UI composition layer (or nullptr if unsupported/not acquired yet)
    void UpdateVisibilityMask(class RenderDevice* rd);
    bool UseDepthBuffer() const { return m_depthExtensionSupported; }
    bgfx::TextureFormat::Enum GetDepthFormat() const { return m_depthSwapchainInfo.format; }
@@ -249,13 +259,17 @@ private:
 
    SwapchainInfo m_colorSwapchainInfo = {};
    SwapchainInfo m_depthSwapchainInfo = {};
+   SwapchainInfo m_uiSwapchainInfo = {};
    std::vector<std::unique_ptr<RenderTarget>> m_swapchainRenderTargets;
+   std::vector<std::unique_ptr<RenderTarget>> m_uiRenderTargets;
+   RenderTarget* m_uiRenderTarget = nullptr; // Written by the render thread before releasing the frame semaphore, read by the logic thread while recording the frame
    std::vector<XrEnvironmentBlendMode> m_applicationEnvironmentBlendModes = { XR_ENVIRONMENT_BLEND_MODE_OPAQUE, XR_ENVIRONMENT_BLEND_MODE_ADDITIVE };
    std::vector<XrEnvironmentBlendMode> m_environmentBlendModes = {};
    XrEnvironmentBlendMode m_environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM;
 
    XrSpace m_referenceSpace = XR_NULL_HANDLE;
-   
+   XrSpace m_viewSpace = XR_NULL_HANDLE; // Head-locked space for the UI quad layer
+
    bool m_headsetViewCentering = false;
    bool m_controllerViewCentering = false;
    XrSpace m_leftControllerSpace = XR_NULL_HANDLE;
@@ -268,6 +282,7 @@ private:
       XrCompositionLayerProjection layerProjection = { XR_TYPE_COMPOSITION_LAYER_PROJECTION };
       std::vector<XrCompositionLayerProjectionView> layerProjectionViews;
       std::vector<XrCompositionLayerDepthInfoKHR> depthInfoViews;
+      XrCompositionLayerQuad layerQuad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
       XrCompositionLayerPassthroughFB layerPassthrough = { XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB };
    };
 
@@ -276,10 +291,15 @@ private:
    #if BX_PLATFORM_WINDOWS
    bool m_win32PerfCounterExtensionSupported = false;
    PFN_xrConvertTimeToWin32PerformanceCounterKHR m_xrConvertTimeToWin32PerformanceCounterKHR = nullptr;
-   #elif BX_PLATFORM_ANDROID
+   #elif BX_PLATFORM_ANDROID || BX_PLATFORM_LINUX
    bool m_convertTimespecTimeExtensionSupported = false;
    PFN_xrConvertTimeToTimespecTimeKHR m_xrConvertTimeToTimespecTimeKHR = nullptr;
    #endif
+   bool m_displayRefreshRateExtensionSupported = false;
+   PFN_xrGetDisplayRefreshRateFB m_xrGetDisplayRefreshRateFB = nullptr;
+   PFN_xrRequestDisplayRefreshRateFB m_xrRequestDisplayRefreshRateFB = nullptr;
+   int m_displayRefreshRateMode = 0;
+   void ApplyDisplayRefreshRate();
 
    Matrix3D m_nextProj[2];
 

@@ -33,7 +33,7 @@ PSC_ARRAY1(B2S_IntArray, int32, 0)
 PSC_ARRAY2(B2S_StructArray, int32, 0, 0)
 
 // Proxy class for PinMAME GameSettings
-static std::unique_ptr<ScriptablePlugin::ScriptClassProxy> m_gameSettingsProxy;
+static std::unique_ptr<PinballPlugin::Scriptable::ScriptClassProxy> m_gameSettingsProxy;
 class GameSettings { PSC_IMPLEMENT_REFCOUNT() }; // Dummy class as we directly use the proxied object
 PSC_CLASS_START(B2S_GameSettings, GameSettings)
    members.clear();
@@ -43,7 +43,7 @@ PSC_CLASS_START(B2S_GameSettings, GameSettings)
 PSC_CLASS_END()
 
 // Proxy class for PinMAME Settings
-static std::unique_ptr<ScriptablePlugin::ScriptClassProxy> m_settingsProxy;
+static std::unique_ptr<PinballPlugin::Scriptable::ScriptClassProxy> m_settingsProxy;
 class Settings { PSC_IMPLEMENT_REFCOUNT() }; // Dummy class as we directly use the proxied object
 PSC_CLASS_START(B2S_Settings, Settings)
    members.clear();
@@ -53,7 +53,7 @@ PSC_CLASS_START(B2S_Settings, Settings)
 PSC_CLASS_END()
 
 // Proxy class for PinMAME Game
-static std::unique_ptr<ScriptablePlugin::ScriptClassProxy> m_gameProxy;
+static std::unique_ptr<PinballPlugin::Scriptable::ScriptClassProxy> m_gameProxy;
 class Game { PSC_IMPLEMENT_REFCOUNT() }; // Dummy class as we directly use the proxied object
 PSC_CLASS_START(B2S_Game, Game)
    members.clear();
@@ -82,11 +82,19 @@ PSC_CLASS_START(B2S_Server, B2SServer)
    PSC_PROP_R(double, B2SBuildVersion)
    PSC_PROP_R(string, B2SServerDirectory)
    PSC_FUNCTION2(void, B2SSetData, int, int)
+   PSC_FUNCTION2(void, B2SSetData, int, string)
    PSC_FUNCTION2(void, B2SSetData, string, int)
+   PSC_FUNCTION2(void, B2SSetData, string, string)
    PSC_FUNCTION1(void, B2SPulseData, int)
    PSC_FUNCTION1(void, B2SPulseData, string)
    PSC_FUNCTION3(void, B2SSetPos, int, int, int)
+   PSC_FUNCTION3(void, B2SSetPos, int, string, int)
+   PSC_FUNCTION3(void, B2SSetPos, int, int, string)
+   PSC_FUNCTION3(void, B2SSetPos, int, string, string)
    PSC_FUNCTION3(void, B2SSetPos, string, int, int)
+   PSC_FUNCTION3(void, B2SSetPos, string, string, int)
+   PSC_FUNCTION3(void, B2SSetPos, string, int, string)
+   PSC_FUNCTION3(void, B2SSetPos, string, string, string)
    PSC_FUNCTION2(void, B2SSetIllumination, string, int)
    PSC_FUNCTION2(void, B2SSetLED, int, int)
    PSC_FUNCTION2(void, B2SSetLED, int, string)
@@ -150,7 +158,7 @@ PSC_CLASS_START(B2S_Server, B2SServer)
    PSC_PROXY_PROP_RW(me, string, SplashInfoLine)
    PSC_PROXY_PROP_RW(me, bool, ShowTitle)
    PSC_PROXY_PROP_RW(me, bool, HandleKeyboard)
-   PSC_PROXY_PROP_RW(me, bool, HandleMechanics)
+   PSC_PROXY_PROP_RW(me, int32, HandleMechanics)
    PSC_PROXY_PROP_R(me, B2S_Settings, Settings)
    PSC_PROXY_PROP_RW_ARRAY1(me, int32, SolMask, int)
    // Run/Pause/Stop
@@ -251,7 +259,7 @@ MSGPI_EXPORT void MSGPIAPI B2SPluginLoad(const uint32_t sessionId, const MsgPlug
    msgApi->BroadcastMsg(endpointId, getScriptApiId, &scriptApi);
 
    B2SRenderer::RegisterSettings(msgApi, endpointId);
-   B2SDMDOverlay::RegisterSettings(msgApi, endpointId);
+   DMDOverlay::DMDOverlay::RegisterSettings(msgApi, endpointId);
 
    nServer = 0;
    auto classLambda = [](ScriptClassDef* scd) { scriptApi->RegisterScriptClass(scd); };
@@ -263,9 +271,9 @@ MSGPI_EXPORT void MSGPIAPI B2SPluginLoad(const uint32_t sessionId, const MsgPlug
    RegisterB2S_ByteArray(arrayLambda);
    RegisterB2S_IntArray(arrayLambda);
    RegisterB2S_StructArray(arrayLambda);
-   m_gameProxy = std::make_unique<ScriptablePlugin::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_Game", "B2S_", B2S_Game_SCD);
-   m_gameSettingsProxy = std::make_unique<ScriptablePlugin::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_GameSettings", "B2S_", B2S_GameSettings_SCD);
-   m_settingsProxy = std::make_unique<ScriptablePlugin::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_Settings", "B2S_", B2S_Settings_SCD);
+   m_gameProxy = std::make_unique<PinballPlugin::Scriptable::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_Game", "B2S_", B2S_Game_SCD);
+   m_gameSettingsProxy = std::make_unique<PinballPlugin::Scriptable::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_GameSettings", "B2S_", B2S_GameSettings_SCD);
+   m_settingsProxy = std::make_unique<PinballPlugin::Scriptable::ScriptClassProxy>(msgApi, endpointId, "PinMAME_", "PinMAME_Settings", "B2S_", B2S_Settings_SCD);
    B2S_Server_SCD->CreateObject = []()
    {
       if (nServer > 0)

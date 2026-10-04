@@ -64,9 +64,26 @@
 #define C_LOWNORMVEL 0.0001f
 #define C_CONTACTVEL 0.099f
 
-//#define BALL_CONTACTS // not working anymore?!?
-
 //#define NEW_PHYSICS
+
+// Active behavioral fixes of the physics engine. Keep this list in
+// sync with the FIX_PHYSICS-guarded code: document each fix the flag enables.
+// - Slow shallow touches (bnd <= PHYS_TOUCH, |bnv| <= C_CONTACTVEL) reported a fake
+//   hittime of bnd*10+0.5 (a distance remapped into (0,1] T), systematically > dtime and therefore
+//   dropped before any contact was recorded: the wall/poly touch band was dead until actual
+//   penetration, and surviving fake times corrupted the min-time event ordering. With the fix,
+//   LineSeg/Hit3DPoly report hittime 0 so the contact flag engages (HitBall already reports
+//   hittime 0 for the touch layer since ball-ball contacts were enabled).
+// - The static-friction gate "normVel <= 0.025" in ApplyFriction measured the post-contact
+//   residual ~ -m(g.n)dtime, an accidental test of the normal orientation that always selected the
+//   static (acceleration-directed) branch on walls even with real slip; the clause is now restricted
+//   to support-like contacts (hitnormal.z > 0.5) so walls use slip-directed dynamic friction.
+// - The friction cone used -m(g.n) as its sole normal-force estimate on contacts (~0 on
+//   walls, dead on the top glass) while Collide3DWall budgeted the pre-restitution impulse
+//   (under-counting by 1+elasticity). Contacts now clamp the friction impulse by
+//   mu*m*(the normal Δv the contact applied this step), and collisions by the post-restitution
+//   impulse, matching HitFlipper's convention.
+#define FIX_PHYSICS
 
 // low velocity stabilization ... if embedding occurs add some velocity
 #ifdef NEW_PHYSICS

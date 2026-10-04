@@ -8,7 +8,7 @@
 #include "ui/win/resource.h"
 
 
-LightseqStatesProperty::LightseqStatesProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPLIGHTSEQ_STATE, pvsel)
+LightseqStatesProperty::LightseqStatesProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPLIGHTSEQ_STATE, pvsel)
 {
     m_posXEdit.SetDialog(this);
     m_posYEdit.SetDialog(this);
@@ -18,11 +18,11 @@ LightseqStatesProperty::LightseqStatesProperty(const VectorProtected<ISelect> *p
 
 void LightseqStatesProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemLightSeq))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemLightSeq))
             continue;
-        LightSeq *const lightseq = (LightSeq *)m_pvsel->ElementAt(i);
+        LightSeq *const lightseq = (LightSeq *)SelAt(i)->GetEditable();
 
         if (dispid == 9 || dispid == -1)
             PropertyDialog::SetFloatTextbox(m_posXEdit, lightseq->GetX());
@@ -31,7 +31,7 @@ void LightseqStatesProperty::UpdateVisuals(const int dispid/*=-1*/)
         if (dispid == IDC_LIGHTSEQ_UPDATE_INTERVAL_EDIT || dispid == -1)
             PropertyDialog::SetIntTextbox(m_updateIntervalEdit, lightseq->GetUpdateInterval());
         if (dispid == DISPID_Collection || dispid == -1)
-            PropertyDialog::UpdateCollectionComboBox(lightseq->GetPTable(), m_collectionCombo, MakeString(lightseq->m_d.m_wzCollection).c_str());
+            PropertyDialog::UpdateCollectionComboBox(lightseq->GetPTable(), m_collectionCombo, lightseq->m_d.m_collection.c_str());
 
         // only show the first element on multi-select
         break;
@@ -40,11 +40,11 @@ void LightseqStatesProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void LightseqStatesProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemLightSeq))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemLightSeq))
             continue;
-        LightSeq *const lightseq = (LightSeq *)m_pvsel->ElementAt(i);
+        LightSeq *const lightseq = (LightSeq *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case 9:
@@ -59,7 +59,7 @@ void LightseqStatesProperty::UpdateProperties(const int dispid)
             case DISPID_Collection:
             {
                 PropertyDialog::StartUndo(lightseq);
-                lightseq->m_d.m_wzCollection = MakeWString(PropertyDialog::GetComboBoxText(m_collectionCombo));
+                lightseq->m_d.m_collection = PropertyDialog::GetComboBoxText(m_collectionCombo);
                 PropertyDialog::EndUndo(lightseq);
                 break;
             }

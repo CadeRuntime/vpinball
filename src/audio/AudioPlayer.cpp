@@ -4,14 +4,15 @@
 #include "AudioPlayer.h"
 #include "AudioStreamPlayer.h"
 #include "SoundPlayer.h"
+#include "utils/denormals.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_audio.h>
 
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 #define MA_ENABLE_CUSTOM
 #include "miniaudio/extras/stb_vorbis.c"
+#define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio/miniaudio.h"
-#include "miniaudio/miniaudio.c"
 
 // Simple SDL3 backend for miniaudio, derived from miniaudio's backend example
 
@@ -89,6 +90,8 @@ static ma_result ma_context_get_device_info__sdl(ma_context* pContext, ma_device
 
 void ma_audio_callback_playback__sdl(void* pUserData, SDL_AudioStream* stream, int additional_amount, const int total_amount)
 {
+   set_denormals_flush_to_zero_once(); // all of miniaudio's mixing happens below, on a thread created by SDL
+
    auto pDevice = static_cast<ma_device_ex*>(pUserData);
    if ((int)pDevice->buffer.size() < total_amount)
       pDevice->buffer.resize(total_amount);
@@ -278,9 +281,19 @@ AudioPlayer::AudioPlayer(const string& backglassDevice, const string& playfieldD
          engineConfig.noAutoStart = MA_TRUE;
          m_backglassEngine = std::make_unique<ma_engine>();
          result = ma_engine_init(&engineConfig, m_backglassEngine.get());
-         m_backglassDevice->device.onData = ma_engine_data_callback_internal;
-         m_backglassDevice->device.pUserData = m_backglassEngine.get();
-         ma_engine_start(m_backglassEngine.get());
+         if (result == MA_SUCCESS)
+         {
+            m_backglassDevice->device.onData = ma_engine_data_callback_internal;
+            m_backglassDevice->device.pUserData = m_backglassEngine.get();
+            ma_engine_start(m_backglassEngine.get());
+         }
+         else
+         {
+            PLOGE << "Failed to initialize miniaudio engine for backglass sounds";
+            m_backglassEngine = nullptr;
+            ma_device_uninit(&m_backglassDevice->device);
+            m_backglassDevice = nullptr;
+         }
       }
       else
       {
@@ -312,9 +325,19 @@ AudioPlayer::AudioPlayer(const string& backglassDevice, const string& playfieldD
          engineConfig.noAutoStart = MA_TRUE;
          m_playfieldEngine = std::make_unique<ma_engine>();
          result = ma_engine_init(&engineConfig, m_playfieldEngine.get());
-         m_playfieldDevice->device.onData = ma_engine_data_callback_internal;
-         m_playfieldDevice->device.pUserData = m_playfieldEngine.get();
-         ma_engine_start(m_playfieldEngine.get());
+         if (result == MA_SUCCESS)
+         {
+            m_playfieldDevice->device.onData = ma_engine_data_callback_internal;
+            m_playfieldDevice->device.pUserData = m_playfieldEngine.get();
+            ma_engine_start(m_playfieldEngine.get());
+         }
+         else
+         {
+            PLOGE << "Failed to initialize miniaudio engine for playfield sounds";
+            m_playfieldEngine = nullptr;
+            ma_device_uninit(&m_playfieldDevice->device);
+            m_playfieldDevice = nullptr;
+         }
       }
       else
       {
@@ -409,7 +432,7 @@ void AudioPlayer::CloseAudioStream(const AudioStreamID& stream, bool afterEndOfS
    }
 }
 
-bool AudioPlayer::PlayMusic(const string& filename)
+bool AudioPlayer::PlayMusic(const std::filesystem::path& filename)
 {
    m_music = std::unique_ptr<SoundPlayer>(SoundPlayer::Create(this, filename));
    if (m_music)
@@ -456,14 +479,22 @@ void AudioPlayer::PlaySound(Sound* sound, float volumeOffset, const float random
    SoundPlayer* player = nullptr;
    vector<std::unique_ptr<SoundPlayer>>& players = m_soundPlayers[sound];
 
+   std::erase_if(players, [sound](const auto& soundPlayer) { return soundPlayer->GetOutputTarget() != sound->GetOutputTarget(); });
+
    // Until 10.8, implementation would:
    // - for some reason, 'usesame' would only be processed for wav file:
    //   - if 'usesame' is true, search for the first player for the given sound and reuse it if any (even is it is playing), create a new one otherwise
    //   - if 'usesame' is false, always create a new player for the given sound
    // - if restart is false and selected sound player was already playing, settings would be applied without restarting the sound
+   // - if restart is true, all playing sounds would be stopped and a new one would be started
+   
+   if (restart)
+      for (const auto& soundPlayer : players)
+         soundPlayer->Stop();
+   
    for (const auto& soundPlayer : players)
    {
-      if (useSame || !soundPlayer->IsPlaying())
+      if (useSame || restart || !soundPlayer->IsPlaying())
       {
          player = soundPlayer.get();
          break;
@@ -481,8 +512,6 @@ void AudioPlayer::PlaySound(Sound* sound, float volumeOffset, const float random
 
    float pan = dequantizeSignedPercent(sound->GetPan()) + panOffset;
 
-   if (restart)
-      player->Stop();
    player->Play(
       dequantizeSignedPercent(sound->GetVolume()) + volumeOffset,
       randomPitch,
@@ -499,6 +528,12 @@ void AudioPlayer::StopSound(Sound* sound)
       player->Stop();
 }
 
+bool AudioPlayer::IsSoundPlaying(const Sound* sound) const
+{
+   const auto it = m_soundPlayers.find(const_cast<Sound*>(sound));
+   return it != m_soundPlayers.end() && std::ranges::any_of(it->second, [](const auto& player) { return player->IsPlaying(); });
+}
+
 SoundSpec AudioPlayer::GetSoundInformations(const Sound* const sound) const
 {
    SoundSpec specs {};
@@ -508,6 +543,12 @@ SoundSpec AudioPlayer::GetSoundInformations(const Sound* const sound) const
       return specs;
    specs.nChannels = decoder.outputChannels;
    specs.sampleFrequency = decoder.outputSampleRate;
+
+   if (m_backglassEngine == nullptr)
+   {
+      ma_decoder_uninit(&decoder);
+      return specs;
+   }
 
    ma_sound maSound;
    ma_sound_config config = ma_sound_config_init_2(m_backglassEngine.get());

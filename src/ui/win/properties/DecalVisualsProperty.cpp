@@ -8,7 +8,7 @@
 #include "ui/win/WinEditor.h"
 
 
-DecalVisualsProperty::DecalVisualsProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPDECAL_VISUALS, pvsel), m_font(nullptr)
+DecalVisualsProperty::DecalVisualsProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPDECAL_VISUALS, pvsel), m_font(nullptr)
 {
     m_typeList.push_back("Text"s);
     m_typeList.push_back("Image"s);
@@ -36,11 +36,11 @@ DecalVisualsProperty::~DecalVisualsProperty()
 
 void DecalVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemDecal))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemDecal))
             continue;
-        Decal * const decal = (Decal *)m_pvsel->ElementAt(i);
+        Decal * const decal = (Decal *)SelAt(i)->GetEditable();
 
         if (dispid == IDC_FONT_TYPE_COMBO || dispid == -1)
         {
@@ -99,11 +99,11 @@ void DecalVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void DecalVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemDecal))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemDecal))
             continue;
-        Decal * const decal = (Decal *)m_pvsel->ElementAt(i);
+        Decal * const decal = (Decal *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case IDC_FONT_TYPE_COMBO:
@@ -125,7 +125,7 @@ void DecalVisualsProperty::UpdateProperties(const int dispid)
                 break;
             case IDC_COLOR_BUTTON1:
             {
-                CComObject<PinTable>* const ptable = g_pvp->GetActiveTable();
+                CComObject<PinTable>* const ptable = GetTable();
                 if (ptable == nullptr)
                     break;
                 CHOOSECOLOR cc = m_colorDialog.GetParameters();
@@ -164,7 +164,7 @@ void DecalVisualsProperty::UpdateProperties(const int dispid)
                     const bool fStrikethrough = font.lfStrikeOut != 0;
                     decal->m_d.m_font.attributes = (fItalic ? 0x02 : 0x00) | (fUnderline ? 0x04 : 0x00) | (fStrikethrough ? 0x08 : 0x00);
 
-                    const float fontsize = (float)((abs(font.lfHeight) * 72) / GetDeviceCaps(g_pvp->GetDC(), LOGPIXELSY));
+                    const float fontsize = (float)((abs(font.lfHeight) * 72) / GetDeviceCaps(GetVpxEditor()->GetDC(), LOGPIXELSY));
                     decal->m_d.m_font.size = (uint32_t)(fontsize * 10000.0f);
 
                     decal->m_d.m_color = m_fontDialog.GetColor();
@@ -198,7 +198,7 @@ void DecalVisualsProperty::UpdateProperties(const int dispid)
                 UpdateBaseProperties(decal, &decal->m_d, dispid);
                 break;
         }
-        decal->UpdateStatusBarInfo();
+        PropertyDialog::UpdateStatusBarInfo(decal);
     }
     UpdateVisuals(dispid);
 }

@@ -81,8 +81,8 @@ As for coding light sequences for original tables, please check this helper app:
 | | | |
 | DMDWidth | int | set width of DMD |
 | DMDHeight | int | set height of DMD |
-| DMDPixels | Variant | set array of (byte-)values (0..100), size needs to match the previously set width and height |
-| DMDColoredPixels | Variant |  set array of (long-)values (0..255,0..255,0..255), size needs to match the previously set width and height (see example below) |
+| DMDPixels | Variant | set array of (byte-)values (0..100), size needs to match the previously set width and height (in gamma space) |
+| DMDColoredPixels | Variant |  set array of (long-)values (0..255,0..255,0..255, in sRGB), size needs to match the previously set width and height (see example below) |
 | | | |
 | *RenderingMode | int | returns the rendering mode: 0 = Normal 2D, 1 = Stereo 3D, 2 = VR |
 | DisableStaticPrerendering | bool | Note that when setting to false, if needed, VPX will update the static prerender which can be lengthy |
@@ -161,6 +161,8 @@ DMDColoredPixels = myDMDdata
 - `GetTextFile(string)` - returns content of text file
 
 - `LoadTexture(string imageName, string fileName)` - load the file fileName into image imageName
+
+- `PushNotification(string message, optional int durationMs, optional int reuseId)` - push a notification in the in-game UI; returns a notification id which can be passed back as reuseId to update the same notification
 
 
 -------------------------------------------------------------------------------
@@ -316,6 +318,7 @@ DMDColoredPixels = myDMDdata
 | Color - defines the color of the element in the editor. If you don't want to colorize the image set the color to blank white (RGB 255,255,255)
 | Visible | bool |  shows/hides the flasher
 | AddBlend | bool |  use additive alpha blending instead of classical alpha blending
+| AddBlendMode | int | superset of AddBlend: 0=off, 1=additive, 2=additive; but darkening what is behind the flasher instead of brightening it, to fake a Fresnel like reflection on glass (ModulateVsAdd steers how much is absorbed)
 | EnableDepthMask | bool | Enable/Disable depth masking
 | ImageAlignment
 | ModulateVsAdd | float | blends between modulating and additive when bulb is enabled (0..1)
@@ -794,6 +797,7 @@ The following methods only applies to mesh primitives with an animation sequence
 - `MusicDone()` - Called when the played music has ended.
 - `SoundDone(ByVal soundName)` - Called when a sound has ended.
 - `OptionEvent(ByVal eventId)` - Called when an event regarding table option happens: 0 = initialize options (after Init event), 1 = an option has changed, 2 = options have been resetted, 3 = player just exited the Tweak UI
+  Shared core scripts may additionally define a global `vpmOptionEvent(ByVal eventId)` function which is invoked for the same events (the name is reserved for core scripts).
 
 
 -------------------------------------------------------------------------------

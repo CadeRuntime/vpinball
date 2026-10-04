@@ -7,7 +7,7 @@
 #include "ui/win/resource.h"
 
 
-WallVisualsProperty::WallVisualsProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPWALL_VISUALS, pvsel)
+WallVisualsProperty::WallVisualsProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPWALL_VISUALS, pvsel)
 {
     m_disableLightingEdit.SetDialog(this);
     m_disableLightFromBelowEdit.SetDialog(this);
@@ -23,7 +23,7 @@ WallVisualsProperty::WallVisualsProperty(const VectorProtected<ISelect> *pvsel) 
 void WallVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
     //only show the first element on multi-select
-    Surface* const wall = (Surface*)m_pvsel->ElementAt(0);
+    Surface* const wall = (Surface *)SelAt(0)->GetEditable();
     if (wall == nullptr)
         return;
 
@@ -59,11 +59,11 @@ void WallVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void WallVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemSurface))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemSurface))
             continue;
-        Surface * const wall = (Surface*)m_pvsel->ElementAt(i);
+        Surface * const wall = (Surface *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case 9:
@@ -109,7 +109,7 @@ void WallVisualsProperty::UpdateProperties(const int dispid)
                 UpdateBaseProperties(wall, &wall->m_d, dispid);
                 break;
         }
-        wall->UpdateStatusBarInfo();
+        PropertyDialog::UpdateStatusBarInfo(wall);
     }
     UpdateVisuals(dispid);
 }

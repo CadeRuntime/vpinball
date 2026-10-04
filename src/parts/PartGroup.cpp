@@ -5,7 +5,6 @@
 
 #include "core/VPApp.h"
 #include "parts/Collection.h"
-#include "ui/win/WinEditor.h"
 
 
 PartGroup *PartGroup::CopyForPlay() const
@@ -41,7 +40,7 @@ STDMETHODIMP PartGroup::InterfaceSupportsErrorInfo(REFIID riid)
 
 void PartGroup::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsPartGroup_##prop() : Settings::GetDefaultPropsPartGroup_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsPartGroup_##prop() : Settings::GetDefaultPropsPartGroup_##prop##_Default()
    LinkProp(m_timerEnabled, TimerEnabled);
    LinkProp(m_timerInterval, TimerInterval);
 #undef LinkProp
@@ -49,43 +48,21 @@ void PartGroup::SetDefaults(const bool fromMouseClick)
 
 void PartGroup::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsPartGroup_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsPartGroup_##prop(field, false)
    LinkProp(m_timerEnabled, TimerEnabled);
    LinkProp(m_timerInterval, TimerInterval);
 #undef LinkProp
 }
 
-void PartGroup::SetObjectPos()
+void PartGroup::Translate(const Vertex2D& offset)
 {
-   m_vpinball->SetObjectPosCur(m_d.m_v.x, m_d.m_v.y);
-}
-
-void PartGroup::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_v.x += dx;
-   m_d.m_v.y += dy;
+   m_d.m_v.x += offset.x;
+   m_d.m_v.y += offset.y;
 }
 
 Vertex2D PartGroup::GetCenter() const
 {
    return m_d.m_v;
-}
-
-void PartGroup::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_v = pv;
-}
-
-void PartGroup::UIRenderPass1(Sur * const psur)
-{
-}
-
-void PartGroup::UIRenderPass2(Sur * const psur)
-{
-}
-
-void PartGroup::RenderBlueprint(Sur *psur, const bool solid)
-{
 }
 
 #pragma endregion
@@ -116,7 +93,7 @@ PartGroupData::SpaceReference PartGroup::GetReferenceSpace() const
 
 void PartGroup::Save(IObjectWriter& writer, const bool saveForUndo)
 {
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteVector2(FID(VCEN), m_d.m_v);
    writer.WriteBool(FID(TMON), m_timerEnabled);
    writer.WriteInt(FID(TMIN), m_timerInterval);
@@ -138,7 +115,7 @@ void PartGroup::Load(IObjectReader& reader)
          case FID(VCEN): m_d.m_v = reader.AsVector2(); break;
          case FID(TMON): m_timerEnabled = reader.AsBool(); break;
          case FID(TMIN): m_timerInterval = reader.AsInt(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(PMSK): m_d.m_playerModeVisibilityMask = reader.AsUInt(); break;
          case FID(SPRF): m_d.m_spaceReference = static_cast<PartGroupData::SpaceReference>(reader.AsInt()); break;
          default: LoadSharedEditableField(tag, reader); break;

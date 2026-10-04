@@ -11,8 +11,13 @@
 
 #include "core/VPApp.h"
 #include "core/AppCommands.h"
+#include "core/vpversion.h"
 #include "renderer/Renderer.h"
 #include "renderer/Texture.h"
+
+#include "parts/pintable.h"
+#include "utils/BiffReader.h"
+#include "utils/BiffWriter.h"
 
 #include "plugins/MsgPluginManager.h"
 
@@ -104,27 +109,43 @@ void CaptureRender(const string& tablePath, const string& screenshotPath)
    {
       std::filesystem::path tmpScreenshotPath;
       bool done;
-   } state = { GetAssetPath() / screenshotPath, false };
+      bool captureRequested;
+   } state = { GetAssetPath() / screenshotPath, false, false };
    msgpi_msg_callback onPrepareFrame = [](const unsigned int msgId, void* context, void* msgData)
    {
       CaptureState* state = reinterpret_cast<CaptureState*>(context);
-      if (g_pplayer->m_overall_frames == 25)
-         g_pplayer->m_renderer->m_renderDevice->CaptureScreenshot({ g_pplayer->m_playfieldWnd }, { state->tmpScreenshotPath },
-            [state](bool success)
-            {
-               #ifdef ENABLE_BGFX
-               lastBgfxRenderer = bgfx::getRendererType();
-               #endif
-               g_pplayer->SetCloseState(Player::CS_STOP_PLAY);
-               state->done = true;
-            });
+      if (state->captureRequested || g_pplayer->m_overall_frames < 25)
+         return;
+      if (g_pplayer->m_renderer->IsTemporalAccumulationInProgress())
+      {
+         // Wait for the static prerender accumulation to settle, so the screenshot matches the converged
+         // rendering, but bound the wait to avoid stalling if a render probe never finishes accumulating
+         if (g_pplayer->m_overall_frames < 512)
+            return;
+         MESSAGE("Timed out waiting for static prerender accumulation");
+      }
+      state->captureRequested = true;
+      g_pplayer->m_renderer->m_renderDevice->CaptureScreenshot({ g_pplayer->m_playfieldWnd }, { state->tmpScreenshotPath },
+         [state](bool success)
+         {
+#ifdef ENABLE_BGFX
+            lastBgfxRenderer = bgfx::getRendererType();
+#endif
+            g_pplayer->SetCloseState(Player::CS_STOP_PLAY);
+            state->done = true;
+         });
    };
 
    CComObject<PinTable>* table;
    CComObject<PinTable>::CreateInstance(&table);
    table->AddRef();
-   table->LoadGameFromFilename((GetAssetPath() / tablePath).string());
-   auto player = std::make_unique<Player>(table, Player::PlayMode::Play);
+   TestFileFeedback feedback;
+   const HRESULT hr = table->LoadGameFromFilename(GetAssetPath() / tablePath, feedback);
+   CHECK(SUCCEEDED(hr));
+   CHECK(feedback.m_isMonotonic);
+   CHECK(feedback.m_lastProgress <= feedback.m_length);
+   LoadProgress loadProgress;
+   auto player = std::make_unique<Player>(table, Player::PlayMode::Play, loadProgress);
    const unsigned int onPrepareFrameMsgId = player->m_pluginManager.GetMsgAPI().GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_ON_PREPARE_FRAME);
    player->m_pluginManager.GetMsgAPI().SubscribeMsg(player->m_pluginAPI.GetVPXEndPointId(), onPrepareFrameMsgId, onPrepareFrame, &state);
    player->GameLoop();
@@ -137,8 +158,8 @@ void CaptureRender(const string& tablePath, const string& screenshotPath)
 void ResetVPX()
 {
    // Reset settings
-   g_app->m_settings.Reset();
-   Settings& settings = g_app->m_settings;
+   g_settingsService.GetAppSettings().Reset();
+   Settings& settings = g_settingsService.GetAppSettings();
    settings.SetPlayerVR_AskToTurnOn(2, false);
    settings.SetPlayer_PlayfieldWidth(1920, false);
    settings.SetPlayer_PlayfieldHeight(1080, false);
@@ -146,8 +167,52 @@ void ResetVPX()
    settings.SetPlayer_DisableAO(true, false);
 }
 
+PinTable* CreateTestTable()
+{
+   CComObject<PinTable>* table;
+   CComObject<PinTable>::CreateInstance(&table);
+   table->AddRef();
+   return table;
+}
 
+InMemStream SavePartToStream(IEditable* part)
+{
+   InMemStream stream;
+   // GameItem streams start with the raw item type, followed by the BIFF part data
+   const ItemTypeEnum type = part->GetItemType();
+   stream.Write(&type, sizeof(int));
+   BiffWriter writer(&stream, nullptr);
+   part->Save(writer, false);
+   CHECK_FALSE(writer.HasError());
+   return stream;
+}
+
+void LoadPartFromStream(IEditable* part, const InMemStream& stream)
+{
+   // Skip the raw item type that starts every GameItem stream
+   BiffReader reader(stream.Data() + sizeof(int), static_cast<uint32_t>(stream.Size() - sizeof(int)), CURRENT_FILE_FORMAT_VERSION, nullptr, 0);
+   part->Load(reader);
+   CHECK_FALSE(reader.HasError());
+}
+
+bool StreamsEqual(const InMemStream& a, const InMemStream& b)
+{
+   return a.Size() == b.Size() && memcmp(a.Data(), b.Data(), a.Size()) == 0;
+}
+
+std::filesystem::path GetTestTmpDir()
+{
+   const std::filesystem::path dir = GetAssetPath() / "tmp";
+   std::filesystem::create_directories(dir);
+   return dir;
+}
+
+
+#ifndef __STANDALONE__
 extern "C" int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPTSTR lpCmdLine, _In_ int nShowCmd)
+#else
+int main(int argc, const char** argv)
+#endif
 {
    SDL_SetHint(SDL_HINT_WINDOW_ALLOW_TOPMOST, "0");
    SDL_InitSubSystem(SDL_INIT_VIDEO);
@@ -157,7 +222,7 @@ extern "C" int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrev
    VPApp vpx;
    CommandLineProcessor cmdLine;
    const string iniPath = (GetAssetPath() / "VPinball.ini").string();
-   const char* args[] = { "vpx-test.exe", "-ini", iniPath.c_str() };
+   const char* args[] = { "vpx-test", "-ini", iniPath.c_str() };
    cmdLine.ProcessCommandLine(3, args);
    vpx.InitInstance();
 
@@ -166,13 +231,15 @@ extern "C" int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrev
    context.setOption("no-breaks", true); // Disable breaks when a test fail (including crash & exceptions)
    const string outPath = (GetAssetPath() / "test_results.txt").string();
    context.setOption("out", outPath.c_str());
-   context.applyCommandLine(0, nullptr); // TODO Apply command line arguments if any
+#ifndef __STANDALONE__
+   context.applyCommandLine(__argc, __argv);
+#else
+   context.applyCommandLine(argc, argv);
+#endif
    int res = context.run();
 
    // Clean up
    SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
-   if (context.shouldExit())
-      return res;
-   return 0;
+   return res;
 }

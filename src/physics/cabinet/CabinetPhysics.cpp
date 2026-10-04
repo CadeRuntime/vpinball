@@ -8,9 +8,9 @@ namespace VPX::Physics
 
 CabinetPhysics::CabinetPhysics(float mass)
    : m_mass(mass)
-   // Oscillation and damping calibrated on real cabinets (from CFTBL to King Kong)
-   , m_cabinetOscillatorX(mass, 9.3f, 0.052f)
-   , m_cabinetOscillatorY(mass, 5.8f, 0.055f)
+   // Oscillation and damping calibrated on real cabinets (accelerometer recordings, 2026-09)
+   , m_cabinetOscillatorX(mass, 4.5f, 0.04f)
+   , m_cabinetOscillatorY(mass, 4.3f, 0.055f)
 {
    m_cabinetAcceleration.SetZero();
    m_cabinetPosition.SetZero();

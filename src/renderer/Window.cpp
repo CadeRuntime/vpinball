@@ -14,10 +14,6 @@
 #pragma comment(lib, "dxgi.lib")
 #endif
 
-#ifdef __STANDALONE__
-#include <SDL3_image/SDL_image.h>
-#endif
-
 #ifdef __LIBVPINBALL__
 #include "lib/src/VPinballLib.h"
 #endif
@@ -61,8 +57,8 @@ Window::Window(const int width, const int height)
    m_screenwidth = width;
    m_screenheight = height;
    m_windowMode = WindowMode::BorderlessFullscreen;
-   //m_refreshrate;
-   //m_bitdepth;
+   m_refreshrate = 90.f;
+   m_bitdepth = 32;
    m_sdrWhitePoint = 1.f;
    m_hdrHeadRoom = 1.f;
    m_wcgDisplay = false;
@@ -74,20 +70,18 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
    : m_windowId(windowId)
    , m_isVR(false)
 {
-   m_windowMode = (WindowMode) settings.GetWindow_FullScreen(m_windowId);
-   if (g_isMobile)
-      m_windowMode = WindowMode::BorderlessFullscreen;
+   m_windowMode = g_isMobile ? WindowMode::BorderlessFullscreen : static_cast<WindowMode>(settings.GetWindow_FullScreen(m_windowId));
    
    // Both fullscreen and windowed modes are anchored to a user selected display
    const string configuredDisplay = settings.GetWindow_Display((int)m_windowId);
    const DisplayConfig selectedDisplay = GetDisplayConfig(configuredDisplay);
    if (configuredDisplay.empty())
    {
-      PLOGI << "No display configured. Using display \"" << selectedDisplay.displayName << "\".";
+      PLOGI << "No display configured. Using display \"" << selectedDisplay.displayId << "\".";
    }
-   else if (selectedDisplay.displayName != configuredDisplay)
+   else if (selectedDisplay.displayId != configuredDisplay)
    {
-      PLOGW << "The selected display \"" << configuredDisplay << "\" is not available. Using display \"" << selectedDisplay.displayName << "\" instead.";
+      PLOGW << "The selected display \"" << configuredDisplay << "\" is not available. Using display \"" << selectedDisplay.displayId << "\" instead.";
    }
    int wnd_x = selectedDisplay.left;
    int wnd_y = selectedDisplay.top;
@@ -199,12 +193,6 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
    else
    {
       uint32_t wnd_flags = SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-      // So far, the only way to get a clean focus management on all platforms with fullscreen/windowed mode
-      // is to make ancillary windows (backglass, score view, topper) output only. They must never grab input
-      // focus, otherwise showing them (eventually lazily, when the script starts feeding them content) would
-      // steal focus from the playfield and pause the table.
-      if (m_windowId != VPXWindowId::VPXWINDOW_Playfield && m_windowId != VPXWindowId::VPXWINDOW_VRPreview)
-         wnd_flags |= SDL_WINDOW_NOT_FOCUSABLE;
 
       #if defined(ENABLE_OPENGL)
          wnd_flags |= SDL_WINDOW_OPENGL; // Leads to read OpenGL context hint (swapchain backbuffer format, ...)
@@ -215,6 +203,28 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
       #elif defined(ENABLE_DX9)
          // DX9 does not need any special flag either
       #endif
+
+      // Sadly, we haven't found a way to deal with focus management, window movability, decoration removal and taskbar behavior uniformly across platforms.
+      if (SDL_GetCurrentVideoDriver() == "x11"sv)
+      {
+         // On X11, we need ancillary windows to be non focusable but non focusable windows are only resizable if they are utility windows
+         if (m_windowId != VPXWindowId::VPXWINDOW_Playfield && m_windowId != VPXWindowId::VPXWINDOW_VRPreview && m_windowMode == Windowed)
+            wnd_flags |= SDL_WINDOW_UTILITY;
+      }
+      else if (SDL_GetCurrentVideoDriver() == "windows"sv)
+      {
+         // On Windows, non focusable windows are not proposed in the taskbar leading to situations where ancillary windows are behind the main window and cannot be raised.
+         // As Windows allows direct focus management of owned windows, we just perform direct focus management and let ancillary windows be focusable on user request.
+      }
+      else
+      {
+         // For other platforms, the only way to get a clean focus management with fullscreen/windowed mode
+         // is to make ancillary windows (backglass, score view, topper) output only. They must never grab input
+         // focus, otherwise showing them (eventually lazily, when the script starts feeding them content) would
+         // steal focus from the playfield and pause the table.
+         if (m_windowId != VPXWindowId::VPXWINDOW_Playfield && m_windowId != VPXWindowId::VPXWINDOW_VRPreview && m_windowMode == Windowed)
+            wnd_flags |= SDL_WINDOW_NOT_FOCUSABLE;
+      }
 
       // Request forced raising (standard behavior except on Windows)
       SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
@@ -244,11 +254,6 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
    if (m_windowId != VPXWindowId::VPXWINDOW_Playfield && m_windowMode == Windowed && SDL_GetCurrentVideoDriver() == "wayland"sv)
       SDL_SetWindowHitTest(m_nwnd, [](SDL_Window*, const SDL_Point*, void*) -> SDL_HitTestResult { return SDL_HITTEST_DRAGGABLE; }, nullptr);
 
-   props = SDL_GetWindowProperties(m_nwnd);
-   m_wcgDisplay = SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
-   m_sdrWhitePoint = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
-   m_hdrHeadRoom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
-
    // Define exclusive fullscreen mode if any, then switch to fullscreen
    SDL_SetWindowFullscreenMode(m_nwnd, fullscreenDisplayMode);
    if (m_windowMode != WindowMode::Windowed)
@@ -263,6 +268,14 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
       PLOGE << "Failed to get pixel density, defaulting to 1";
       m_pixelDensity = 1.f;
    }
+
+   // Needs to happen after the fullscreen switch: SDL derives all three from the display the window is on, and
+   // a window that has not been placed yet, may report HDR as disabled. NOTE: These are a snapshot, as
+   // SDL_EVENT_WINDOW_HDR_STATE_CHANGED is not handled yet, so toggling HDR in the OS,etc, needs a VPX/player restart
+   props = SDL_GetWindowProperties(m_nwnd);
+   m_wcgDisplay = SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false);
+   m_sdrWhitePoint = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
+   m_hdrHeadRoom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
 
    if (auto icon = BaseTexture::CreateFromFile(g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets, "vpinball.png")); icon)
    {
@@ -287,7 +300,7 @@ Window::Window(const string& title, const Settings& settings, VPXWindowId window
 
    if (const SDL_DisplayMode* const displayMode = SDL_GetDesktopDisplayMode(selectedDisplay.display); displayMode)
    {
-      PLOGI << std::format("Window #{} ({}x{}) was created on display {} [{}x{} {}Hz {}]", (int)m_windowId, m_pixelWidth, m_pixelHeight, selectedDisplay.displayName.c_str(),
+      PLOGI << std::format("Window #{} ({}x{}) was created on display {} [{}x{} {}Hz {}]", (int)m_windowId, m_pixelWidth, m_pixelHeight, selectedDisplay.displayId.c_str(),
          selectedDisplay.videomode.GetPixelWidth(), selectedDisplay.videomode.GetPixelHeight(), selectedDisplay.videomode.refreshrate, SDL_GetPixelFormatName(displayMode->format));
    }
 }
@@ -409,6 +422,7 @@ vector<Window::DisplayConfig> Window::GetDisplays()
          DisplayConfig displayConf {};
          displayConf.display = displayIDs[i];
          displayConf.displayName = SDL_GetDisplayName(displayIDs[i]);
+         displayConf.displayId = std::format("{} [{}, {}]", displayConf.displayName, displayBounds.x, displayBounds.y);
          displayConf.left = displayBounds.x; // Logical position
          displayConf.top = displayBounds.y;
          displayConf.isPrimary = primaryID != 0 ? displayIDs[i] == primaryID : (displayBounds.x == 0) && (displayBounds.y == 0);
@@ -438,7 +452,7 @@ Window::DisplayConfig Window::GetDisplayConfig(const string& display)
    vector<DisplayConfig> displays = GetDisplays();
    for (const DisplayConfig& dispConf : displays)
    {
-      if (dispConf.displayName == display) // Defaults to the display selected in the settings
+      if (dispConf.displayId == display) // Defaults to the display selected in the settings
       {
          selectedDisplay = dispConf;
          break;

@@ -23,6 +23,7 @@
 #include "parts/textbox.h"
 #include "parts/timer.h"
 #include "parts/trigger.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
@@ -41,7 +42,9 @@ int ImageDialog::m_columnSortOrder;
 bool ImageDialog::m_doNotChange;
 WhereUsedDialog ImageDialog::m_whereUsedDlg_Images;
 
-ImageDialog::ImageDialog() : CDialog(IDD_IMAGEDIALOG)
+ImageDialog::ImageDialog(PinTableWnd *tableEditor)
+   : CDialog(IDD_IMAGEDIALOG)
+   , m_tableEditor(tableEditor)
 {
    m_columnSortOrder = 1;
    m_doNotChange = false;
@@ -216,11 +219,11 @@ INT_PTR ImageDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (ppi != nullptr)
                {
                   ppi->m_name = pinfo->item.pszText;
-                  CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+                  CCO(PinTable) *const pt = m_tableEditor->m_table;
                   if (pt)
                   {
                      pt->SetNonUndoableDirty(eSaveDirty);
-                     pt->UpdatePropertyImageList();
+                     pt->m_tableEditor->UpdatePropertyImageList();
                   }
                }
                return TRUE;
@@ -245,7 +248,6 @@ INT_PTR ImageDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
                   Texture * const ppi = (Texture *)lvitem.lParam;
                   if (ppi != nullptr)
                   {
-                     ppi->GetGDIBitmap();
                      SetDlgItemText(IDC_ALPHA_MASK_EDIT, f2sz(255.f * ppi->m_alphaTestValue).c_str());
                      GetDlgItem(IDC_ALPHA_MASK_EDIT).ShowWindow(!ppi->IsOpaque());
                      GetDlgItem(IDC_STATIC_ALPHA).ShowWindow(!ppi->IsOpaque());
@@ -274,7 +276,7 @@ INT_PTR ImageDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (ppi->m_alphaTestValue != v)
                {
                   ppi->m_alphaTestValue = v;
-                  CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+                  CCO(PinTable) *const pt = m_tableEditor->m_table;
                   pt->SetNonUndoableDirty(eSaveDirty);
                }
 
@@ -329,10 +331,10 @@ INT_PTR ImageDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
                const int x = (xsize - width) / 2;
                const int y = (ysize - height) / 2;
 
-               if (ppi->GetGDIBitmap())
+               if (HBITMAP hbmp = ppi->GetGDIBitmap())
                {
                   HDC hdcDD = CreateCompatibleDC(nullptr);
-                  HBITMAP oldHBM = (HBITMAP)SelectObject(hdcDD, ppi->GetGDIBitmap());
+                  HBITMAP oldHBM = (HBITMAP)SelectObject(hdcDD, hbmp);
                   SetStretchBltMode(pdis->hDC, HALFTONE); // somehow enables filtering
                   StretchBlt(pdis->hDC, x, y, width, height, hdcDD, 0, 0, ppi->m_width, ppi->m_height, SRCCOPY);
                   SelectObject(hdcDD, oldHBM);
@@ -397,7 +399,7 @@ void ImageDialog::UpdateImages()
                 if (ppi->m_alphaTestValue != v)
                 {
                     ppi->m_alphaTestValue = v;
-                    CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+                    CCO(PinTable) *const pt = m_tableEditor->m_table;
                     pt->SetNonUndoableDirty(eSaveDirty);
                 }
 
@@ -429,7 +431,7 @@ BOOL ImageDialog::OnCommand(WPARAM wParam, LPARAM lParam)
          {
             ::SetFocus(hImageList);
             ListView_EditLabel(hImageList, sel);
-            CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+            CCO(PinTable) *const pt = m_tableEditor->m_table;
             pt->SetNonUndoableDirty(eSaveDirty);
          }
          break;
@@ -464,12 +466,14 @@ void ImageDialog::OnCancel()
 
 void ImageDialog::Import()
 {
-   const string& szInitialDir = g_app->m_settings.GetRecentDir_ImageDir();
+   const string& szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_ImageDir();
 
    vector<string> szFileName;
-   if (g_pvp->OpenFileDialog(szInitialDir, szFileName, "Bitmap, JPEG, PNG, TGA, WEBP, EXR, HDR Files (.bmp/.jpg/.png/.tga/.webp/.exr/.hdr)\0*.bmp;*.jpg;*.jpeg;*.png;*.tga;*.webp;*.exr;*.hdr\0", "png", OFN_EXPLORER | OFN_ALLOWMULTISELECT))
+   if (m_tableEditor->m_vpxEditor->OpenFileDialog(szInitialDir, szFileName,
+          "Bitmap, JPEG, PNG, TGA, WEBP, EXR, HDR Files (.bmp/.jpg/.png/.tga/.webp/.exr/.hdr)\0*.bmp;*.jpg;*.jpeg;*.png;*.tga;*.webp;*.exr;*.hdr\0", "png",
+          OFN_EXPLORER | OFN_ALLOWMULTISELECT))
    {
-      CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+      CCO(PinTable) *const pt = m_tableEditor->m_table;
       const HWND hImageList = GetDlgItem(IDC_SOUNDLIST).GetHwnd();
 
       ListView_SetItemState(hImageList, -1, 0, LVIS_SELECTED); // select nothing
@@ -488,17 +492,17 @@ void ImageDialog::Import()
 
       const size_t index = szFileName[0].find_last_of(PATH_SEPARATOR_CHAR);
       if (index != string::npos)
-         g_app->m_settings.SetRecentDir_ImageDir(szFileName[0].substr(0, index), false);
+         g_settingsService.GetAppSettings().SetRecentDir_ImageDir(szFileName[0].substr(0, index), false);
 
       pt->SetNonUndoableDirty(eSaveDirty);
-      pt->UpdatePropertyImageList();
+      pt->m_tableEditor->UpdatePropertyImageList();
       SetFocus();
    }
 }
 
 void ImageDialog::Export()
 {
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    const HWND hImageList = GetDlgItem(IDC_SOUNDLIST).GetHwnd();
    const int selectedItemsCount = ListView_GetSelectedCount(hImageList);
 
@@ -518,7 +522,7 @@ void ImageDialog::Export()
             OPENFILENAME ofn = {};
             ofn.lStructSize = sizeof(OPENFILENAME);
             ofn.hInstance = g_app->GetInstanceHandle();
-            ofn.hwndOwner = g_pvp->GetHwnd();
+            ofn.hwndOwner = m_tableEditor->m_vpxEditor->GetHwnd();
             char g_filename[MAXSTRING];
             g_filename[0] = '\0';
 
@@ -526,11 +530,11 @@ void ImageDialog::Export()
 
             if (!renameOnExport)
             {
-               const int len0 = (int)ppi->GetFilePath().string().length();
+               const int len0 = (int)PathToString(ppi->GetFilePath()).length();
                int begin; //select only file name from pathfilename
                for (begin = len0; begin >= 0; begin--)
                {
-                  if (ppi->GetFilePath().string()[begin] == '\\' || ppi->GetFilePath().string()[begin] == '/')
+                  if (PathToString(ppi->GetFilePath())[begin] == '\\' || PathToString(ppi->GetFilePath())[begin] == '/')
                   {
                      begin++;
                      break;
@@ -538,15 +542,15 @@ void ImageDialog::Export()
                }
                if (begin > 0)
                {
-                  memcpy(g_filename, ppi->GetFilePath().string().c_str() + begin, len0 - begin);
+                  memcpy(g_filename, PathToString(ppi->GetFilePath()).c_str() + begin, len0 - begin);
                   g_filename[len0 - begin] = '\0';
                }
             }
             else
             {
                strncat_s(g_filename, ppi->m_name.c_str(), std::size(g_filename)-strnlen_s(g_filename, std::size(g_filename))-1);
-               const size_t idx = ppi->GetFilePath().string().find_last_of('.');
-               strncat_s(g_filename, ppi->GetFilePath().string().c_str() + idx, std::size(g_filename)-strnlen_s(g_filename, std::size(g_filename))-1);
+               const size_t idx = PathToString(ppi->GetFilePath()).find_last_of('.');
+               strncat_s(g_filename, PathToString(ppi->GetFilePath()).c_str() + idx, std::size(g_filename)-strnlen_s(g_filename, std::size(g_filename))-1);
             }
             ofn.lpstrFile = g_filename;
             ofn.nMaxFile = std::size(g_filename);
@@ -580,7 +584,7 @@ void ImageDialog::Export()
             else if (defExt == "hdr")
                ofn.nFilterIndex = 12;
 
-            string g_initDir = g_app->m_settings.GetRecentDir_ImageDir();
+            string g_initDir = g_settingsService.GetAppSettings().GetRecentDir_ImageDir();
             ofn.lpstrInitialDir = g_initDir.c_str();
             //ofn.lpstrTitle = "SAVE AS";
             ofn.Flags = OFN_NOREADONLYRETURN | OFN_CREATEPROMPT | OFN_OVERWRITEPROMPT | OFN_EXPLORER;
@@ -601,25 +605,25 @@ void ImageDialog::Export()
                      if (!renameOnExport)
                      {
                         int begin;
-                        for (begin = (int)ppi->GetFilePath().string().length(); begin >= 0; begin--)
+                        for (begin = (int)PathToString(ppi->GetFilePath()).length(); begin >= 0; begin--)
                         {
-                           if (ppi->GetFilePath().string()[begin] == PATH_SEPARATOR_CHAR)
+                           if (PathToString(ppi->GetFilePath())[begin] == PATH_SEPARATOR_CHAR)
                            {
                               begin++;
                               break;
                            }
                         }
-                        filename += ppi->GetFilePath().string().c_str() + begin;
+                        filename += PathToString(ppi->GetFilePath()).c_str() + begin;
                      }
                      else
                      {
                         filename += ppi->m_name;
-                        const size_t idx = ppi->GetFilePath().string().find_last_of('.');
-                        filename += ppi->GetFilePath().string().c_str() + idx;
+                        const size_t idx = PathToString(ppi->GetFilePath()).find_last_of('.');
+                        filename += PathToString(ppi->GetFilePath()).c_str() + idx;
                      }
                   }
 
-                  if (!pt->ExportImage(ppi, (selectedItemsCount>1) ? filename : g_filename)) //!! this will always export the image in its original format, no matter what was actually selected by the user
+                  if (!ppi->SaveFile((selectedItemsCount > 1) ? filename : g_filename)) //!! this will always export the image in its original format, no matter what was actually selected by the user
                      ShowError("Could not export Image");
                   sel = ListView_GetNextItem(hImageList, sel, LVNI_SELECTED);
                   lvitem.iItem = sel;
@@ -628,7 +632,7 @@ void ImageDialog::Export()
                   ppi = (Texture*)lvitem.lParam;
                }
 
-               g_app->m_settings.SetRecentDir_ImageDir(pathName, false);
+               g_settingsService.GetAppSettings().SetRecentDir_ImageDir(pathName, false);
             } // finished all selected items
          }
       }
@@ -647,7 +651,7 @@ void ImageDialog::DeleteImage()
       const int ans = MessageBox(LocalString(IDS_REMOVEIMAGE).m_szbuffer /*"Are you sure you want to remove this image?"*/, "Confirm Deletion", MB_YESNO | MB_DEFBUTTON2);
       if (ans == IDYES)
       {
-         CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+         CCO(PinTable) *const pt = m_tableEditor->m_table;
          int sel = ListView_GetNextItem(hImageList, -1, LVNI_SELECTED);
          int lastsel = -1;
          while (sel != -1)
@@ -708,7 +712,7 @@ void ImageDialog::Reimport()
 
                if (std::filesystem::exists(filePath))
                {
-                  CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+                  CCO(PinTable) *const pt = m_tableEditor->m_table;
                   m_overallFilesize -= ppi->GetFileSize();
                   m_overallGPUsize -= ppi->GetEstimatedGPUSize();
                   Texture *newImage = pt->ImportImage(ppi->GetFilePath(), ppi->m_name);
@@ -721,10 +725,10 @@ void ImageDialog::Reimport()
                      UpdateSizeText();
                   }
                   pt->SetNonUndoableDirty(eSaveDirty);
-                  pt->UpdatePropertyImageList();
+                  pt->m_tableEditor->UpdatePropertyImageList();
                }
                else
-                  MessageBox(filePath.string().c_str(), "FILE NOT FOUND!", MB_OK);
+                  MessageBox(PathToString(filePath).c_str(), "FILE NOT FOUND!", MB_OK);
 
                sel = ListView_GetNextItem(hImageList, sel, LVNI_SELECTED);
             }
@@ -755,7 +759,7 @@ void ImageDialog::UpdateAll()
          const auto &filePath = ppi->GetFilePath();
          if (std::filesystem::exists(filePath))
          {
-            CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+            CCO(PinTable) *const pt = m_tableEditor->m_table;
             m_overallFilesize -= ppi->GetFileSize();
             m_overallGPUsize -= ppi->GetEstimatedGPUSize();
             Texture *newImage = pt->ImportImage(ppi->GetFilePath(), ppi->m_name);
@@ -768,7 +772,7 @@ void ImageDialog::UpdateAll()
                UpdateSizeText();
             }
             pt->SetNonUndoableDirty(eSaveDirty);
-            pt->UpdatePropertyImageList();
+            pt->m_tableEditor->UpdatePropertyImageList();
          }
          else
             errorOccurred = true;
@@ -783,9 +787,10 @@ void ImageDialog::UpdateAll()
 
 void ImageDialog::ShowWhereUsed()
 {
-   CCO(PinTable) *const ptCur = g_pvp->GetActiveTable();
+   CCO(PinTable) *const ptCur = m_tableEditor->m_table;
    if (ptCur)
    {
+      m_whereUsedDlg_Images.SetEditor(m_tableEditor);
       m_whereUsedDlg_Images.m_whereUsedSource = IMAGES;
       if (m_whereUsedDlg_Images.DoModal() == IDOK)
       {
@@ -804,9 +809,10 @@ void ImageDialog::ReimportFrom()
       const int ans = MessageBox(LocalString(IDS_REPLACEIMAGE).m_szbuffer /*"Are you sure you want to replace this image with a new one?"*/, "Confirm Reimport", MB_YESNO | MB_DEFBUTTON2);
       if (ans == IDYES)
       {
-         const string& szInitialDir = g_app->m_settings.GetRecentDir_ImageDir();
+         const string& szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_ImageDir();
          vector<string> szFileName;
-         if (g_pvp->OpenFileDialog(szInitialDir, szFileName, "Bitmap, JPEG, PNG, TGA, WEBP, EXR, HDR Files (.bmp/.jpg/.png/.tga/.webp/.exr/.hdr)\0*.bmp;*.jpg;*.jpeg;*.png;*.tga;*.webp;*.exr;*.hdr\0","png",0))
+         if (m_tableEditor->m_vpxEditor->OpenFileDialog(szInitialDir, szFileName,
+                "Bitmap, JPEG, PNG, TGA, WEBP, EXR, HDR Files (.bmp/.jpg/.png/.tga/.webp/.exr/.hdr)\0*.bmp;*.jpg;*.jpeg;*.png;*.tga;*.webp;*.exr;*.hdr\0", "png", 0))
          {
             LVITEM lvitem;
             lvitem.mask = LVIF_PARAM;
@@ -818,9 +824,9 @@ void ImageDialog::ReimportFrom()
             {
                const size_t index = szFileName[0].find_last_of(PATH_SEPARATOR_CHAR);
                if (index != string::npos)
-                  g_app->m_settings.SetRecentDir_ImageDir(szFileName[0].substr(0, index), false);
+                  g_settingsService.GetAppSettings().SetRecentDir_ImageDir(szFileName[0].substr(0, index), false);
 
-               CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+               CCO(PinTable) *const pt = m_tableEditor->m_table;
                m_overallFilesize -= ppi->GetFileSize();
                m_overallGPUsize -= ppi->GetEstimatedGPUSize();
                Texture* newImage = pt->ImportImage(szFileName[0], ppi->m_name);
@@ -833,7 +839,7 @@ void ImageDialog::ReimportFrom()
                   UpdateSizeText();
                }
                pt->SetNonUndoableDirty(eSaveDirty);
-               pt->UpdatePropertyImageList();
+               pt->m_tableEditor->UpdatePropertyImageList();
                // Display new image
                GetDlgItem(IDC_PICTUREPREVIEW).InvalidateRect(true);
             }
@@ -846,10 +852,10 @@ void ImageDialog::ReimportFrom()
 
 void ImageDialog::LoadPosition()
 {
-   const int x = g_app->m_settings.GetEditor_ImageMngPosX();
-   const int y = g_app->m_settings.GetEditor_ImageMngPosY();
-   const int w = g_app->m_settings.GetEditor_ImageMngWidth();
-   const int h = g_app->m_settings.GetEditor_ImageMngHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_ImageMngPosX();
+   const int y = g_settingsService.GetAppSettings().GetEditor_ImageMngPosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_ImageMngWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_ImageMngHeight();
    POINT p {x, y};
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != NULL) // Do not apply if point is offscreen
       SetWindowPos(nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -858,10 +864,10 @@ void ImageDialog::LoadPosition()
 void ImageDialog::SavePosition()
 {
    const CRect rect = GetWindowRect();
-   g_app->m_settings.SetEditor_ImageMngPosX((int)rect.left, false);
-   g_app->m_settings.SetEditor_ImageMngPosY((int)rect.top, false);
-   g_app->m_settings.SetEditor_ImageMngWidth(rect.right - rect.left, false);
-   g_app->m_settings.SetEditor_ImageMngHeight(rect.bottom - rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_ImageMngPosX((int)rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_ImageMngPosY((int)rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_ImageMngWidth(rect.right - rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_ImageMngHeight(rect.bottom - rect.top, false);
 }
 
 void ImageDialog::UpdateSizeText()
@@ -871,7 +877,7 @@ void ImageDialog::UpdateSizeText()
 
 void ImageDialog::ListImages(HWND hwndListView)
 {
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    if (pt)
    {
       for (const auto img : pt->m_vimage)
@@ -883,7 +889,6 @@ void ImageDialog::ListImages(HWND hwndListView)
 
 int ImageDialog::AddListImage(HWND hwndListView, const Texture *const ppi)
 {
-#ifndef __STANDALONE__
    constexpr char usedStringYes[] = "X";
    constexpr char usedStringNo[] = " ";
 
@@ -896,7 +901,7 @@ int ImageDialog::AddListImage(HWND hwndListView, const Texture *const ppi)
 
    const int index = ListView_InsertItem(hwndListView, &lvitem);
 
-   ListView_SetItemText_Safe(hwndListView, index, 1, ppi->GetFilePath().string().c_str());
+   ListView_SetItemText_Safe(hwndListView, index, 1, PathToString(ppi->GetFilePath()).c_str());
    ListView_SetItemText_Safe(hwndListView, index, 2, (std::to_string(ppi->m_width) + 'x' + std::to_string(ppi->m_height)).c_str());
    ListView_SetItemText_Safe(hwndListView, index, 3, usedStringNo);
 
@@ -908,7 +913,7 @@ int ImageDialog::AddListImage(HWND hwndListView, const Texture *const ppi)
    const char *format = ppi->IsHDR() ? (ppi->IsOpaque() ? "RGB_ HDR" : "RGBA HDR") : (ppi->IsOpaque() ? "RGB_" : "RGBA");
    ListView_SetItemText_Safe(hwndListView, index, 6, format);
 
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    if (pt)
    {
       if (StrCompareNoCase(pt->m_image, ppi->m_name) || StrCompareNoCase(pt->m_ballImage, ppi->m_name)
@@ -1027,9 +1032,6 @@ int ImageDialog::AddListImage(HWND hwndListView, const Texture *const ppi)
       } //else
    }
    return index;
-#else
-   return 0;
-#endif
 }
 
 void ImageDialog::AddToolTip(const char *const text, HWND parentHwnd, HWND toolTipHwnd, HWND controlHwnd)

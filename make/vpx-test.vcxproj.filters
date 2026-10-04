@@ -1,5 +1,216 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <Filter Include="audio">
+      <UniqueIdentifier>{5D3E8A2B-1C4F-4E7A-9B2D-3F6A8C1E5D7B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="core">
+      <UniqueIdentifier>{B3E7F1A2-9C4D-4E6B-A8F1-2D5C7E9B4A6D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="input">
+      <UniqueIdentifier>{7C2F9E4A-3B5D-4A8C-8E1F-5A9C2D4E6F8A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="misc">
+      <UniqueIdentifier>{EAB1B43C-C816-414B-83EE-832B6FB7BCBB}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="parts">
+      <UniqueIdentifier>{986E94B9-EE61-46C2-8BE2-A7B8B48168F8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="physics">
+      <UniqueIdentifier>{9E4A6C2F-5D7B-4C9E-A3F8-7B1D3E5F9A2C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="plugins">
+      <UniqueIdentifier>{4B8D2E6A-9C1F-4A3B-B5D7-2E8F6A1C3D5B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="render">
+      <UniqueIdentifier>{07AAEE0E-5F1F-4D1F-885D-15C36E60C7A8}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="../gen/vpinball_i.c" />
+    <ClCompile Include="../../plugins/upscaledmd/xbrz/xbrz.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/vpx-test.cpp" />
+    <ClCompile Include="../../tests/audio/test-audioplayer.cpp">
+      <Filter>audio</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-def.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-editablereg.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-filelocator.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-layeredinipropertystore.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-pinundo.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-propertydef.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-propertyregistry.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-settings.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/core/test-tabledb.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/input/test-buttonmapping.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/input/test-plunger-kalman.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/input/test-scancodes.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/input/test-sensormapping.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-collection.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-material.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-pinbinary.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-pintable.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-plugin-arrays.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-sound.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/misc/test-table-io.cpp">
+      <Filter>misc</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-ball.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-bumper.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-decal.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-dispreel.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-dragpoint.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-flasher.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-flipper.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-gate.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-hittarget.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-kicker.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-light.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-lightseq.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-partgroup.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-plunger.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-primitive.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-ramp.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-rubber.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-spinner.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-surface.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-textbox.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-timer.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/parts/test-trigger.cpp">
+      <Filter>parts</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/physics-harness.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-ball-spin.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-cabinet.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-collide.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-hittimer.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-motion-kalman.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-physics-defects.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-physics-engine.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/physics/test-quadtree.cpp">
+      <Filter>physics</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/plugins/alphadmd/test-alphanumeric.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/plugins/plugins/test-colorspace.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/plugins/plugins/test-msgpluginmanager.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/plugins/plugins/test-resuriresolver.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/plugins/upscaledmd/test-upscalers.cpp">
+      <Filter>plugins</Filter>
+    </ClCompile>
+    <ClCompile Include="../../tests/render/test-base-render.cpp">
+      <Filter>render</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="../../tests/physics/physics-harness.h">
+      <Filter>physics</Filter>
+    </ClInclude>
+    <ClInclude Include="../../tests/vpx-test.h" />
   </ItemGroup>
 </Project>

@@ -9,7 +9,7 @@
 #include "ui/win/WinEditor.h"
 
 
-TextboxVisualsProperty::TextboxVisualsProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPTEXTBOX_VISUALS, pvsel), m_font(nullptr)
+TextboxVisualsProperty::TextboxVisualsProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPTEXTBOX_VISUALS, pvsel), m_font(nullptr)
 {
     m_alignList.push_back("Align Left"s);
     m_alignList.push_back("Align Center"s);
@@ -31,11 +31,11 @@ TextboxVisualsProperty::~TextboxVisualsProperty()
 
 void TextboxVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemTextbox))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemTextbox))
             continue;
-        Textbox* const text = (Textbox *)m_pvsel->ElementAt(i);
+        Textbox* const text = (Textbox *)SelAt(i)->GetEditable();
 
         if (dispid == IDC_TEXTBOX_TRANSP_CHECK || dispid == -1)
             PropertyDialog::SetCheckboxState(m_hTransparentCheck, text->m_d.m_transparent);
@@ -73,11 +73,11 @@ void TextboxVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void TextboxVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemTextbox))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemTextbox))
             continue;
-        Textbox* const text = (Textbox *)m_pvsel->ElementAt(i);
+        Textbox* const text = (Textbox *)SelAt(i)->GetEditable();
         switch (dispid)
         {
             case IDC_TEXTBOX_TRANSP_CHECK:
@@ -137,7 +137,7 @@ void TextboxVisualsProperty::UpdateProperties(const int dispid)
             }
             case IDC_COLOR_BUTTON1:
             {
-                CComObject<PinTable>* const ptable = g_pvp->GetActiveTable();
+                CComObject<PinTable>* const ptable = GetTable();
                 if (ptable == nullptr)
                     break;
                 CHOOSECOLOR cc = m_colorDialog.GetParameters();
@@ -154,7 +154,7 @@ void TextboxVisualsProperty::UpdateProperties(const int dispid)
             }
             case IDC_COLOR_BUTTON2:
             {
-                CComObject<PinTable>* const ptable = g_pvp->GetActiveTable();
+                CComObject<PinTable>* const ptable = GetTable();
                 if (ptable == nullptr)
                     break;
                 CHOOSECOLOR cc = m_colorDialog.GetParameters();
@@ -192,7 +192,7 @@ void TextboxVisualsProperty::UpdateProperties(const int dispid)
                     const bool fStrikethrough = font.lfStrikeOut != 0;
                     text->m_d.m_font.attributes = (fItalic ? 0x02 : 0x00) | (fUnderline ? 0x04 : 0x00) | (fStrikethrough ? 0x08 : 0x00);
 
-                    const float fontsize = (float)((abs(font.lfHeight) * 72) / GetDeviceCaps(g_pvp->GetDC(), LOGPIXELSY));
+                    const float fontsize = (float)((abs(font.lfHeight) * 72) / GetDeviceCaps(GetVpxEditor()->GetDC(), LOGPIXELSY));
                     text->m_d.m_font.size = (uint32_t)(fontsize * 10000.0f);
 
                     text->m_d.m_fontcolor = m_fontDialog.GetColor();
@@ -204,7 +204,7 @@ void TextboxVisualsProperty::UpdateProperties(const int dispid)
             default:
                 break;
         }
-        text->UpdateStatusBarInfo();
+        PropertyDialog::UpdateStatusBarInfo(text);
     }
     UpdateVisuals(dispid);
 }

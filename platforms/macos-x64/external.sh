@@ -182,7 +182,7 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    mkdir pinmame
    cd pinmame
 
-   curl -sL https://github.com/vbousquet/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
+   curl -sL https://github.com/vpinball/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
@@ -426,12 +426,15 @@ cp -a freeimage/freeimage/build/libfreeimage.{dylib,*.dylib} ../../../third-part
 cp freeimage/freeimage/Source/FreeImage.h ../../../third-party/include
 
 cp -a bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx.dylib ../../../third-party/runtime-libs/macos-x64
+cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode.a ../../../third-party/build-libs/macos-x64
 cp -r bgfx/bgfx.cmake/bgfx/include/bgfx ../../../third-party/include/
 cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
 cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 
 cp -a pinmame/pinmame/build/libpinmame.{dylib,*.dylib} ../../../third-party/runtime-libs/macos-x64
-cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include
+mkdir -p ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
 
 cp -a libdmdutil/libdmdutil/build/libdmdutil.{dylib,*.dylib} ../../../third-party/runtime-libs/macos-x64
 cp -r libdmdutil/libdmdutil/include/DMDUtil ../../../third-party/include/
@@ -460,11 +463,9 @@ cp -a libdof/libdof/third-party/runtime-libs/macos/x64/libftdi1*.dylib ../../../
 cp -a libwinevbs/libwinevbs/build/libwinevbs.{dylib,*.dylib} ../../../third-party/runtime-libs/macos-x64
 mkdir -p ../../../third-party/include/libwinevbs/wine/include
 mkdir -p ../../../third-party/include/libwinevbs/atl/include
-mkdir -p ../../../third-party/include/libwinevbs/atlmfc/include
 cp libwinevbs/libwinevbs/include/libwinevbs.h ../../../third-party/include/libwinevbs/
 cp -r libwinevbs/libwinevbs/wine/include/* ../../../third-party/include/libwinevbs/wine/include/
 cp -r libwinevbs/libwinevbs/atl/include/* ../../../third-party/include/libwinevbs/atl/include/
-cp -r libwinevbs/libwinevbs/atlmfc/include/* ../../../third-party/include/libwinevbs/atlmfc/include/
 
 for LIB in libavcodec libavdevice libavfilter libavformat libavutil libswresample libswscale; do
    cp -a ffmpeg/ffmpeg/${LIB}/${LIB}.{dylib,*.dylib} ../../../third-party/runtime-libs/macos-x64

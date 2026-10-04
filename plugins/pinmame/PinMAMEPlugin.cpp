@@ -7,10 +7,6 @@
 #include "plugins/ControllerPlugin.h"
 #include "plugins/VPXPlugin.h" // Only used for optional feature (locating PinMAME files along a VPX table)
 
-#include <filesystem>
-#include <cassert>
-#include <charconv>
-
 #include "Rom.h"
 #include "Roms.h"
 #include "Settings.h"
@@ -20,7 +16,15 @@
 #include "ControllerSettings.h"
 #include "Controller.h"
 
-namespace PinMAME {
+#include <filesystem>
+#include <cassert>
+#include <charconv>
+#include <mutex>
+
+#include "plugins/PluginStrings.h"
+
+namespace PinMAME
+{
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Scriptable object definitions
@@ -139,7 +143,7 @@ PSC_CLASS_START(PinMAME_Controller, Controller)
    PSC_PROP_R(string, ROMName)
    PSC_PROP_RW(string, SplashInfoLine)
    PSC_PROP_RW(bool, HandleKeyboard)
-   PSC_PROP_RW(bool, HandleMechanics)
+   PSC_PROP_RW(int32, HandleMechanics)
    PSC_PROP_R(PinMAME_Settings, Settings)
    PSC_PROP_RW_ARRAY1(int32, SolMask, int)
    // Run/Pause/Stop
@@ -207,7 +211,6 @@ PSC_ERROR_IMPLEMENT(scriptApi); // Implement script error
 
 LPI_IMPLEMENT_CPP // Implement shared log support
 
-MSGPI_BOOL_VAL_SETTING(enableSoundProp, "Sound", "Enable Sound", "Enable sound emulation", true, true);
 MSGPI_STRING_VAL_SETTING(pinMAMEPathProp, "PinMAMEPath", "PinMAME Path", "Folder that contains PinMAME subfolders (roms, nvram, ...)", true, "", 1024);
 MSGPI_BOOL_VAL_SETTING(cheatProp, "Cheat", "Cheat Mode", "", true, false);
 
@@ -236,99 +239,6 @@ void PINMAMECALLBACK OnLogMessage(PINMAME_LOG_LEVEL logLevel, const char* format
    }
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Audio
-
-static unsigned int onAudioUpdateId;
-static unsigned int onAudioSrcChangedId;
-static unsigned int getAudioSrcId;
-static AudioUpdateMsg* audioSrc = nullptr;
-static AudioSrcId audioSrcDef = {};
-
-static void OnGetAudioSrc(const unsigned int msgId, void* userData, void* msgData)
-{
-   GetAudioSrcMsg* msg = static_cast<GetAudioSrcMsg*>(msgData);
-   if (audioSrc != nullptr && msg->count < msg->maxEntryCount)
-      memcpy(&msg->entries[msg->count], &audioSrcDef, sizeof(AudioSrcId));
-   if (audioSrc != nullptr)
-      msg->count++;
-}
-
-static void StopAudioStream()
-{
-   if (audioSrc != nullptr)
-   {
-      // Send an end of stream message
-      AudioUpdateMsg* pendingAudioUpdate = new AudioUpdateMsg();
-      memcpy(pendingAudioUpdate, audioSrc, sizeof(AudioUpdateMsg));
-      msgApi->RunOnMainThread(endpointId, 0, [](void* userData) {
-            AudioUpdateMsg* msg = static_cast<AudioUpdateMsg*>(userData);
-            msgApi->BroadcastMsg(endpointId, onAudioUpdateId, msg);
-            delete msg;
-         }, pendingAudioUpdate);
-      delete audioSrc;
-      audioSrc = nullptr;
-      memset(&audioSrcDef, 0, sizeof(audioSrcDef));
-      msgApi->RunOnMainThread(endpointId, 0, [](void* userData) {
-            msgApi->BroadcastMsg(endpointId, onAudioSrcChangedId, nullptr);
-         }, nullptr);
-   }
-}
-
-int PINMAMECALLBACK OnAudioAvailable(PinmameAudioInfo* p_audioInfo, void* const pUserData)
-{
-   LOGI(std::format("format={}, channels={}, sampleRate={:.2f}, framesPerSecond={:.2f}, samplesPerFrame={}, bufferSize={}", p_audioInfo->format == PINMAME_AUDIO_FORMAT_INT16 ? "INT16" : "FLOAT",
-      p_audioInfo->channels, p_audioInfo->sampleRate,
-      p_audioInfo->framesPerSecond, p_audioInfo->samplesPerFrame, p_audioInfo->bufferSize));
-   if (((p_audioInfo->format == PINMAME_AUDIO_FORMAT_INT16) || (p_audioInfo->format == PINMAME_AUDIO_FORMAT_FLOAT))
-      && ((p_audioInfo->channels == 1) || (p_audioInfo->channels == 2)))
-   {
-      audioSrc = new AudioUpdateMsg();
-      audioSrc->volume = 1.0f;
-      audioSrc->id = { endpointId, 0 };
-      audioSrc->type = (p_audioInfo->channels == 1) ? CTLPI_AUDIO_SRC_BACKGLASS_MONO : CTLPI_AUDIO_SRC_BACKGLASS_STEREO;
-      audioSrc->format = (p_audioInfo->format == PINMAME_AUDIO_FORMAT_INT16) ? CTLPI_AUDIO_FORMAT_SAMPLE_INT16 : CTLPI_AUDIO_FORMAT_SAMPLE_FLOAT;
-      audioSrc->sampleRate = p_audioInfo->sampleRate;
-
-      audioSrcDef.id = audioSrc->id;
-      audioSrcDef.overrideId = { 0, 0 };
-      audioSrcDef.type = audioSrc->type;
-      audioSrcDef.format = audioSrc->format;
-      audioSrcDef.sampleRate = audioSrc->sampleRate;
-      msgApi->RunOnMainThread(endpointId, 0, [](void* userData) {
-            msgApi->BroadcastMsg(endpointId, onAudioSrcChangedId, nullptr);
-         }, nullptr);
-   }
-   else
-   {
-      StopAudioStream();
-   }
-   return p_audioInfo->samplesPerFrame;
-}
-
-int PINMAMECALLBACK OnAudioUpdated(void* p_buffer, int samples, void* const pUserData)
-{
-   if (audioSrc != nullptr)
-   {
-      // This callback is invoked on the emulation thread, with data only valid in the context of the call.
-      // Therefore, we need to copy the data to feed them on the message thread.
-      const int bytePerSample = (audioSrc->format == CTLPI_AUDIO_FORMAT_SAMPLE_INT16) ? 2 : 4;
-      const int nChannels = (audioSrc->type == CTLPI_AUDIO_SRC_BACKGLASS_MONO) ? 1 : 2;
-      AudioUpdateMsg* pendingAudioUpdate = new AudioUpdateMsg(); 
-      memcpy(pendingAudioUpdate, audioSrc, sizeof(AudioUpdateMsg));
-      pendingAudioUpdate->bufferSize = samples * bytePerSample * nChannels;
-      pendingAudioUpdate->buffer = new uint8_t[pendingAudioUpdate->bufferSize];
-      memcpy(pendingAudioUpdate->buffer, p_buffer, pendingAudioUpdate->bufferSize);
-      msgApi->RunOnMainThread(endpointId, 0, [](void* userData) {
-            AudioUpdateMsg* msg = static_cast<AudioUpdateMsg*>(userData);
-            msgApi->BroadcastMsg(endpointId, onAudioUpdateId, msg);
-            delete[] msg->buffer;
-            delete msg;
-         }, pendingAudioUpdate);
-   }
-   return samples;
-}
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Overall game messages
@@ -337,42 +247,14 @@ static void OnControllerGameStart(Controller*)
 {
    assert(controller->GetRunning());
 
-   // Little helper to log all devices exposed by the started game
-   if (false)
-   {
-      msgApi->RunOnMainThread(
-         endpointId, 1e-5,
-         [](void*)
-         {
-            unsigned int getDevSrcMsgId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG);
-            GetDevSrcMsg getSrcMsg = { 0, 0, nullptr };
-            msgApi->SendMsg(endpointId, getDevSrcMsgId, endpointId, &getSrcMsg);
-            std::vector<DevSrcId> deviceSources(getSrcMsg.count);
-            getSrcMsg = { getSrcMsg.count, 0, deviceSources.data() };
-            msgApi->SendMsg(endpointId, getDevSrcMsgId, endpointId, &getSrcMsg);
-            LOGD("PinMAME Controller started");
-            for (const auto& devSrc : deviceSources)
-            {
-               LOGD(std::format("> Devices (id={:04x}.{:04x}):", devSrc.id.endpointId, devSrc.id.resId));
-               for (unsigned int i = 0; i < devSrc.nDevices; i++)
-               {
-                  LOGD(std::format("  . {:04x}:{:04d} {}", devSrc.deviceDefs[i].id.groupId, devSrc.deviceDefs[i].id.deviceId, devSrc.deviceDefs[i].name));
-               }
-            }
-            msgApi->ReleaseMsgID(getDevSrcMsgId);
-         },
-         nullptr);
-   }
 }
 
 static void OnControllerGameEnd(Controller*)
 {
-   StopAudioStream();
 }
 
 static void OnControllerDestroyed(Controller*)
 {
-   StopAudioStream();
    controller = nullptr;
 }
 
@@ -396,15 +278,8 @@ MSGPI_EXPORT void MSGPIAPI PinMAMEPluginLoad(const uint32_t sessionId, const Msg
    // Request and setup shared login API
    LPISetup(endpointId, msgApi);
 
-   msgApi->RegisterSetting(endpointId, &enableSoundProp);
    msgApi->RegisterSetting(endpointId, &pinMAMEPathProp);
    msgApi->RegisterSetting(endpointId, &cheatProp);
-
-   // Setup our contribution to the controller messages
-   onAudioUpdateId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_UPDATE_MSG);
-   onAudioSrcChangedId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_ON_SRC_CHG_MSG);
-   getAudioSrcId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_AUDIO_GET_SRC_MSG);
-   msgApi->SubscribeMsg(endpointId, getAudioSrcId, OnGetAudioSrc, nullptr);
 
    // Contribute our API to the script engine
    getScriptApiMsgId = msgApi->GetMsgID(SCRIPTPI_NAMESPACE, SCRIPTPI_MSG_GET_API);
@@ -433,8 +308,8 @@ MSGPI_EXPORT void MSGPIAPI PinMAMEPluginLoad(const uint32_t sessionId, const Msg
          NULL, // State update => prefer update on request
          NULL, // Display available => prefer state block
          NULL, // Display updated => prefer update on request
-         enableSoundProp_Val ? &OnAudioAvailable : NULL, //
-         enableSoundProp_Val ? &OnAudioUpdated : NULL, //
+         NULL, //
+         NULL, //
          NULL, // Mech available
          NULL, // Mech updated
          NULL, // Solenoid updated => prefer update on request
@@ -446,44 +321,52 @@ MSGPI_EXPORT void MSGPIAPI PinMAMEPluginLoad(const uint32_t sessionId, const Msg
 
       // Define pinmame directory (for ROM, NVRAM, ... eventually using VPX API if available)
       std::filesystem::path pinmamePath;
+      std::filesystem::path memmapPath;
       VPXPluginAPI* vpxApi = nullptr;
       msgApi->BroadcastMsg(endpointId, getVpxApiMsgId, &vpxApi);
       
       // Prioritize a pinmame folder along the table
       if (vpxApi != nullptr)
       {
-         VPXTableInfo tableInfo;
+         VPXTableInfo tableInfo {};
          vpxApi->GetTableInfo(&tableInfo);
-         std::filesystem::path tablePath = tableInfo.path;
-         pinmamePath = find_case_insensitive_directory_path(tablePath.parent_path() / "pinmame"sv / "roms"sv);
-         if (!pinmamePath.empty())
-            pinmamePath = pinmamePath.parent_path();
+         const std::filesystem::path tablePath = PluginStrings::PathFromNative(tableInfo.path);
+         if (!tablePath.empty())
+         {
+            pinmamePath = find_case_insensitive_directory_path(tablePath.parent_path() / "pinmame"sv / "roms"sv);
+            if (!pinmamePath.empty())
+               pinmamePath = pinmamePath.parent_path();
+            memmapPath = find_case_insensitive_directory_path(tablePath.parent_path() / "pinmame"sv / "memmaps"sv);
+         }
       }
 
       // Defaults to the global setting
       if (pinmamePath.empty())
-         pinmamePath = pinMAMEPathProp_Get();
+         pinmamePath = PluginStrings::PathFromUTF8OrNative(pinMAMEPathProp_Get());
+      if (memmapPath.empty())
+         memmapPath = PluginStrings::PathFromUTF8OrNative(pinMAMEPathProp_Get()) / "memmaps"sv;
 
       // Custom platforms defaults
       #if (defined(__APPLE__) && ((defined(TARGET_OS_IOS) && TARGET_OS_IOS) || (defined(TARGET_OS_TV) && TARGET_OS_TV))) || defined(__ANDROID__)
       if (pinmamePath.empty() && vpxApi != nullptr)
       {
-         VPXInfo vpxInfo;
+         VPXInfo vpxInfo {};
          vpxApi->GetVpxInfo(&vpxInfo);
-         pinmamePath = find_case_insensitive_directory_path(std::filesystem::path(vpxInfo.prefPath) / "pinmame"sv);
+         if (const std::filesystem::path prefPath = PluginStrings::PathFromNative(vpxInfo.prefPath); !prefPath.empty())
+            pinmamePath = find_case_insensitive_directory_path(prefPath / "pinmame"sv);
       }
       #elif defined(__APPLE__) || defined(__linux__)
-      if (pinmamePath.empty())
-         pinmamePath = std::filesystem::path(getenv("HOME")) / ".pinmame"sv;
+      if (const std::filesystem::path homePath = PluginStrings::PathFromNative(getenv("HOME")); pinmamePath.empty() && !homePath.empty())
+         pinmamePath = homePath / ".pinmame"sv;
       #endif
 
       // FIXME implement a last resort or just ask the user to define its path setup in the settings ?
       if (pinmamePath.empty())
          LOGE("PinMAME path is not defined."s);
       else
-         strncpy_s(const_cast<char*>(config.vpmPath), PINMAME_MAX_PATH, (pinmamePath / ""sv).string().c_str());
+         strncpy_s(const_cast<char*>(config.vpmPath), PINMAME_MAX_PATH, PluginStrings::PathToNative(pinmamePath / ""sv).c_str());
 
-      Controller* pController = new Controller(msgApi, endpointId, config);
+      Controller* pController = new Controller(msgApi, endpointId, config, memmapPath);
       pController->SetOnDestroyHandler(OnControllerDestroyed);
       pController->SetOnGameStartHandler(OnControllerGameStart);
       pController->SetOnGameEndHandler(OnControllerGameEnd);
@@ -510,7 +393,6 @@ MSGPI_EXPORT void MSGPIAPI PinMAMEPluginUnload()
       }
       LOGE(std::format("PinMAME Controller was not destroyed before unloading the plugin ({} remaining references)", nRemainingRef));
    }
-   StopAudioStream();
 
    scriptApi->SetCOMObjectOverride("VPinMAME.Controller", nullptr);
    auto regLambda = [](ScriptClassDef* scd) { scriptApi->UnregisterScriptClass(scd); };
@@ -529,11 +411,6 @@ MSGPI_EXPORT void MSGPIAPI PinMAMEPluginUnload()
 
    msgApi->ReleaseMsgID(getVpxApiMsgId);
    msgApi->ReleaseMsgID(getScriptApiMsgId);
-   msgApi->ReleaseMsgID(onAudioUpdateId);
-   msgApi->UnsubscribeMsg(getAudioSrcId, OnGetAudioSrc, nullptr);
-   msgApi->ReleaseMsgID(getAudioSrcId);
-   msgApi->ReleaseMsgID(onAudioSrcChangedId);
-   msgApi->FlushPendingCallbacks(endpointId);
    PinmameSetMsgAPI(nullptr, 0);
    msgApi = nullptr;
 }
