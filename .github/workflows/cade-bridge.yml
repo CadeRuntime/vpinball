@@ -65,14 +65,17 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
-      - name: Get vcpkg revision
+      # VCPKG_INSTALLATION_ROOT is a runner environment variable, not available in the workflow env context
+      - name: Get vcpkg location and revision
         id: vcpkg
-        run: echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
+        run: |
+          echo "root=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_OUTPUT
+          echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
       # Building gRPC from source takes a long time, cache the installed packages per vcpkg revision
       - name: Cache vcpkg packages
         uses: actions/cache@v5
         with:
-          path: ${{ env.VCPKG_INSTALLATION_ROOT }}/installed
+          path: ${{ steps.vcpkg.outputs.root }}/installed
           key: cade-vcpkg-grpc-x64-windows-release-${{ steps.vcpkg.outputs.rev }}
       # Release only dynamic triplet, also used as host triplet so that the protoc / grpc_cpp_plugin
       # tools are built once (release) and installed next to the libraries.
