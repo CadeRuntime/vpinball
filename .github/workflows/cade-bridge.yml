@@ -44,6 +44,12 @@ concurrency:
   group: cade-bridge-${{ inputs.upload && 'release' || github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !inputs.upload }}
 
+# vcpkg commit to build gRPC with. The runner images update their preinstalled vcpkg regularly,
+# which would invalidate the gRPC cache (keyed on it) and rebuild it (~35 min Linux, ~75 min
+# Windows) every time. Bump deliberately; the next run of each job then rebuilds once.
+env:
+  VCPKG_COMMIT: 07f4812200df3d3c931c0c8a6081d3b21fe2bf9f
+
 defaults:
   run:
     shell: bash
@@ -57,16 +63,19 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
-      - name: Get vcpkg location and revision
+      # Checked out in place rather than cloned elsewhere: the cache path is part of the cache identity
+      - name: Pin vcpkg
         id: vcpkg
         run: |
+          git -C "$VCPKG_INSTALLATION_ROOT" fetch --depth 1 origin $VCPKG_COMMIT
+          git -C "$VCPKG_INSTALLATION_ROOT" checkout -q --force $VCPKG_COMMIT
+          "$VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.sh" -disableMetrics
           echo "root=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_OUTPUT
-          echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
       - name: Cache vcpkg packages
         uses: actions/cache@v5
         with:
           path: ${{ steps.vcpkg.outputs.root }}/installed
-          key: cade-vcpkg-grpc-x64-linux-release-${{ steps.vcpkg.outputs.rev }}
+          key: cade-vcpkg-grpc-x64-linux-release-${{ env.VCPKG_COMMIT }}
       # Static release only triplet: gRPC / protobuf are linked into the plugin, so the release
       # doesn't depend on the user's distro shipping matching shared libraries
       - name: Install gRPC
@@ -110,18 +119,25 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref }}
-      # VCPKG_INSTALLATION_ROOT is a runner environment variable, not available in the workflow env context
-      - name: Get vcpkg location and revision
+      # VCPKG_INSTALLATION_ROOT is a runner environment variable, not available in the workflow env context.
+      # Checked out in place rather than cloned elsewhere: the cache path is part of the cache identity
+      - name: Pin vcpkg
         id: vcpkg
+        shell: pwsh
         run: |
-          echo "root=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_OUTPUT
-          echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
-      # Building gRPC from source takes a long time, cache the installed packages per vcpkg revision
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --depth 1 origin $env:VCPKG_COMMIT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout -q --force $env:VCPKG_COMMIT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "root=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_OUTPUT
+      # Building gRPC from source takes a long time, cache the installed packages per vcpkg commit
       - name: Cache vcpkg packages
         uses: actions/cache@v5
         with:
           path: ${{ steps.vcpkg.outputs.root }}/installed
-          key: cade-vcpkg-grpc-x64-windows-release-${{ steps.vcpkg.outputs.rev }}
+          key: cade-vcpkg-grpc-x64-windows-release-${{ env.VCPKG_COMMIT }}
       # Release only dynamic triplet, also used as host triplet so that the protoc / grpc_cpp_plugin
       # tools are built once (release) and installed next to the libraries.
       # The C: drive is too small for gRPC build trees: build on D: and clean after each port.
