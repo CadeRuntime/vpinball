@@ -1,0 +1,174 @@
+﻿// license:GPLv3+
+
+#include "core/stdafx.h"
+
+#include "parts/light.h"
+#include "ui/win/DragPointDialogs.h"
+#include "ui/win/sur.h"
+#include "ui/win/WinEditor.h"
+#include "ui/win/parts/LightWinUIPart.h"
+
+LightWinUIPart::LightWinUIPart(PinTableWnd* editor, Light* light)
+   : IWinUIPart(editor, light)
+   , m_light(light)
+   , m_pointParts(editor, &light->m_curve)
+   , m_centerPart(editor, light)
+{
+}
+
+void LightWinUIPart::UpdateStatusBarObjectPos()
+{
+   SetStatusBarObjectPos(m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y);
+}
+
+void LightWinUIPart::UIRenderPass1(Sur* const psur)
+{
+   psur->SetBorderColor(-1, false, 0);
+   psur->SetFillColor(m_light->m_ptable->RenderSolid() ? (((m_light->m_d.m_color & 0xFEFEFE) + (m_light->m_d.m_color2 & 0xFEFEFE)) / 2) : -1);
+   psur->SetObject(this);
+
+   switch (m_light->m_d.m_shape)
+   {
+   default:
+   case ShapeCustom:
+      vector<RenderVertex> vvertex;
+      m_light->m_curve.GetRgVertex(vvertex);
+
+      // Check if we should display the image in the editor.
+      psur->Polygon(vvertex);
+
+      break;
+   }
+}
+
+void LightWinUIPart::UIRenderPass2(Sur* const psur)
+{
+   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || (m_editor->m_vpxEditor->m_alwaysDrawDragPoints));
+
+   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
+   if (!drawDragpoints)
+   {
+      // if any of the dragpoints of this object are selected then draw all the dragpoints
+      for (const auto& pdp : m_light->m_curve.GetPoints())
+      {
+         if (m_pointParts.IsSelected(pdp.get()))
+         {
+            drawDragpoints = true;
+            break;
+         }
+      }
+   }
+
+   RenderOutline(psur);
+
+   if ((m_light->m_d.m_shape == ShapeCustom) && drawDragpoints)
+   {
+      for (const auto& pdp : m_light->m_curve.GetPoints())
+      {
+         psur->SetFillColor(-1);
+         psur->SetBorderColor(m_pointParts.IsDragging(pdp.get()) ? RGB(0, 255, 0) : RGB(0, 0, 200), false, 0);
+         psur->SetObject(m_pointParts.Get(pdp.get()));
+
+         psur->Ellipse2(pdp->GetX(), pdp->GetY(), 8);
+      }
+   }
+}
+
+void LightWinUIPart::RenderOutline(Sur* const psur)
+{
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetLineColor(RGB(0, 0, 0), false, 0);
+   psur->SetFillColor(-1);
+   psur->SetObject(this);
+   psur->SetObject(nullptr);
+
+   switch (m_light->m_d.m_shape)
+   {
+   case ShapeCircle:
+   default:
+   {
+      psur->Ellipse(m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y, m_light->m_d.m_falloff);
+      break;
+   }
+
+   case ShapeCustom:
+   {
+      vector<RenderVertex> vvertex;
+      m_light->m_curve.GetRgVertex(vvertex);
+      psur->SetBorderColor(RGB(255, 0, 0), false, 0);
+      psur->Ellipse(m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y, m_light->m_d.m_falloff);
+      psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+      psur->Polygon(vvertex);
+
+      psur->SetObject(&m_centerPart);
+      break;
+   }
+   }
+
+   if (m_light->m_d.m_shape == ShapeCustom || m_editor->m_vpxEditor->m_alwaysDrawLightCenters)
+   {
+      psur->Line(m_light->m_d.m_vCenter.x - 10.0f, m_light->m_d.m_vCenter.y, m_light->m_d.m_vCenter.x + 10.0f, m_light->m_d.m_vCenter.y);
+      psur->Line(m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y - 10.0f, m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y + 10.0f);
+   }
+
+   if (m_light->m_d.m_showBulbMesh)
+   {
+      psur->SetBorderColor(RGB(0, 127, 255), false, 0);
+      psur->Ellipse(m_light->m_d.m_vCenter.x, m_light->m_d.m_vCenter.y, m_light->m_d.m_meshRadius * 0.5f);
+   }
+}
+
+void LightWinUIPart::RenderBlueprint(Sur* psur, const bool solid)
+{
+   RenderOutline(psur);
+}
+
+void LightWinUIPart::EditMenu(CMenu& menu)
+{
+   menu.EnableMenuItem(ID_WALLMENU_FLIP, MF_BYCOMMAND | ((m_light->m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
+   menu.EnableMenuItem(ID_WALLMENU_MIRROR, MF_BYCOMMAND | ((m_light->m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
+   menu.EnableMenuItem(ID_WALLMENU_ROTATE, MF_BYCOMMAND | ((m_light->m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
+   menu.EnableMenuItem(ID_WALLMENU_SCALE, MF_BYCOMMAND | ((m_light->m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
+   menu.EnableMenuItem(ID_WALLMENU_ADDPOINT, MF_BYCOMMAND | ((m_light->m_d.m_shape != ShapeCustom) ? MF_GRAYED : MF_ENABLED));
+}
+
+void LightWinUIPart::DoCommand(int icmd, int x, int y)
+{
+   IWinUIPart::DoCommand(icmd, x, y);
+
+   switch (icmd)
+   {
+   case ID_WALLMENU_FLIP:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_light);
+      m_light->FlipY(m_light->GetCenter());
+      m_editor->EndUndo();
+      if (m_light->GetPTable())
+         m_light->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_MIRROR:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_light);
+      m_light->FlipX(m_light->GetCenter());
+      m_editor->EndUndo();
+      if (m_light->GetPTable())
+         m_light->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_ROTATE: (void)VPX::WinUI::RotatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_SCALE: (void)VPX::WinUI::ScalePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_TRANSLATE: (void)VPX::WinUI::TranslatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_ADDPOINT:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_light);
+      m_light->AddPoint(m_editor->TransformPoint(x, y), true);
+      m_editor->EndUndo();
+      if (m_light->GetPTable())
+         m_light->GetPTable()->SetDirtyDraw();
+      break;
+   }
+}

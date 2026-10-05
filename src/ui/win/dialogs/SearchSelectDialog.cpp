@@ -105,15 +105,14 @@ void SearchSelectDialog::Update()
       ListView_DeleteAllItems(m_hElementList);
 
    int idx = 0;
-   for (int i = 0; i < m_curTable->m_table->m_vcollection.size(); i++)
+   for (auto pcol : m_curTable->m_table->GetCollections())
    {
-      CComObject<Collection> *const pcol = m_curTable->m_table->m_vcollection.ElementAt(i);
       LVITEM lv;
       lv.mask = LVIF_TEXT | LVIF_PARAM;
       lv.iItem = idx;
       lv.iSubItem = 0;
       lv.lParam = (LPARAM)pcol;
-      string name = MakeString(pcol->m_wzName);
+      string name = pcol->m_name;
       lv.pszText = name.data();
       ListView_InsertItem(m_hElementList, &lv);
       ListView_SetItemText_Safe(m_hElementList, idx, 1, "Collection");
@@ -128,7 +127,7 @@ void SearchSelectDialog::Update()
          lv.iItem = idx;
          lv.iSubItem = 0;
          lv.lParam = (LPARAM)piscript;
-         const string szTemp = PinTable::GetElementName(piedit);
+         const string szTemp = piedit->GetName();
          lv.pszText = (char*)szTemp.c_str();
          ListView_InsertItem(m_hElementList, &lv);
          AddSearchItemToList(piedit, idx);
@@ -148,7 +147,7 @@ BOOL SearchSelectDialog::OnInitDialog()
 {
    m_hElementList = GetDlgItem(IDC_ELEMENT_LIST).GetHwnd();
 
-   const string windowName = "Search/Select Element - " + m_curTable->m_table->m_filename.string();
+   const string windowName = "Search/Select Element - " + PathToString(m_curTable->m_table->m_filename);
    SetWindowText(windowName.c_str());
 
    m_switchSortOrder = false;
@@ -172,7 +171,7 @@ void SearchSelectDialog::SelectElement()
 {
     const int count = ListView_GetSelectedCount(m_hElementList);
 
-    m_curTable->m_table->ClearMultiSel();
+    m_curTable->ClearMultiSel();
     int iItem = -1;
     for (int i = 0; i < count; i++)
     {
@@ -187,11 +186,10 @@ void SearchSelectDialog::SelectElement()
            if (szType == "Collection"sv)
            {
               CComObject<Collection> *const pcol = (CComObject<Collection>*)lv.lParam;
-              if (!pcol->m_visel.empty())
+              if (!pcol->GetParts().empty())
               {
-                 ISelect *const pisel = pcol->m_visel.ElementAt(0);
-                 if (pisel)
-                    m_curTable->m_table->AddMultiSel(pisel, false, true, false);
+                 if (IWinUIPart *const pisel = m_curTable->GetUIPart(pcol->GetParts()[0]); pisel)
+                    m_curTable->AddMultiSel(pisel, false, true, false);
               }
            }
            else
@@ -201,8 +199,8 @@ void SearchSelectDialog::SelectElement()
               {
                  if (pscript == pedit->GetIScriptable())
                  {
-                    if (ISelect *const pisel = pedit->GetISelect(); pisel)
-                       m_curTable->m_table->AddMultiSel(pisel, true, true, false);
+                    if (IWinUIPart *const pisel = m_curTable->GetUIPart(pedit); pisel)
+                       m_curTable->AddMultiSel(pisel, true, true, false);
                     break;
                  }
               }
@@ -713,10 +711,10 @@ void SearchSelectDialog::AddSearchItemToList(IEditable * const piedit, int idx)
 
 void SearchSelectDialog::LoadPosition()
 {
-   const int x = g_app->m_settings.GetEditor_SearchSelectPosX();
-   const int y = g_app->m_settings.GetEditor_SearchSelectPosY();
-   const int w = g_app->m_settings.GetEditor_SearchSelectWidth();
-   const int h = g_app->m_settings.GetEditor_SearchSelectHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_SearchSelectPosX();
+   const int y = g_settingsService.GetAppSettings().GetEditor_SearchSelectPosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_SearchSelectWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_SearchSelectHeight();
    POINT p { x, y };
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != NULL) // Do not apply if point is offscreen
       SetWindowPos(nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -725,8 +723,8 @@ void SearchSelectDialog::LoadPosition()
 void SearchSelectDialog::SavePosition()
 {
    const CRect rect = GetWindowRect();
-   g_app->m_settings.SetEditor_SearchSelectPosX((int)rect.left, false);
-   g_app->m_settings.SetEditor_SearchSelectPosY((int)rect.top, false);
-   g_app->m_settings.SetEditor_SearchSelectWidth(rect.right - rect.left, false);
-   g_app->m_settings.SetEditor_SearchSelectHeight(rect.bottom - rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_SearchSelectPosX((int)rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_SearchSelectPosY((int)rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_SearchSelectWidth(rect.right - rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_SearchSelectHeight(rect.bottom - rect.top, false);
 }

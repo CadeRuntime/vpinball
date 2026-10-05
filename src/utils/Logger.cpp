@@ -21,9 +21,11 @@
 #endif
 
 #include "core/VPApp.h"
+#ifdef VPX_ENABLE_WIN32_EDITOR
 #include "ui/win/codeview.h"
 #include "ui/win/PinTableWnd.h"
 #include "ui/win/WinEditor.h"
+#endif
 
 
 class DebugAppender final : public plog::IAppender
@@ -36,14 +38,11 @@ public:
 
    void write(const plog::Record &record) PLOG_OVERRIDE
    {
+#ifdef VPX_ENABLE_WIN32_EDITOR // this sink writes to the script editor debug output
       if ((std::this_thread::get_id() != m_uiThreadId) || (g_pvp == nullptr) || (g_pvp->GetActiveTableEditor() == nullptr))
          return;
-      #ifdef _WIN32
-      // Convert from wchar* to char* on Win32
-      g_pvp->GetActiveTableEditor()->m_pcv->AddToDebugOutput(MakeString(record.getMessage()));
-      #else
       g_pvp->GetActiveTableEditor()->m_pcv->AddToDebugOutput(record.getMessage());
-      #endif
+#endif
    }
 
 private:
@@ -75,11 +74,7 @@ public:
          default:            level = "UNKNOWN"sv; break;
       }
 
-      #ifdef _WIN32
-      std::string message = MakeString(record.getMessage(), CP_UTF8);
-      #else
-      std::string message(record.getMessage());
-      #endif
+      const std::string message(record.getMessage());
 
       char timeBuffer[32];
       snprintf(timeBuffer, std::size(timeBuffer), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
@@ -126,7 +121,7 @@ public:
             {
                if (data[0] != 0)
                {
-                  ss << PLOG_NSTR('[') << data << PLOG_NSTR("] ");
+                  ss << '[' << MakeString(data) << "] ";
                   logged = true;
                }
                LocalFree(data);
@@ -147,6 +142,8 @@ public:
 
 Logger* Logger::m_pInstance = nullptr;
 
+static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>>* s_fileAppender = nullptr;
+
 Logger* Logger::GetInstance()
 {
    if (!m_pInstance)
@@ -165,11 +162,8 @@ void Logger::SetupLogger(const bool enable)
       {
          initialized = true;
          const std::filesystem::path logPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences, "vpinball.log");
-#if PLOG_CHAR_IS_UTF8
-         static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>> fileAppender(logPath.string().c_str(), 1024 * 1024 * 5, 1);
-#else
-         static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>> fileAppender(logPath.wstring().c_str(), 1024 * 1024 * 5, 1);
-#endif
+         static plog::RollingFileAppender<ThreadAwareTxtFormatter<false>> fileAppender(PathToUTF8(logPath).c_str(), 1024 * 1024 * 5, 1); // Opened as UTF-8
+         s_fileAppender = &fileAppender;
          static DebugAppender debugAppender;
          plog::Logger<PLOG_DEFAULT_INSTANCE_ID>::getInstance()->addAppender(&debugAppender);
          plog::Logger<PLOG_DEFAULT_INSTANCE_ID>::getInstance()->addAppender(&fileAppender);
@@ -210,7 +204,6 @@ void Logger::Init()
 
 void Logger::Truncate()
 {
-   std::filesystem::path szLogPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences, "vpinball.log");
-   std::ofstream ofs(szLogPath, std::ofstream::out | std::ofstream::trunc);
-   ofs.close();
+   if (s_fileAppender)
+      s_fileAppender->truncate();
 }

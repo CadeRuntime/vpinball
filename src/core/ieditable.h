@@ -2,9 +2,39 @@
 
 #pragma once
 
-#include "core/iselect.h"
-#include "ui/win/resource.h"
+#include "core/resourceid.h"
 #include "utils/fileio.h"
+
+// These are used to identify parts for file I/O and must not be changed/reordered
+enum ItemTypeEnum : uint32_t
+{
+   eItemSurface,
+   eItemFlipper,
+   eItemTimer,
+   eItemPlunger,
+   eItemTextbox,
+   eItemBumper,
+   eItemTrigger,
+   eItemLight,
+   eItemKicker,
+   eItemDecal,
+   eItemGate,
+   eItemSpinner,
+   eItemRamp,
+   eItemTable,
+   eItemLightCenter, // Used in WinUI to select light center apart from light
+   eItemDragPoint,
+   eItemCollection,
+   eItemDispReel,
+   eItemLightSeq,
+   eItemPrimitive,
+   eItemFlasher,
+   eItemRubber,
+   eItemHitTarget,
+   eItemBall,
+   eItemPartGroup,
+   eItemInvalid = 0xFFFFFFFFu
+};
 
 class IHitable;
 class IRenderable;
@@ -14,8 +44,6 @@ class Collection;
 class EventProxyBase;
 class HitTimer;
 class PinTable;
-
-#define BLUEPRINT_SOLID_COLOR RGB(0,0,0)
 
 #include "core/VPXGameElementBridge.h" // plugin game element event broadcasting (cade)
 
@@ -29,69 +57,46 @@ public:
    float   m_currentHitThreshold; // while playing and the ball hits the mesh the hit threshold is updated here
 };
 
-#define STARTUNDO \
-	BeginUndo(); \
-	MarkForUndo();
-
-#define STOPUNDO \
-	EndUndo(); \
-	if (GetPTable()) GetPTable()->SetDirtyDraw();
-
-#define STARTUNDOSELECT \
-	GetIEditable()->BeginUndo(); \
-	GetIEditable()->MarkForUndo();
-
-#define STOPUNDOSELECT \
-	GetIEditable()->EndUndo(); \
-	if (GetPTable()) GetPTable()->SetDirtyDraw();
-
-
-// Explanation for AllowedViews:
-// Value gets and'ed with 1 (table view) or 2 (backglass view).
-// If you want to allow an element to be pasted only into the table view, use 1,
-// for only backglass view, use 2, and for both, use 3.
-#define VIEW_PLAYFIELD 1
-#define VIEW_BACKGLASS 2
 
 // declare and implement some methods for an IEditable which supports scripting
-#define STANDARD_EDITABLE_DECLARES(T, ItemType, ResName, AllowedViews) \
-	_STANDARD_EDITABLE_CONSTANTS(ItemType, ResName, AllowedViews) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_HITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_RENDERABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType)
+#define STANDARD_EDITABLE_DECLARES(T, ItemType, ResName)                                                                                                                                     \
+   _STANDARD_EDITABLE_CONSTANTS(ItemType, ResName)                                                                                                                                           \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType)                                                                                                                             \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_HITABLE_DECLARES(T, ItemType)                                                                                                                     \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_RENDERABLE_DECLARES(T, ItemType)                                                                                                                  \
+   _STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType)
 
-#define STANDARD_EDITABLE_DECLARES_NO_RENDERABLE(T, ItemType, ResName, AllowedViews) \
-	_STANDARD_EDITABLE_CONSTANTS(ItemType, ResName, AllowedViews) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_HITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType) \
-	IRenderable *GetIRenderable() final { return nullptr; } \
-	const IRenderable *GetIRenderable() const final { return nullptr; }
+#define STANDARD_EDITABLE_DECLARES_NO_RENDERABLE(T, ItemType, ResName)                                                                                                                       \
+   _STANDARD_EDITABLE_CONSTANTS(ItemType, ResName)                                                                                                                                           \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType)                                                                                                                             \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_HITABLE_DECLARES(T, ItemType)                                                                                                                     \
+   _STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType)                                                                                                                                            \
+   IRenderable *GetIRenderable() final { return nullptr; }                                                                                                                                   \
+   const IRenderable *GetIRenderable() const final { return nullptr; }
 
-#define STANDARD_EDITABLE_DECLARES_NO_HITABLE(T, ItemType, ResName, AllowedViews) \
-	_STANDARD_EDITABLE_CONSTANTS(ItemType, ResName, AllowedViews) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_RENDERABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType) \
-	IHitable *GetIHitable() final { return nullptr; } \
-	const IHitable *GetIHitable() const final { return nullptr; }
+#define STANDARD_EDITABLE_DECLARES_NO_HITABLE(T, ItemType, ResName)                                                                                                                          \
+   _STANDARD_EDITABLE_CONSTANTS(ItemType, ResName)                                                                                                                                           \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType)                                                                                                                             \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_RENDERABLE_DECLARES(T, ItemType)                                                                                                                  \
+   _STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType)                                                                                                                                            \
+   IHitable *GetIHitable() final { return nullptr; }                                                                                                                                         \
+   const IHitable *GetIHitable() const final { return nullptr; }
 
-#define STANDARD_EDITABLE_DECLARES_NO_RENDERABLE_NO_HITABLE(T, ItemType, ResName, AllowedViews) \
-	_STANDARD_EDITABLE_CONSTANTS(ItemType, ResName, AllowedViews) \
-	_STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType) \
-	_STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType) \
-	IRenderable* GetIRenderable() final { return nullptr; } \
-	const IRenderable* GetIRenderable() const final { return nullptr; } \
-	IHitable *GetIHitable() final { return nullptr; } \
-	const IHitable *GetIHitable() const final { return nullptr; }
+#define STANDARD_EDITABLE_DECLARES_NO_RENDERABLE_NO_HITABLE(T, ItemType, ResName)                                                                                                            \
+   _STANDARD_EDITABLE_CONSTANTS(ItemType, ResName)                                                                                                                                           \
+   _STANDARD_DISPATCH_INDEPENDENT_EDITABLE_DECLARES(T, ItemType)                                                                                                                             \
+   _STANDARD_DISPATCH_EDITABLE_DECLARES(ItemType)                                                                                                                                            \
+   IRenderable *GetIRenderable() final { return nullptr; }                                                                                                                                   \
+   const IRenderable *GetIRenderable() const final { return nullptr; }                                                                                                                       \
+   IHitable *GetIHitable() final { return nullptr; }                                                                                                                                         \
+   const IHitable *GetIHitable() const final { return nullptr; }
 
 // used above, do not invoke directly
 #define _STANDARD_DISPATCH_EDITABLE_DECLARES(itemType) \
 	IFireEvents *GetIFireEvents() final {return (IFireEvents *)this;} \
 	EventProxyBase *GetEventProxyBase() final {return (EventProxyBase *)this;} \
-	STDMETHOD(get_Name)(/*[out, retval]*/ BSTR *pVal) { *pVal = SysAllocStringLen(m_wzName.c_str(), static_cast<UINT>(m_wzName.length())); return S_OK; } \
-	STDMETHOD(put_Name)(/*[in]*/ BSTR newVal) { SetName(newVal); return S_OK; } \
+	STDMETHOD(get_Name)(/*[out, retval]*/ BSTR *pVal) { *pVal = MakeWideBSTR(m_name); return S_OK; } \
+	STDMETHOD(put_Name)(/*[in]*/ BSTR newVal) { SetName(MakeString(newVal)); return S_OK; } \
 	STDMETHOD(get_TimerInterval)(/*[out, retval]*/ LONG *pVal) {*pVal = m_timerInterval; return S_OK;} \
 	STDMETHOD(put_TimerInterval)(/*[in]*/ LONG newVal) {return IEditable::put_TimerInterval(newVal, &m_timerInterval);} \
 	STDMETHOD(get_TimerEnabled)(/*[out, retval]*/ VARIANT_BOOL *pVal) {*pVal = FTOVB(m_timerEnabled); return S_OK;} \
@@ -121,25 +126,13 @@ public:
     } \
 	T *CopyForPlay() const final; \
 	HRESULT Init(const float x, const float y, const bool fromMouseClick, const bool forPlay = false); \
-	void UIRenderPass1(Sur * const psur) final; \
-	void UIRenderPass2(Sur * const psur) final; \
-	bool IsUILocked() const final { return m_uiLocked; } \
-	void SetUILock(bool lock) final { m_uiLocked = lock; } \
-	bool IsUIVisible() const final { return m_uiVisible; } \
-	void SetUIVisible(bool visible) final { m_uiVisible = visible; } \
 	PinTable *GetPTable() final { return m_ptable; } \
 	const PinTable *GetPTable() const final { return m_ptable; } \
-	void Delete() final {IEditable::Delete();} \
-	void Uncreate() final {IEditable::Uncreate();} \
 	void Load(IObjectReader &reader) final; \
 	void Save(IObjectWriter &writer, const bool saveForUndo) final; \
 	ItemTypeEnum GetItemType() const final { return ItemType; } \
 	IDispatch *GetIDispatch() final {return static_cast<IDispatch *>(this);} \
 	const IDispatch *GetIDispatch() const final {return static_cast<const IDispatch *>(this);} \
-	IEditable *GetIEditable() final {return static_cast<IEditable*>(this);} \
-	const IEditable *GetIEditable() const final {return static_cast<const IEditable*>(this);} \
-	ISelect *GetISelect() final {return static_cast<ISelect*>(this);} \
-	const ISelect *GetISelect() const final {return static_cast<const ISelect*>(this);} \
 	STDMETHOD(GetDisplayString)(DISPID dispID, BSTR * pbstr) { return ResultFromScode(E_NOTIMPL); } \
 	STDMETHOD(MapPropertyToPage)(DISPID dispID, CLSID * pclsid) { return ResultFromScode(E_NOTIMPL); } \
 	STDMETHOD(GetPredefinedStrings)(DISPID dispID, CALPOLESTR *pcaStringsOut, CADWORD *pcaCookiesOut) {return GetPTable()->GetPredefinedStrings(dispID, pcaStringsOut, pcaCookiesOut, this);} \
@@ -162,43 +155,32 @@ public:
    void Render(const unsigned int renderMask) final; \
    void RenderRelease() final;
 
-#define _STANDARD_EDITABLE_CONSTANTS(ItTy, ResName, AllwdViews) \
-   static const ItemTypeEnum ItemType = ItTy; \
-   static const int TypeNameID = IDS_TB_##ResName; \
-   static const int ToolID = ID_INSERT_##ResName; \
-   static const int CursorID = IDC_##ResName; \
-   static const unsigned AllowedViews = AllwdViews;
+#define _STANDARD_EDITABLE_CONSTANTS(ItTy, ResName)                                                                                                                                          \
+   static inline constexpr ItemTypeEnum ItemType = ItTy;                                                                                                                                     \
+   static inline constexpr int TypeNameID = IDS_TB_##ResName;
 
 #define STANDARD_EDITABLE_COPY_FOR_PLAY_IMPL(type) \
    type *dst = type::COMCreate(); \
    dst->Init(0.f, 0.f, false, true); \
-   dst->m_wzName = m_wzName; \
+   dst->m_name = m_name; \
    dst->m_desktopBackdrop = m_desktopBackdrop; \
-   dst->m_uiLocked = m_uiLocked; \
-   dst->m_uiVisible = m_uiVisible; \
+   dst->SetUILock(IsUILocked()); \
+   dst->SetUIVisible(IsUIVisible(false)); \
    dst->m_d = m_d; \
    dst->m_timerInterval = m_timerInterval; \
    dst->m_timerEnabled = m_timerEnabled;
 
-#define STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(type, points) \
-   STANDARD_EDITABLE_COPY_FOR_PLAY_IMPL(type) \
-   for (size_t i = 0; i < dst->points.size(); i++) \
-      dst->points[i]->Release(); \
-   dst->points.clear(); \
-   CComObject<DragPoint> *pdp; \
-   for (const auto dpt : m_vdpoint) \
-   { \
-      CComObject<DragPoint>::CreateInstance(&pdp); \
-      if (pdp) \
-      { \
-         pdp->AddRef(); \
-         pdp->Init(dst, dpt->m_v.x, dpt->m_v.y, dpt->m_v.z, dpt->m_smooth); \
-         pdp->m_slingshot = dpt->m_slingshot; \
-         pdp->m_calcHeight = dpt->m_calcHeight; \
-         pdp->m_autoTexture = dpt->m_autoTexture; \
-         pdp->m_texturecoord = dpt->m_texturecoord; \
-         dst->points.push_back(pdp); \
-      } \
+#define STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(type, curve)                                                                                                                     \
+   STANDARD_EDITABLE_COPY_FOR_PLAY_IMPL(type)                                                                                                                                                \
+   dst->m_curve.ClearPoints();                                                                                                                                                               \
+   for (const auto &dpt : curve.GetPoints())                                                                                                                                                 \
+   {                                                                                                                                                                                         \
+      auto pdp = std::make_unique<DragPoint>(&dst->curve, dpt->GetX(), dpt->GetY(), dpt->GetZ(), dpt->IsSmooth());                                                                           \
+      pdp->m_slingshot = dpt->m_slingshot;                                                                                                                                                   \
+      pdp->SetCalcHeight(dpt->GetCalcHeight());                                                                                                                                              \
+      pdp->SetAutoTextureCoordinate(dpt->IsAutoTextureCoordinate());                                                                                                                         \
+      pdp->SetTextureCoordinateU(dpt->GetTextureCoordinateU());                                                                                                                              \
+      dst->curve.PushPoint(std::move(pdp));                                                                                                                                                  \
    }
 
 
@@ -222,7 +204,7 @@ public:
 };
 
 // IEditable is the interface for self-contained table element.
-// Example: Bumper is an IEditable and ISelect, but DragPoint is only ISelect.
+// Example: Bumper is an IEditable, but DragPoint is not (it is a sub element of a part's curve).
 class IEditable
 {
 public:
@@ -234,9 +216,6 @@ public:
 
    virtual PinTable *GetPTable() = 0;
    virtual const PinTable *GetPTable() const = 0;
-
-   virtual ISelect *GetISelect() = 0;
-   virtual const ISelect *GetISelect() const = 0;
 
    virtual IHitable *GetIHitable() = 0;
    virtual const IHitable *GetIHitable() const = 0;
@@ -252,11 +231,15 @@ public:
    virtual ItemTypeEnum GetItemType() const = 0;
 
    virtual void SetDefaults(const bool fromMouseClick) = 0;
+   virtual void SetDefaultPhysics(const bool fromMouseClick) { };
    virtual void WriteRegDefaults() = 0;
 
    virtual void Save(IObjectWriter &writer, const bool saveForUndo) = 0;
    virtual void ClearForOverwrite() { }
    virtual void Load(IObjectReader &partReader) = 0;
+   // Called once the part has been added to its table, for the few load fix ups that need
+   // the table itself: m_ptable is only set by PinTable::AddPart, so it is still null while Load runs (see Surface)
+   virtual void InitPostLoad() { }
 
    // if legacy_bounds != nullptr, can return pre-10.8 bounds, too (depending on which editable exactly)
    virtual void GetBoundingVertices(vector<Vertex3Ds> &bounds, vector<Vertex3Ds> *const legacy_bounds) { }
@@ -267,31 +250,45 @@ public:
 
    virtual EventProxyBase *GetEventProxyBase() = 0;
 
+   // Geometric transforms of the part, as used by the editors
+   virtual Vertex2D GetCenter() const = 0;
+   virtual void Translate(const Vertex2D &offset) = 0;
+
+   virtual Vertex2D GetScale() const { return { 1.f, 1.f }; }
+   virtual void Scale(const float scalex, const float scaley, const Vertex2D &pvCenter, const bool useElementCenter);
+
+   virtual float GetRotate() const { return 0.0f; }
+   virtual void Rotate(const float ang, const Vertex2D &pvCenter, const bool useElementCenter);
+
+   virtual void FlipX(const Vertex2D &pvCenter);
+   virtual void FlipY(const Vertex2D &pvCenter);
+
    // Shared implementation
 protected:
    void LoadSharedEditableField(const int id, IObjectReader &reader);
    void SaveSharedEditableFields(IObjectWriter &writer);
 
 public:
-   wstring m_onLoadExpectedPartGroup; // Name of the part group, this object expects to be added to. Defined when loading a part (should be moved to the loading context)
+   string m_onLoadExpectedPartGroup; // Name of the part group, this object expects to be added to. Defined when loading a part (should be moved to the loading context)
 
-   virtual void BeginUndo();
-   virtual void EndUndo();
-   virtual void Delete();
-   virtual void Uncreate();
-
-   void MarkForUndo();
-   void MarkForDelete();
-   void Undelete();
-
-   string GetName() const;
-   const wstring& GetWName() const;
-   void SetName(const wstring& name);
+   const string& GetName() const; // Script name (UTF-8), empty if not scriptable
+   void SetName(const string& name);
 
    void SetPartGroup(class PartGroup *partGroup);
    class PartGroup* GetPartGroup() const { return m_partGroup; }
    string GetPathString(const bool isDirOnly) const;
    bool IsChild(const PartGroup* group) const;
+
+   // UI lock and visibility are part of IEditable as they are persisted in the table file, used by the different editors
+   bool IsUILocked() const { return m_uiLocked; }
+   void SetUILock(const bool lock) { m_uiLocked = lock; }
+   // UI visibility, optionally applying PartGroup visibility (i.e. a part is visible if it is flagged as such, and its parents are also visibles)
+   bool IsUIVisible(const bool applyPartGroupVisibility) const;
+   void SetUIVisible(const bool visible) { m_uiVisible = visible; }
+
+   // Editor support: when true, the part is rendered (shaded) instead of drawn as a wireframe when the
+   // editor is in a wireframe shade mode, and the part group visibility mask does not apply to it
+   virtual bool IsShownInEditor() const { return false; }
 
    HRESULT put_TimerEnabled(VARIANT_BOOL newVal, BOOL *pte);
    HRESULT put_TimerInterval(long newVal, int *pti);
@@ -306,14 +303,11 @@ public:
 
    bool m_desktopBackdrop = false; // if true, the element is part of the desktop backdrop
 
-   bool m_uiLocked = false; // Can not be dragged in the editor
-
-   bool m_uiVisible = true; // UI visibility (not the same as rendering visibility which is a member of part data)
-
 private:
    VARIANT m_uservalue;
-
    class PartGroup* m_partGroup = nullptr; // Parenting to group (or top level layers) for base transform and visibility
+   bool m_uiLocked = false; // Can not be dragged in the editor
+   bool m_uiVisible = true; // UI visibility (not the same as rendering visibility which is a member of part data)
 
 #pragma region Script events
 public:

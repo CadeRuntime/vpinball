@@ -4,6 +4,8 @@
 #include "Server.h"
 #include "plugins/LoggingPlugin.h"
 
+#include "pinmame/PinMAMEPlugin.h"
+
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
@@ -14,6 +16,7 @@ using namespace std::string_view_literals;
 #include "controls/B2SPictureBox.h"
 #include "controls/B2SLEDBox.h"
 #include "controls/B2SReelBox.h"
+#include "classes/B2SReelDisplay.h"
 #include "classes/LEDDisplayDigitLocation.h"
 #include "classes/CollectData.h"
 #include "dream7/Dream7Display.h"
@@ -22,24 +25,87 @@ using namespace std::string_view_literals;
 #include "classes/B2SScreen.h"
 #include "utils/PinMAMEAPI.h"
 
+#include <algorithm>
+#include <random>
+
+#include "plugins/PluginStrings.h"
+
 
 namespace B2SLegacy {
 
-Server* Server::m_singleton = nullptr;
+// Score right aligned on the display digits, keeping its rightmost digits if it does not fit (as ControlCollection::SetScore)
+static string PadScore(int score, int digits)
+{
+   const string text = std::to_string(score);
+   if (digits <= 0)
+      return string();
+   if (static_cast<int>(text.length()) >= digits)
+      return text.substr(text.length() - digits);
+   return string(static_cast<size_t>(digits) - text.length(), ' ') + text;
+}
 
-Server::Server(MsgPluginAPI* msgApi, uint32_t endpointId, VPXPluginAPI* vpxApi, ScriptClassDef* serverClassDef)
-   : m_onGameStartId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_START))
-   , m_onGameEndId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_END))
-   , m_onGetDevSrcId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG)) 
-   , m_msgApi(msgApi)
+static std::string CreateGuidString()
+{
+   std::random_device rd;
+   std::mt19937_64 gen(rd());
+   std::uniform_int_distribution<uint64_t> dist;
+
+   uint64_t hi = dist(gen);
+   uint64_t lo = dist(gen);
+
+   // Set UUID version (4) and variant bits per RFC 4122
+   hi = (hi & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
+   lo = (lo & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+
+   char buf[37];
+   std::snprintf(buf, sizeof(buf),
+      "%08llx-%04llx-%04llx-%04llx-%012llx",
+      (hi >> 32) & 0xFFFFFFFFULL,
+      (hi >> 16) & 0xFFFFULL,
+      hi & 0xFFFFULL,
+      (lo >> 48) & 0xFFFFULL,
+      lo & 0xFFFFFFFFFFFFULL);
+
+   return std::string(buf);
+}
+
+Server::Server(const MsgPluginAPI* msgApi, uint32_t endpointId, VPXPluginAPI* vpxApi, ScriptClassDef* serverClassDef)
+   : m_msgApi(msgApi)
    , m_vpxApi(vpxApi)
    , m_endpointId(endpointId)
    , m_onGetAuxRendererId(msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER))
    , m_onAuxRendererChgId(msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG))
-   , m_onDevChangedMsgId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_ON_SRC_CHG_MSG))
+   , m_onStateChangedMsgId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_STATE_ON_SRC_CHG_MSG))
+   , m_onStateChangeEventId(msgApi->GetMsgID("B2S", "OnStateChange:1"))
    , m_pinmameApi(msgApi, endpointId, this, serverClassDef)
+   , m_pinmameControllers(
+        msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG,
+        [](std::vector<ControllerDef>& items)
+        {
+           const string pinmamePrefix(PMPI_GAMEID_PREFIX);
+           std::erase_if(items, [&pinmamePrefix](const ControllerDef& src) { return !string(src.gameId).starts_with(pinmamePrefix); });
+        },
+        nullptr, [this]() { m_stateSources.Refresh(); })
+   , m_stateSources(
+        msgApi, endpointId, CTLPI_STATE_GET_SRC_MSG, CTLPI_STATE_ON_SRC_CHG_MSG,
+        [this](std::vector<StateSrcId>& items)
+        {
+           m_pinmameControllers.With(
+              [&items](const std::vector<ControllerDef>& controllers)
+              {
+                 std::erase_if(items,
+                    [&controllers](const StateSrcId& source)
+                    {
+                       return std::find_if(controllers.begin(), controllers.end(), [source](const ControllerDef& ctrl) { return ctrl.endpointId == source.id.endpointId; })
+                          == controllers.end();
+                    });
+              });
+        },
+        nullptr, nullptr)
+   , m_exposedControllers(msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG)
+   , m_exposedStates(msgApi, endpointId, CTLPI_STATE_GET_SRC_MSG, CTLPI_STATE_ON_SRC_CHG_MSG)
 {
-   m_singleton = this;
+   m_controllerGameId = "b2s::" + CreateGuidString();
    m_pB2SSettings = new B2SSettings(m_msgApi, endpointId);
    m_pB2SData = new B2SData(this, m_pB2SSettings, m_vpxApi);
    m_pCollectLampsData = new B2SCollectData(m_pB2SSettings->GetLampsSkipFrames());
@@ -50,40 +116,31 @@ Server::Server(MsgPluginAPI* msgApi, uint32_t endpointId, VPXPluginAPI* vpxApi, 
    m_pTimer->SetInterval(37);
    m_pTimer->SetElapsedListener(std::bind(&Server::TimerElapsed, this, std::placeholders::_1));
 
-   m_devSrc.id.endpointId = m_endpointId;
-   m_devSrc.GetByteState = GetByteState;
-   m_devSrc.GetFloatState = GetFloatState;
-   m_devSrc.SetChangeCallback = RegisterStateChangeCallback;
+   m_msgApi->SubscribeMsg(m_endpointId, m_onGetAuxRendererId, OnGetRendererStatic, this);
+   m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
 
-   msgApi->SubscribeMsg(endpointId, m_onGetAuxRendererId, OnGetRendererStatic, this);
-   msgApi->SubscribeMsg(endpointId, m_onDevChangedMsgId, OnDevSrcChangedStatic, this);
-   msgApi->SubscribeMsg(endpointId, m_onGetDevSrcId, OnGetDevSrc, this);
-   msgApi->BroadcastMsg(endpointId, m_onAuxRendererChgId, nullptr);
+   m_stateSources.Subscribe();
+   m_pinmameControllers.Subscribe();
 }
 
 Server::~Server()
 {
-   if (m_gameRunning)
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
-   m_msgApi->ReleaseMsgID(m_onGameStartId);
-   m_msgApi->ReleaseMsgID(m_onGameEndId);
+   m_gameRunning = false;
+   m_exposedControllers.ClearItems();
+   m_exposedStates.ClearItems();
+
+   m_stateSources.Unsubscribe();
+   m_pinmameControllers.Unsubscribe();
 
    m_msgApi->UnsubscribeMsg(m_onGetAuxRendererId, OnGetRendererStatic, this);
-   m_msgApi->UnsubscribeMsg(m_onDevChangedMsgId, OnDevSrcChangedStatic, this);
-   m_msgApi->UnsubscribeMsg(m_onGetDevSrcId, OnGetDevSrc, this);
    m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
    m_msgApi->ReleaseMsgID(m_onGetAuxRendererId);
    m_msgApi->ReleaseMsgID(m_onAuxRendererChgId);
-   m_msgApi->ReleaseMsgID(m_onDevChangedMsgId);
-   m_msgApi->ReleaseMsgID(m_onGetDevSrcId);
-
-   delete[] m_deviceStateSrc.deviceDefs;
-   delete[] m_devSrc.deviceDefs;
+   m_msgApi->ReleaseMsgID(m_onStateChangedMsgId);
+   m_msgApi->ReleaseMsgID(m_onStateChangeEventId);
 
    if (m_onDestroyHandler)
       m_onDestroyHandler(this);
-
-   m_singleton = nullptr;
 
    delete m_pTimer;
    delete m_pFormBackglass;
@@ -130,123 +187,127 @@ int Server::OnRender(VPXRenderContext2D* const renderCtx, void* context)
    return 0;
 }
 
-void Server::OnDevSrcChanged(const unsigned int msgId, void* userData, void* msgData)
+struct B2SPluginEvent
 {
-   delete[] m_deviceStateSrc.deviceDefs;
-   memset(&m_deviceStateSrc, 0, sizeof(m_deviceStateSrc));
+   uint8_t type;
+   int32_t index;
+   int32_t value;
+};
 
-   unsigned int pinmameEndpoint = m_msgApi->GetPluginEndpoint("PinMAME");
-   if (pinmameEndpoint == 0)
-      return;
+void Server::UpdateStateSrc()
+{
+   m_exposedStates.ClearItems();
 
-   unsigned int getDevSrcMsgId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG);
-   GetDevSrcMsg getSrcMsg = { 0, 0, nullptr };
-   m_msgApi->SendMsg(m_endpointId, getDevSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   vector<DevSrcId> entries(getSrcMsg.count);
-   getSrcMsg = { getSrcMsg.count, 0, entries.data() };
-   m_msgApi->SendMsg(m_endpointId, getDevSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   m_msgApi->ReleaseMsgID(getDevSrcMsgId);
-   for (unsigned int i = 0; i < getSrcMsg.count; i++)
    {
-      if (getSrcMsg.entries[i].id.endpointId == pinmameEndpoint)
+      const std::lock_guard lock(m_stateMutex);
       {
-         m_deviceStateSrc = getSrcMsg.entries[i];
-         if (getSrcMsg.entries[i].deviceDefs)
+         m_lampStateDefs.clear();
+         m_lampStateIds.clear();
+         m_lampStateIds.reserve(m_b2sStates.size());
+         for (const auto& [id, _] : m_b2sStates)
+            m_lampStateIds.push_back({ this, id });
+         std::sort(m_lampStateIds.begin(), m_lampStateIds.end(), [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+         m_lampStateNames.resize(m_b2sStates.size());
+         for (size_t index = 0; index < m_lampStateIds.size(); ++index)
          {
-            m_deviceStateSrc.deviceDefs = new DeviceDef[getSrcMsg.entries[i].nDevices];
-            memcpy(m_deviceStateSrc.deviceDefs, getSrcMsg.entries[i].deviceDefs, getSrcMsg.entries[i].nDevices * sizeof(DeviceDef));
+            const auto id = m_lampStateIds[index].id;
+            m_lampStateNames[index] = std::format("Illumination #{}", id);
+            m_lampStateDefs.emplace_back(StateDef {
+               m_lampStateNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_FLOAT, CTLPI_STATE_TYPE_CUSTOM, &m_lampStateIds[index], GetLampState, nullptr });
+            index++;
          }
-         break;
+      }
+
+      {
+         m_playerScoreStateDefs.clear();
+         m_playerScoreIds.clear();
+         m_playerScoreIds.reserve(m_playerScores.size());
+         for (const auto& [id, _] : m_playerScores)
+            m_playerScoreIds.push_back({ this, id });
+         std::sort(m_playerScoreIds.begin(), m_playerScoreIds.end(), [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+         m_playerScoreNames.resize(m_playerScores.size());
+         for (size_t index = 0; index < m_playerScoreIds.size(); ++index)
+         {
+            const auto id = m_playerScoreIds[index].id;
+            m_playerScoreNames[index] = std::format("Player Score #{}", id);
+            m_playerScoreStateDefs.emplace_back(StateDef {
+               m_playerScoreNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_INT64, CTLPI_STATE_TYPE_CUSTOM, &m_playerScoreIds[index], GetPlayerScore, nullptr });
+         }
+      }
+
+      {
+         m_scoreDigitStateDefs.clear();
+         m_scoreDigitIds.clear();
+         m_scoreDigitIds.reserve(m_scoreDigits.size());
+         for (const auto& [id, _] : m_scoreDigits)
+            m_scoreDigitIds.push_back({ this, id });
+         std::sort(m_scoreDigitIds.begin(), m_scoreDigitIds.end(), [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+         m_scoreDigitNames.resize(m_scoreDigits.size());
+         for (size_t index = 0; index < m_scoreDigitIds.size(); ++index)
+         {
+            const auto id = m_scoreDigitIds[index].id;
+            m_scoreDigitNames[index] = std::format("Digit Score #{}", id);
+            m_scoreDigitStateDefs.emplace_back(StateDef {
+               m_scoreDigitNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_INT64, CTLPI_STATE_TYPE_CUSTOM, &m_scoreDigitIds[index], GetScoreDigit, nullptr });
+         }
       }
    }
 
-   if (m_deviceStateSrc.deviceDefs == nullptr)
-      return;
-
-   LOGI(std::format("Device state updated - {} devices", m_deviceStateSrc.nDevices));
+   m_exposedStates.AddItems({ //
+      { .id = { m_endpointId, 1 }, //
+         .name = "Illuminations",
+         .desc = "Lamp states",
+         .nStates = static_cast<unsigned int>(m_lampStateDefs.size()),
+         .stateDefs = m_lampStateDefs.data() },
+      { .id = { m_endpointId, 2 },
+         .name = "Scores (players)",
+         .desc = "Player score",
+         .nStates = static_cast<unsigned int>(m_playerScoreStateDefs.size()),
+         .stateDefs = m_playerScoreStateDefs.data() },
+      { .id = { m_endpointId, 3 },
+         .name = "Scores (digits)",
+         .desc = "Individual digit (reel) scores",
+         .nStates = static_cast<unsigned int>(m_scoreDigitStateDefs.size()),
+         .stateDefs = m_scoreDigitStateDefs.data() } });
 }
 
-void Server::OnGetDevSrc(const unsigned int, void* userData, void* msgData)
+void MSGPIAPI Server::GetLampState(void* callContext, void* pResult)
 {
-   auto me = static_cast<Server*>(userData);
-   auto msg = static_cast<GetDevSrcMsg*>(msgData);
-   if (msg->count < msg->maxEntryCount)
-      memcpy(&msg->entries[msg->count], &me->m_devSrc, sizeof(DevSrcId));
-   msg->count++;
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<float*>(pResult) = ctx->me->GetState(ctx->id);
 }
 
-void Server::UpdateDevSrc()
+void MSGPIAPI Server::GetPlayerScore(void* callContext, void* pResult)
 {
-   if (m_gameRunning && m_b2sStates.empty())
-   {
-      m_gameRunning = false;
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
-   }
-   else if (!m_gameRunning && !m_b2sStates.empty())
-   {
-      m_gameRunning = true;
-      CtlOnGameStartMsg msg = { GetB2SName().c_str(), 0 };
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameStartId, reinterpret_cast<void*>(&msg));
-   }
-
-   delete[] m_devSrc.deviceDefs;
-   m_devSrc.nDevices = static_cast<unsigned int>(m_b2sStates.size());
-   m_devSrc.deviceDefs = new DeviceDef[m_devSrc.nDevices];
-   m_devSrcNames.resize(m_devSrc.nDevices);
-   uint16_t index = 0;
-   for (const auto& [id, v] : m_b2sStates)
-   {
-      m_devSrcNames[index] = std::format("B2S.Data #{}", id);
-      m_devSrc.deviceDefs[index].name = m_devSrcNames[index].c_str();
-      m_devSrc.deviceDefs[index].id.groupId = 0x0001;
-      m_devSrc.deviceDefs[index].id.deviceId = id;
-      index++;
-   }
-   m_stateChgCallbacks.clear();
-   m_msgApi->BroadcastMsg(m_endpointId, m_onDevChangedMsgId, nullptr);
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<int64_t*>(pResult) = static_cast<int64_t>(ctx->me->GetPlayerScore(ctx->id));
 }
 
-uint8_t MSGPIAPI Server::GetByteState(const unsigned int deviceIndex)
+void MSGPIAPI Server::GetScoreDigit(void* callContext, void* pResult)
 {
-   if (Server::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-      return 0;
-   int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   return static_cast<uint8_t>(m_singleton->GetState(b2sId) * 255.f);
-}
-
-float MSGPIAPI Server::GetFloatState(const unsigned int deviceIndex)
-{
-   if (Server::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-      return 0.f;
-   int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   return m_singleton->GetState(b2sId);
-}
-
-void MSGPIAPI Server::RegisterStateChangeCallback(unsigned int deviceIndex, int isRegister, ctlpi_chg_callback cb, void* ctx)
-{
-   if (Server::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-      return;
-   const int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   if (auto mapIt = m_singleton->m_stateChgCallbacks.find(b2sId); mapIt == m_singleton->m_stateChgCallbacks.end())
-      m_singleton->m_stateChgCallbacks[b2sId] = vector<ChgCallback>();
-   auto& callbacks = m_singleton->m_stateChgCallbacks[b2sId];
-   auto it = std::ranges::find_if(callbacks, [&cb, ctx](const ChgCallback& a) { return a.m_callback == cb && a.m_context == ctx; });
-   if (isRegister)
-   {
-      if (it == callbacks.end())
-         callbacks.emplace_back(cb, deviceIndex, ctx);
-   }
-   else
-   {
-      if (it != callbacks.end())
-         callbacks.erase(it);
-   }
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<int64_t*>(pResult) = static_cast<int64_t>(ctx->me->GetScoreDigit(ctx->id));
 }
 
 float Server::GetState(int b2sId) const
 {
+   const std::lock_guard lock(m_stateMutex);
    const auto it = m_b2sStates.find(b2sId);
    return it == m_b2sStates.end() ? 0.f : it->second;
+}
+
+int Server::GetPlayerScore(int playerno) const
+{
+   const std::lock_guard lock(m_stateMutex);
+   const auto it = m_playerScores.find(playerno);
+   return it == m_playerScores.end() ? 0 : it->second;
+}
+
+int Server::GetScoreDigit(int digit) const
+{
+   const std::lock_guard lock(m_stateMutex);
+   const auto it = m_scoreDigits.find(digit);
+   return it == m_scoreDigits.end() ? 0 : it->second;
 }
 
 int Server::OnRenderStatic(VPXRenderContext2D* ctx, void* userData)
@@ -272,11 +333,6 @@ void Server::OnGetRendererStatic(const unsigned int, void* userData, void* msgDa
          msg->entries[msg->count] = dmdEntry;
       msg->count++;
    }
-}
-
-void Server::OnDevSrcChangedStatic(const unsigned int msgId, void* userData, void* msgData)
-{
-   static_cast<Server*>(userData)->OnDevSrcChanged(msgId, userData, msgData);
 }
 
 void Server::TimerElapsed(Timer* pTimer)
@@ -374,19 +430,25 @@ const string& Server::GetB2SName() const
 
 void Server::SetB2SName(const string& b2sName)
 {
-   if (b2sName == m_pB2SSettings->GetB2SName())
+   string name = b2sName;
+   std::erase(name, ' ');
+   if (name == m_pB2SSettings->GetB2SName())
       return;
 
-   if (m_gameRunning)
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
+   m_pB2SSettings->SetB2SName(name);
+   if (!name.empty())
+      m_pB2SSettings->SetGameName(""s);
 
-   m_pB2SSettings->SetB2SName(b2sName);
+   string id = name;
+   if (id.empty())
+      m_controllerGameId = "b2s::" + CreateGuidString();
+   else
+      m_controllerGameId = "b2s::" + string_to_lower(id);
 
    if (m_gameRunning)
-   {
-      CtlOnGameStartMsg msg = { GetB2SName().c_str(), 0 };
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameStartId, reinterpret_cast<void*>(&msg));
-   }
+      m_exposedControllers.SetItem({ m_endpointId, m_controllerGameId.c_str() });
+   else
+      m_exposedControllers.ClearItems();
 }
 
 const string& Server::GetTableName() const
@@ -416,6 +478,12 @@ void Server::Run(int handle)
    ShowBackglassForm();
 
    m_pTimer->Start();
+
+   if (!m_gameRunning)
+   {
+      m_gameRunning = true;
+      m_exposedControllers.SetItem({ m_endpointId, m_controllerGameId.c_str() });
+   }
 }
 
 void Server::Stop()
@@ -425,6 +493,12 @@ void Server::Stop()
 
    m_pB2SData->Stop();
    KillBackglassForm();
+
+   if (m_gameRunning)
+   {
+      m_gameRunning = false;
+      m_exposedControllers.ClearItems();
+   }
 }
 
 bool Server::GetLaunchBackglass() const
@@ -516,6 +590,20 @@ void Server::B2SSetData(const string& name, int value)
    MyB2SSetData(name, value);
 }
 
+void Server::B2SSetData(int id, const string& value)
+{
+   int result;
+   if (is_string_numeric(value, &result))
+      MyB2SSetData(id, result);
+}
+
+void Server::B2SSetData(const string& name, const string& value)
+{
+   int result;
+   if (is_string_numeric(value, &result))
+      MyB2SSetData(name, result);
+}
+
 void Server::B2SPulseData(int id)
 {
    MyB2SSetData(id, 1);
@@ -533,9 +621,53 @@ void Server::B2SSetPos(int id, int xpos, int ypos)
    MyB2SSetPos(id, xpos, ypos);
 }
 
-void Server::B2SSetPos(const string& name, int xpos, int ypos)
+void Server::B2SSetPos(int id, int xpos, const string& ypos)
 {
-   MyB2SSetPos(string_to_int(name, 0), xpos, ypos);
+   int result;
+   if (is_string_numeric(ypos, &result))
+      MyB2SSetPos(id, xpos, result);
+}
+
+void Server::B2SSetPos(int id, const string& xpos, int ypos)
+{
+   int result;
+   if (is_string_numeric(xpos, &result))
+      MyB2SSetPos(id, result, ypos);
+}
+
+void Server::B2SSetPos(int id, const string& xpos, const string& ypos)
+{
+   int resultx, resulty;
+   if (is_string_numeric(xpos, &resultx) && is_string_numeric(ypos, &resulty))
+      MyB2SSetPos(id, resultx, resulty);
+}
+
+void Server::B2SSetPos(const string& id, int xpos, int ypos)
+{
+   int result;
+   if (is_string_numeric(id, &result))
+      MyB2SSetPos(result, xpos, ypos);
+}
+
+void Server::B2SSetPos(const string& id, int xpos, const string& ypos)
+{
+   int resultid, resulty;
+   if (is_string_numeric(id, & resultid) && is_string_numeric(ypos, &resulty))
+      MyB2SSetPos(resultid, xpos, resulty);
+}
+
+void Server::B2SSetPos(const string& id, const string& xpos, int ypos)
+{
+   int resultid, resultx;
+   if (is_string_numeric(id, &resultid) && is_string_numeric(xpos, &resultx))
+      MyB2SSetPos(resultid, resultx, ypos);
+}
+
+void Server::B2SSetPos(const string& id, const string& xpos, const string& ypos)
+{
+   int resultid, resultx, resulty;
+   if (is_string_numeric(id, &resultid) && is_string_numeric(xpos, &resultx) && is_string_numeric(ypos, &resulty))
+      MyB2SSetPos(resultid, resultx, resulty);
 }
 
 void Server::B2SSetIllumination(const string& name, int value)
@@ -558,14 +690,16 @@ void Server::B2SSetLEDDisplay(int display, const string& text)
    MyB2SSetLEDDisplay(display, text);
 }
 
+// Reel method(s)
 void Server::B2SSetReel(int digit, int value)
 {
    MyB2SSetScore(digit, value, true);
 }
 
+// Score: 1-24
 void Server::B2SSetScore(int display, int value)
 {
-   MyB2SSetScore(GetFirstDigitOfDisplay(display), value, false);
+   MyB2SSetScore(GetFirstDigitOfDisplay(display), value);
 }
 
 void Server::B2SSetScorePlayer(int playerno, int score)
@@ -608,6 +742,7 @@ void Server::B2SSetScoreDigit(int digit, int value)
    MyB2SSetScore(digit, value, false);
 }
 
+// Score rollover: 25-28
 void Server::B2SSetScoreRollover(int id, int value)
 {
    MyB2SSetData(id, value);
@@ -633,6 +768,7 @@ void Server::B2SSetScoreRolloverPlayer4(int value)
    MyB2SSetData(28, value);
 }
 
+// Credits: 29
 void Server::B2SSetCredits(int value)
 {
    MyB2SSetScore(29, value, false);
@@ -799,22 +935,20 @@ void Server::B2SMapSound(int digit, const string& soundname)
 
 void Server::MyB2SSetData(int id, int value)
 {
-   const auto it = m_b2sStates.find(id);
-   if (it == m_b2sStates.end())
+   bool sourceChanged = false;
    {
-      m_b2sStates[id] = static_cast<float>(value);
-      UpdateDevSrc();
+      const std::lock_guard lock(m_stateMutex);
+      const auto [it, inserted] = m_b2sStates.try_emplace(id, static_cast<float>(value));
+      if (!inserted)
+         it->second = static_cast<float>(value);
+      sourceChanged = inserted;
    }
-   else
-   {
-      it->second = static_cast<float>(value);
-      const auto chgIt = m_stateChgCallbacks.find(id);
-      if (chgIt != m_stateChgCallbacks.end())
-      {
-         for (const auto& cb : chgIt->second)
-            cb.m_callback(cb.m_index, cb.m_context);
-      }
-   }
+
+   if (sourceChanged)
+      UpdateStateSrc();
+
+   B2SPluginEvent event { 'E', id, value };
+   m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
 
    if (m_pB2SData->IsBackglassRunning()) {
       // Handle top/second light switching based on ROM IDs
@@ -941,18 +1075,26 @@ void Server::CheckGetMech(int number, int mech)
 
 void Server::CheckLamps(ScriptArray* psa)
 {
-   if (m_deviceStateSrc.deviceDefs == nullptr)
-      return;
-
-   for (unsigned int i = 0; i < m_deviceStateSrc.nDevices; i++)
-   {
-      if ((m_deviceStateSrc.deviceDefs[i].id.groupId & 0xFF00) == 0x0200)
+   m_stateSources.With(
+      [this](const std::vector<StateSrcId>& stateSources)
       {
-         const int lampId = m_deviceStateSrc.deviceDefs[i].id.deviceId;
-         const float state = m_deviceStateSrc.GetFloatState(i);
-         const int lampState = static_cast<int>(state * 255.0f);
+      const auto it = std::find_if(stateSources.begin(), stateSources.end(), [](const StateSrcId& src) { return src.id.resId == PMPI_GROUP_VPM_LAMP; });
+      if (it == stateSources.end())
+         return;
+      const StateSrcId& pinmameStateSrc = *it;
 
-         if (m_pB2SData->IsUseRomLamps() || m_pB2SData->IsUseAnimationLamps()) {
+      for (unsigned int i = 0; i < pinmameStateSrc.nStates; i++)
+      {
+         const StateDef& def = pinmameStateSrc.stateDefs[i];
+         if (def.dataFormat != CTLPI_STATE_FORMAT_UINT8 || def.GetState == nullptr)
+            continue;
+         uint8_t state;
+         def.GetState(def.callContext, &state);
+         const int lampState = static_cast<int>(state);
+         const int lampId = def.mappingId;
+
+         if (m_pB2SData->IsUseRomLamps() || m_pB2SData->IsUseAnimationLamps())
+         {
             // collect illumination data
             if (m_pFormBackglass->GetTopRomIDType() == eRomIDType_Lamp && m_pFormBackglass->GetTopRomID() == lampId)
                m_pCollectLampsData->Add(lampId, new CollectData((int)lampState, eCollectedDataType_TopImage));
@@ -966,7 +1108,7 @@ void Server::CheckLamps(ScriptArray* psa)
                m_pCollectLampsData->Add(lampId, new CollectData((int)lampState, eCollectedDataType_Animation));
          }
       }
-   }
+   });
 
    // one collection loop is done
    m_pCollectLampsData->DataAdded();
@@ -1016,7 +1158,7 @@ void Server::CheckLamps(ScriptArray* psa)
          }
          if (datatypes & eCollectedDataType_Standard) {
             for (const auto& pBase : (*m_pB2SData->GetUsedRomLampIDs())[lampId]) {
-               B2SPictureBox* pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
+               B2SPictureBox* const pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
                if (pPicbox && (!m_pB2SData->IsUseIlluminationLocks() || pPicbox->GetGroupName().empty() || !m_pB2SData->GetIlluminationLocks()->contains(pPicbox->GetGroupName()))) {
                   bool visible = lampState;
                   if (pPicbox->IsRomInverted())
@@ -1084,33 +1226,40 @@ void Server::CheckLamps(ScriptArray* psa)
 
 void Server::CheckSolenoids(ScriptArray* psa)
 {
-   if (m_deviceStateSrc.deviceDefs == nullptr)
-      return;
-
-   for (unsigned int i = 0; i < m_deviceStateSrc.nDevices; i++)
-   {
-      if ((m_deviceStateSrc.deviceDefs[i].id.groupId & 0xFF00) == 0x0000)
+   m_stateSources.With(
+      [this](const std::vector<StateSrcId>& stateSources)
       {
-         const int solenoidId = m_deviceStateSrc.deviceDefs[i].id.deviceId;
-         const float state = m_deviceStateSrc.GetFloatState(i);
-         const int solenoidState = static_cast<int>(state * 255.0f);
+         const auto it = std::find_if(stateSources.begin(), stateSources.end(), [](const StateSrcId& src) { return src.id.resId == PMPI_GROUP_VPM_SOLENOID; });
+         if (it == stateSources.end())
+            return;
+         const StateSrcId& pinmameStateSrc = *it;
 
-         if (m_pB2SData->IsUseRomSolenoids() || m_pB2SData->IsUseAnimationSolenoids())
+         for (unsigned int i = 0; i < pinmameStateSrc.nStates; i++)
          {
-            // collect illumination data
-            if (m_pFormBackglass->GetTopRomIDType() == eRomIDType_Solenoid && m_pFormBackglass->GetTopRomID() == solenoidId)
-               m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_TopImage));
-            else if (m_pFormBackglass->GetSecondRomIDType() == eRomIDType_Solenoid && m_pFormBackglass->GetSecondRomID() == solenoidId)
-               m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_SecondImage));
-            if (m_pB2SData->GetUsedRomSolenoidIDs()->contains(solenoidId))
-               m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_Standard));
+            const StateDef& def = pinmameStateSrc.stateDefs[i];
+            if (def.dataFormat != CTLPI_STATE_FORMAT_UINT8 || def.GetState == nullptr)
+               continue;
+            uint8_t state;
+            def.GetState(def.callContext, &state);
+            const int solenoidState = static_cast<int>(state);
+            const int solenoidId = def.mappingId;
 
-            // collect animation data
-            if (m_pB2SData->GetUsedAnimationSolenoidIDs()->contains(solenoidId) || m_pB2SData->GetUsedRandomAnimationSolenoidIDs()->contains(solenoidId))
-               m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_Animation));
+            if (m_pB2SData->IsUseRomSolenoids() || m_pB2SData->IsUseAnimationSolenoids())
+            {
+               // collect illumination data
+               if (m_pFormBackglass->GetTopRomIDType() == eRomIDType_Solenoid && m_pFormBackglass->GetTopRomID() == solenoidId)
+                  m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_TopImage));
+               else if (m_pFormBackglass->GetSecondRomIDType() == eRomIDType_Solenoid && m_pFormBackglass->GetSecondRomID() == solenoidId)
+                  m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_SecondImage));
+               if (m_pB2SData->GetUsedRomSolenoidIDs()->contains(solenoidId))
+                  m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_Standard));
+
+               // collect animation data
+               if (m_pB2SData->GetUsedAnimationSolenoidIDs()->contains(solenoidId) || m_pB2SData->GetUsedRandomAnimationSolenoidIDs()->contains(solenoidId))
+                  m_pCollectSolenoidsData->Add(solenoidId, new CollectData(solenoidState, eCollectedDataType_Animation));
+            }
          }
-      }
-   }
+      });
 
    // one collection loop is done
    m_pCollectSolenoidsData->DataAdded();
@@ -1160,7 +1309,7 @@ void Server::CheckSolenoids(ScriptArray* psa)
          }
          if (datatypes & eCollectedDataType_Standard) {
             for (const auto& pBase : (*m_pB2SData->GetUsedRomSolenoidIDs())[solenoidId]) {
-               B2SPictureBox* pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
+               B2SPictureBox* const pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
                if (pPicbox && (!m_pB2SData->IsUseIlluminationLocks() || pPicbox->GetGroupName().empty() || !m_pB2SData->GetIlluminationLocks()->contains(pPicbox->GetGroupName()))) {
                   bool visible = (solenoidState != 0);
                   if (pPicbox->IsRomInverted())
@@ -1228,32 +1377,40 @@ void Server::CheckSolenoids(ScriptArray* psa)
 
 void Server::CheckGIStrings(ScriptArray* psa)
 {
-   if (m_deviceStateSrc.deviceDefs == nullptr)
-      return;
-
-   for (unsigned int i = 0; i < m_deviceStateSrc.nDevices; i++)
-   {
-      if ((m_deviceStateSrc.deviceDefs[i].id.groupId & 0xFF00) == 0x0100)
+   m_stateSources.With(
+      [this](const std::vector<StateSrcId>& stateSources)
       {
-         const int giStringId = m_deviceStateSrc.deviceDefs[i].id.deviceId;
-         const float state = m_deviceStateSrc.GetFloatState(i);
-         const int giStringBool = static_cast<int>(state * 255.0f) > m_giStringThreshold;
+         const auto it = std::find_if(stateSources.begin(), stateSources.end(), [](const StateSrcId& src) { return src.id.resId == PMPI_GROUP_VPM_GI; });
+         if (it == stateSources.end())
+            return;
+         const StateSrcId& pinmameStateSrc = *it;
 
-         if (m_pB2SData->IsUseRomGIStrings() || m_pB2SData->IsUseAnimationGIStrings()) {
-            // collect illumination data
-            if (m_pFormBackglass->GetTopRomIDType() == eRomIDType_GIString && m_pFormBackglass->GetTopRomID() == giStringId)
-               m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_TopImage));
-            else if (m_pFormBackglass->GetSecondRomIDType() == eRomIDType_GIString && m_pFormBackglass->GetSecondRomID() == giStringId)
-               m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_SecondImage));
-            if (m_pB2SData->GetUsedRomGIStringIDs()->contains(giStringId))
-               m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_Standard));
+         for (unsigned int i = 0; i < pinmameStateSrc.nStates; i++)
+         {
+            const StateDef& def = pinmameStateSrc.stateDefs[i];
+            if (def.dataFormat != CTLPI_STATE_FORMAT_UINT8 || def.GetState == nullptr)
+               continue;
+            uint8_t state;
+            def.GetState(def.callContext, &state);
+            const int giStringBool = state > m_giStringThreshold;
+            const int giStringId = def.mappingId;
 
-            // collect animation data
-            if (m_pB2SData->GetUsedAnimationGIStringIDs()->contains(giStringId) || m_pB2SData->GetUsedRandomAnimationGIStringIDs()->contains(giStringId))
-               m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_Animation));
+            if (m_pB2SData->IsUseRomGIStrings() || m_pB2SData->IsUseAnimationGIStrings())
+            {
+               // collect illumination data
+               if (m_pFormBackglass->GetTopRomIDType() == eRomIDType_GIString && m_pFormBackglass->GetTopRomID() == giStringId)
+                  m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_TopImage));
+               else if (m_pFormBackglass->GetSecondRomIDType() == eRomIDType_GIString && m_pFormBackglass->GetSecondRomID() == giStringId)
+                  m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_SecondImage));
+               if (m_pB2SData->GetUsedRomGIStringIDs()->contains(giStringId))
+                  m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_Standard));
+
+               // collect animation data
+               if (m_pB2SData->GetUsedAnimationGIStringIDs()->contains(giStringId) || m_pB2SData->GetUsedRandomAnimationGIStringIDs()->contains(giStringId))
+                  m_pCollectGIStringsData->Add(giStringId, new CollectData((int)giStringBool, eCollectedDataType_Animation));
+            }
          }
-      }
-   }
+      });
 
    // one collection loop is done
    m_pCollectGIStringsData->DataAdded();
@@ -1303,7 +1460,7 @@ void Server::CheckGIStrings(ScriptArray* psa)
          }
          if (datatypes & eCollectedDataType_Standard) {
             for (const auto& pBase : (*m_pB2SData->GetUsedRomGIStringIDs())[giStringId]) {
-               B2SPictureBox* pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
+               B2SPictureBox* const pPicbox = dynamic_cast<B2SPictureBox*>(pBase);
                if (pPicbox && (!m_pB2SData->IsUseIlluminationLocks() || pPicbox->GetGroupName().empty() || !m_pB2SData->GetIlluminationLocks()->contains(pPicbox->GetGroupName()))) {
                   bool visible = giStringBool;
                   if (pPicbox->IsRomInverted())
@@ -1374,14 +1531,11 @@ void Server::CheckLEDs(ScriptArray* psa)
    if (psa == nullptr || psa->lengths[0] == 0)
       return;
 
-   int digit;
-   int value;
-
    int uCount = psa->lengths[0];
-   int32_t* data = reinterpret_cast<int32_t*>(&psa->lengths[2]);
+   const int32_t* const data = reinterpret_cast<int32_t*>(&psa->lengths[2]);
    for (int i = 0; i < uCount; i++) {
-      digit = data[i * 3 + 0];
-      value = data[i * 3 + 2];
+      int digit = data[i * 3 + 0];
+      int value = data[i * 3 + 2];
       if (m_pB2SData->IsUseLEDs() || m_pB2SData->IsUseLEDDisplays() || m_pB2SData->IsUseReels())
          m_pCollectLEDsData->Add(digit, new CollectData(value, 0));
    }
@@ -1401,8 +1555,8 @@ void Server::CheckLEDs(ScriptArray* psa)
       m_pCollectLEDsData->Lock();
 
       for (const auto& [key, pCollectData] : *m_pCollectLEDsData) {
-         digit = key;
-         value = pCollectData->GetState();
+         int digit = key;
+         int value = pCollectData->GetState();
 
          if (useLEDs) {
             // rendered LEDs are used
@@ -1475,7 +1629,7 @@ void Server::MyB2SSetLEDDisplay(int display, const string& szText)
    if (!m_pB2SData->IsBackglassRunning())
       return;
 
-   int digit = GetFirstDigitOfDisplay(display);
+   const int digit = GetFirstDigitOfDisplay(display);
 
    const bool useLEDs = m_pB2SData->GetLEDs()->contains("LEDBox" + std::to_string(digit)) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Rendered;
    //const bool useLEDDisplays = m_pB2SData->GetLEDDisplayDigits()->contains(digit - 1) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Dream7;
@@ -1537,26 +1691,41 @@ int Server::GetFirstDigitOfDisplay(int display) const
 
 void Server::MyB2SSetScore(int digit, int value, bool animateReelChange)
 {
+   bool sourceChanged = false;
+   {
+      const std::lock_guard lock(m_stateMutex);
+      const auto [it, inserted] = m_scoreDigits.try_emplace(digit, value);
+      if (!inserted)
+         it->second = value;
+      sourceChanged = inserted;
+   }
+
+   if (sourceChanged)
+      UpdateStateSrc();
+
+   B2SPluginEvent event { 'B', digit, value };
+   m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
+
    if (m_pB2SData->IsBackglassRunning()) {
       if (digit > 0) {
-         const auto& led = m_pB2SData->GetLEDs()->find("LEDBox" + std::to_string(digit));
-         const bool useLEDs = (led != m_pB2SData->GetLEDs()->end() && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Rendered);
-         const auto& dream7 = m_pB2SData->GetLEDDisplayDigits()->find(digit - 1);
-         const bool useLEDDisplays = (dream7 != m_pB2SData->GetLEDDisplayDigits()->end() && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Dream7);
-         const auto& reel = m_pB2SData->GetReels()->find("ReelBox" + std::to_string(digit));
-         const bool useReels = reel != m_pB2SData->GetReels()->end();
+         const bool useLEDs = (m_pB2SData->GetLEDs()->contains("LEDBox" + std::to_string(digit)) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Rendered);
+         const bool useLEDDisplays = (m_pB2SData->GetLEDDisplayDigits()->contains(digit - 1) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Dream7);
+         const bool useReels = m_pB2SData->GetReels()->contains("ReelBox" + std::to_string(digit));
 
          if (useLEDs) {
             // Rendered LEDs are used
-            led->second->SetText(std::to_string(value));
+            const string ledname = "LEDBox" + std::to_string(digit);
+            (*m_pB2SData->GetLEDs())[ledname]->SetText(std::to_string(value));
          }
          else if (useLEDDisplays) {
             // Dream 7 displays are used
-            dream7->second->GetLEDDisplay()->SetValue(dream7->second->GetDigit(), std::to_string(value));
+            LEDDisplayDigitLocation* pLEDDisplayDigit = (*m_pB2SData->GetLEDDisplayDigits())[digit - 1];
+            pLEDDisplayDigit->GetLEDDisplay()->SetValue(pLEDDisplayDigit->GetDigit(), std::to_string(value));
          }
          else if (useReels) {
             // Reels are used
-            reel->second->SetText(value, animateReelChange);
+            const string reelname = "ReelBox" + std::to_string(digit);
+            (*m_pB2SData->GetReels())[reelname]->SetText(value, animateReelChange);
          }
       }
    }
@@ -1566,43 +1735,42 @@ void Server::MyB2SSetScore(int digit, int score)
 {
    if (m_pB2SData->IsBackglassRunning()) {
       if (digit > 0) {
-         const auto& led = m_pB2SData->GetLEDs()->find("LEDBox" + std::to_string(digit));
-         const bool useLEDs = (led != m_pB2SData->GetLEDs()->end() && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Rendered);
-         const auto& dream7 = m_pB2SData->GetLEDDisplayDigits()->find(digit - 1);
-         const bool useLEDDisplays = (dream7 != m_pB2SData->GetLEDDisplayDigits()->end() && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Dream7);
-         const auto& reel = m_pB2SData->GetReels()->find("ReelBox" + std::to_string(digit));
-         const bool useReels = reel != m_pB2SData->GetReels()->end();
+         const bool useLEDs = (m_pB2SData->GetLEDs()->contains("LEDBox" + std::to_string(digit)) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Rendered);
+         const bool useLEDDisplays = (m_pB2SData->GetLEDDisplayDigits()->contains(digit - 1) && m_pB2SSettings->GetUsedLEDType() == eLEDTypes_Dream7);
+         const bool useReels = m_pB2SData->GetReels()->contains("ReelBox" + std::to_string(digit));
 
          if (useLEDs) {
             // Check the passed digit
+            const string led = "LEDBox" + std::to_string(digit);
+
             // Get all necessary display data
-            const int startdigit = led->second->GetStartDigit();
-            const int digits = led->second->GetDigits();
-            const string scoreAsString = string(digits - std::to_string(score).length(), ' ') + std::to_string(score);
+            const int startdigit = (*m_pB2SData->GetLEDs())[led]->GetStartDigit();
+            const int digits = (*m_pB2SData->GetLEDs())[led]->GetDigits();
+            const string scoreAsString = PadScore(score, digits);
 
             // Set digits
             for (int i = startdigit + digits - 1; i >= startdigit; i--)
                (*m_pB2SData->GetLEDs())["LEDBox" + std::to_string(i)]->SetText(string(1,scoreAsString[i - startdigit]));
          }
          else if (useLEDDisplays) {
+            LEDDisplayDigitLocation* pLEDDisplayDigit = (*m_pB2SData->GetLEDDisplayDigits())[digit - 1];
+
             // Get all necessary display data
-            const int digits = dream7->second->GetLEDDisplay()->GetDigits();
-            const string scoreAsString = string(digits - std::to_string(score).length(), ' ') + std::to_string(score);
+            const int digits = pLEDDisplayDigit->GetLEDDisplay()->GetDigits();
+            const string scoreAsString = PadScore(score, digits);
 
             // Set digits
             for (int i = digits - 1; i >= 0; i--)
-               dream7->second->GetLEDDisplay()->SetValue(i, string(1,scoreAsString[i]));
+               pLEDDisplayDigit->GetLEDDisplay()->SetValue(i, string(1,scoreAsString[i]));
          }
          else if (useReels) {
-            // Reels are used
-            // Get all necessary display data
-            const int startdigit = reel->second->GetStartDigit();
-            const int digits = reel->second->GetDigits();
-            const string scoreAsString = string(digits - std::to_string(score).length(), '0') + std::to_string(score);
+            // Get the necessary infos
+            const string reel = "ReelBox" + std::to_string(digit);
+            const int id = (*m_pB2SData->GetReels())[reel]->GetDisplayID();
 
-            // Set digits
-            for (int i = startdigit + digits - 1; i >= startdigit; i--)
-               (*m_pB2SData->GetReels())["ReelBox" + std::to_string(i)]->SetText(scoreAsString[i - startdigit] - '0', true); // convert char to int
+            // Set value
+            if (m_pB2SData->GetReelDisplays()->contains(id))
+               (*m_pB2SData->GetReelDisplays())[id]->SetScore(score);
          }
       }
    }
@@ -1610,11 +1778,26 @@ void Server::MyB2SSetScore(int digit, int score)
 
 void Server::MyB2SSetScorePlayer(int playerno, int score)
 {
+   bool sourceChanged = false;
+   {
+      const std::lock_guard lock(m_stateMutex);
+      const auto [it, inserted] = m_playerScores.try_emplace(playerno, score);
+      if (!inserted)
+         it->second = score;
+      sourceChanged = inserted;
+   }
+
+   if (sourceChanged)
+      UpdateStateSrc();
+
+   B2SPluginEvent event { 'C', playerno, score };
+   m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
+
    if (m_pB2SData->IsBackglassRunning()) {
       if (playerno > 0) {
-         const auto& it = m_pB2SData->GetPlayers()->find(playerno);
-         if (it != m_pB2SData->GetPlayers()->end())
-            it->second->SetScore(m_pB2SData, score);
+         // Set score to player class
+         if (m_pB2SData->GetPlayers()->contains(playerno))
+            (*m_pB2SData->GetPlayers())[playerno]->SetScore(m_pB2SData, score);
       }
    }
 }
@@ -1710,11 +1893,12 @@ void Server::MyB2SStopSound(const string& soundname)
 
 void Server::Startup()
 {
-    VPXTableInfo tableInfo;
+    VPXTableInfo tableInfo {};
     m_vpxApi->GetTableInfo(&tableInfo);
-    m_pB2SData->SetTableFileName(tableInfo.path);
+    // Stored as UTF-8 (VPX provides a native narrow path, nullptr gives an empty string)
+    m_pB2SData->SetTableFileName(PluginStrings::PathToUTF8(PluginStrings::PathFromNative(tableInfo.path)));
 
-    LOGI("B2S table filename set to '"s + tableInfo.path + '\'');
+    LOGI("B2S table filename set to '"s + m_pB2SData->GetTableFileName() + '\'');
 }
 
 void Server::ShowBackglassForm()
@@ -1739,7 +1923,7 @@ void Server::KillBackglassForm()
 {
    // Clear the running flag before destroying the form, like the B2S server does. The data
    // setters gate on IsBackglassRunning(), so a script that keeps pushing B2S data after the
-   // backglass is killed then stops touching the freed form instead of dereferencing it.
+   // backglass is killed then stops touching the freed form instead of dereferencing it
    m_pB2SData->SetBackglassVisible(false);
    if (m_pFormBackglass) {
       delete m_pFormBackglass;

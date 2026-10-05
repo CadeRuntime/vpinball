@@ -65,6 +65,7 @@ public:
 
    float GetAspectRatio() const { return static_cast<float>(m_width) / static_cast<float>(m_height); }
    float GetRefreshRate() const { return m_refreshrate; } // Refresh rate of the device displaying the window. Window spread over multiple devices are not supported.
+   void SetRefreshRate(const float refreshRate) { m_refreshrate = refreshRate; }
    WindowMode GetWindowMode() const { return m_windowMode; }
    int GetBitDepth() const { return m_bitdepth; }
    bool IsWCGDisplay() const { return m_wcgDisplay; } // Whether this window is on a WCG enabled display
@@ -120,12 +121,13 @@ public:
 
    struct DisplayConfig
    {
+      SDL_DisplayID display; // SDL display identifier (only valid for the lifetime of the SDL session)
+      string displayId; // Id string designed to be stable across runs and unique
+      string displayName; // User friendly display name, stable across runs but conflicts when there are 2 identical displays onthe same name
+      bool isPrimary; // Default display (used when no display is selected in the settings)
+      VideoMode videomode;
       int top; // Logical position
       int left; // Logical position
-      VideoMode videomode;
-      bool isPrimary; // Default display (used when no display is selected in the settings)
-      string displayName; // User friendly display name, should be stable accross runs, therefore used for settings
-      SDL_DisplayID display; // SDL display identifier (only valid for the lifetime of the SDL session)
    };
 
    static vector<DisplayConfig> GetDisplays();

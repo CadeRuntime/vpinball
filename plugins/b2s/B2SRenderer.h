@@ -2,23 +2,24 @@
 
 #pragma once
 
+#include "common.h"
+#include "B2SDataModel.h"
+#include "DMDOverlay.h"
+
+#include "plugins/ControllerPlugin.h"
+#include "plugins/ResURIResolver.h"
+#include "plugins/VPXPlugin.h"
+
 #include <future>
 #include <chrono>
 
-#include "common.h"
-#include "B2SDataModel.h"
-#include "B2SDMDOverlay.h"
-
-#include "plugins/ControllerPlugin.h"
-
-#include "plugins/ResURIResolver.h"
-
-namespace B2S {
+namespace B2S
+{
 
 class B2SRenderer final
 {
 public:
-   B2SRenderer(const MsgPluginAPI* const msgApi, const unsigned int endpointId, std::shared_ptr<B2STable> b2s);
+   B2SRenderer(const MsgPluginAPI* const msgApi, const VPXPluginAPI* const vpxApi, const unsigned int endpointId, std::shared_ptr<B2STable> b2s);
    ~B2SRenderer();
 
    static void RegisterSettings(const MsgPluginAPI* const msgApi, unsigned int endpointId);
@@ -26,7 +27,7 @@ public:
    bool Render(VPXRenderContext2D* context, class B2SServer* server);
 
 private:
-   std::function<void()> ResolveRomPropUpdater(float* value, const B2SRomIDType romIdType, const int romId, const bool romInverted = false) const;
+   std::function<void()> ResolveRomPropUpdater(const std::vector<StateSrcId> & items, float * value, const B2SRomIDType romIdType, const int romId, const bool romInverted = false) const;
    bool RenderBackglass(VPXRenderContext2D* context, class B2SServer* server);
    bool RenderScoreView(VPXRenderContext2D* context, class B2SServer* server);
    void RenderBulbs(VPXRenderContext2D* ctx, const B2SServer* server, const vector<std::unique_ptr<B2SBulb>>& bulbs);
@@ -36,20 +37,15 @@ private:
 
    const MsgPluginAPI* const m_msgApi;
    const unsigned int m_endpointId;
-   unsigned int m_getDevSrcMsgId = 0;
-   unsigned int m_onDevChangedMsgId = 0;
-   static void OnDevSrcChanged(const unsigned int msgId, void* userData, void* msgData);
-   DevSrcId m_deviceStateSrc {};
+   PinballPlugin::Controller::CtrlItemConsumer<ControllerDef> m_pinmameControllers;
+   mutable PinballPlugin::Controller::CtrlItemConsumer<StateSrcId> m_stateSources;
+   void OnStateSrcChanged(const std::vector<StateSrcId>& items);
+   mutable PinballPlugin::Controller::CtrlItemConsumer<SegSrcId> m_segSources;
 
-   unsigned int m_getSegSrcMsgId = 0;
-   unsigned int m_onSegChangedMsgId = 0;
-   static void OnSegSrcChanged(const unsigned int msgId, void* userData, void* msgData);
-   vector<SegSrcId> m_segDisplays;
-
-   ResURIResolver m_resURIResolver;
+   PinballPlugin::ResURIResolver m_resURIResolver;
    VPXTexture m_dmdTex = nullptr;
-   B2SDMDOverlay m_scoreViewDmdOverlay;
-   B2SDMDOverlay m_backglassDmdOverlay;
+   DMDOverlay::DMDOverlay m_scoreViewDmdOverlay;
+   DMDOverlay::DMDOverlay m_backglassDmdOverlay;
 
    std::chrono::time_point<std::chrono::steady_clock> m_lastBackglassRenderTick;
    std::chrono::time_point<std::chrono::steady_clock> m_lastDmdRenderTick;

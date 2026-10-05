@@ -38,6 +38,50 @@ void InputSettingsPage::BuildPage()
    AddItem(std::make_unique<InGameUIItem>(InGameUIItem::LabelType::Header, "Action mappings"s));
    for (auto& action : input.GetInputActions())
       AddItem(std::make_unique<InGameUIItem>(action->GetLabel(), "Select to add a new input binding which can be composed of multiple pressed button."s, action.get()));
+
+   AddItem(std::make_unique<InGameUIItem>(InGameUIItem::LabelType::Header, "Miscellaneous settings"s));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleMode, //
+      [this]() { return m_player->m_pininput.IsRumbleFeedbackEnabled() ? 3 : 0; }, //
+      [this](int, int v) { m_player->m_pininput.EnableRumbleFeedback(v == 3); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleFlipperContact, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetFlipperContactRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetFlipperContactRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleBumper, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetBumperRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetBumperRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleSlingshot, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetSlingshotRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetSlingshotRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumblePlunger, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetPlungerRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetPlungerRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleFlipperButton, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetFlipperButtonRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetFlipperButtonRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleNudge, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetNudgeRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetNudgeRumbleStrength(v); }));
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_RumbleBallBall, 1.f, "%3.2f"s, //
+      [this]() { return m_player->m_pininput.GetBallBallRumbleStrength(); }, //
+      [this](float, float v) { m_player->m_pininput.SetBallBallRumbleStrength(v); }));
+   // FIXME deprecated, just remove
+   // TODO this property is directly persisted. It does not follow the overall UI design: App/Table/Live state => Implement live state (will also enable table override)
+   AddItem(std::make_unique<InGameUIItem>( //
+      Settings::m_propPlayer_EnableCameraModeFlyAround, //
+      [this]() { return g_settingsService.GetActiveSettings().GetPlayer_EnableCameraModeFlyAround(); }, //
+      [this](bool v)
+      {
+         m_difficultyNotification = m_player->m_liveUI->PushNotification("This change will only be applied after restart."s, 5000, m_difficultyNotification);
+         g_settingsService.GetActiveSettings().SetPlayer_EnableCameraModeFlyAround(v, false);
+      }));
 }
 
 }

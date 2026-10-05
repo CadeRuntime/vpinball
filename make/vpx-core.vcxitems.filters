@@ -4,6 +4,9 @@
     <Filter Include="assets">
       <UniqueIdentifier>{67a3c1e1-f7b5-45a4-ba1a-453f61d1e6da}</UniqueIdentifier>
     </Filter>
+    <Filter Include="assets\editor">
+      <UniqueIdentifier>{a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d}</UniqueIdentifier>
+    </Filter>
     <Filter Include="assets\meshes">
       <UniqueIdentifier>{23b51dec-131c-4ac3-8f28-4e8fd6a3b646}</UniqueIdentifier>
     </Filter>
@@ -61,6 +64,9 @@
     <Filter Include="ui\win">
       <UniqueIdentifier>{28f6598a-1408-3fc7-a6ce-93c682c026da}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ui\win\parts">
+      <UniqueIdentifier>{a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d}</UniqueIdentifier>
+    </Filter>
     <Filter Include="ui\win\dialogs">
       <UniqueIdentifier>{2890089b-1408-4cfb-a6ce-93c682c026da}</UniqueIdentifier>
     </Filter>
@@ -99,6 +105,15 @@
     </Filter>
     <Filter Include="third-party\scintilla">
       <UniqueIdentifier>{b8b61905-2d58-4daf-92fd-b57d299e5dd1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="third-party\bc6h">
+      <UniqueIdentifier>{0c7c3345-9146-4bfa-8210-8cb93c7d43f0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="third-party\bc7e">
+      <UniqueIdentifier>{55c5b039-5f27-4002-809b-850a2ebf2b74}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="third-party\bc7f">
+      <UniqueIdentifier>{9d24fe6f-c41f-42aa-af23-e215aa2e5373}</UniqueIdentifier>
     </Filter>
     <Filter Include="third-party\gpuprofiler">
       <UniqueIdentifier>{8aacfaf1-764f-4635-b401-c610ca901d7e}</UniqueIdentifier>
@@ -192,19 +207,19 @@
     <ClCompile Include="$(SolutionDir)/../../src/core/ieditable.cpp">
       <Filter>core</Filter>
     </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/core/iselect.cpp">
+    <ClCompile Include="$(SolutionDir)/../../src/core/LayeredINIPropertyStore.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/core/pinundo.cpp">
-      <Filter>core</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/core/LayeredINIPropertyStore.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/core/player.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/core/Settings.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/core/SettingsService.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/core/stdafx.cpp">
@@ -252,6 +267,9 @@
     <ClInclude Include="$(SolutionDir)/../../src/input/XRInputHandler.h">
       <Filter>input</Filter>
     </ClInclude>
+    <ClCompile Include="$(SolutionDir)/../../src/math/dragpoint.cpp">
+      <Filter>math</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/math/HighPassFilter.cpp">
       <Filter>math</Filter>
     </ClCompile>
@@ -262,6 +280,9 @@
       <Filter>math</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/math/Mesh.cpp">
+      <Filter>math</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/math/MeshGLTF.cpp">
       <Filter>math</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/parts/ball.cpp">
@@ -283,9 +304,6 @@
       <Filter>parts</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/parts/flipper.cpp">
-      <Filter>parts</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/parts/dragpoint.cpp">
       <Filter>parts</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/parts/pinbinary.cpp">
@@ -435,6 +453,9 @@
     <ClCompile Include="$(SolutionDir)/../../src/renderer/Texture.cpp">
       <Filter>renderer</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/renderer/TextureCompressor.cpp">
+      <Filter>renderer</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/renderer/TextureManager.cpp">
       <Filter>renderer</Filter>
     </ClCompile>
@@ -449,6 +470,12 @@
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/renderer/Window.cpp">
       <Filter>renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/EditorClipboard.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/LoadProgress.cpp">
+      <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/BallControl.cpp">
       <Filter>ui\live</Filter>
@@ -486,6 +513,15 @@
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/DispReelUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/EditorChrome.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/EditorUIPart.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/EditorUIPartRegistry.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/FlasherUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
@@ -507,6 +543,15 @@
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/LightSeqUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/LiveRenderContext.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/OutlinerPanel.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/PartLibraryPanel.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/PartGroupUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
@@ -516,10 +561,19 @@
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/PrimitiveUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/PropertiesPanel.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/RampUIPart.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/RendererInspectionModal.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/RubberUIPart.cpp">
+      <Filter>ui\live\editor</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/ScriptPanel.cpp">
       <Filter>ui\live\editor</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/editor/SpinnerUIPart.cpp">
@@ -574,6 +628,12 @@
       <Filter>ui\live\ingame</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/ingameui/InputSettingsPage.cpp">
+      <Filter>ui\live\ingame</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/ingameui/LoadingPage.cpp">
+      <Filter>ui\live\ingame</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/live/ingameui/LoggingSettingsPage.cpp">
       <Filter>ui\live\ingame</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/live/ingameui/MiscSettingsPage.cpp">
@@ -633,6 +693,84 @@
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/WinEditor.cpp">
       <Filter>ui\win</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/WinUIPartRegistry.cpp">
+      <Filter>ui\win</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/IWinUIPart.cpp">
+      <Filter>ui\win</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/BallWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/BumperWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/DecalWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/DispReelWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/DragPointWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/FlasherWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/FlipperWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/GateWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/HitTargetWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/KickerWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/LightCenterWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/LightSeqWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/LightWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/PartGroupWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/PlungerWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/PrimitiveWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/RampWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/RubberWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/SpinnerWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/SurfaceWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/TableWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/TextboxWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/TimerWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/parts/TriggerWinUIPart.cpp">
+      <Filter>ui\win\parts</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/hitrectsur.cpp">
       <Filter>ui\win</Filter>
     </ClCompile>
@@ -690,19 +828,13 @@
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/PhysicsOptionsDialog.cpp">
       <Filter>ui\win\dialogs</Filter>
     </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/PlayerOptionsDialog.cpp">
-      <Filter>ui\win\dialogs</Filter>
-    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/ScriptErrorDialog.cpp">
       <Filter>ui\win\dialogs</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/ToolbarDialog.cpp">
       <Filter>ui\win\dialogs</Filter>
     </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/VPXLoadFileProgressBar.cpp">
-      <Filter>ui\win\dialogs</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/VPXSaveFileProgressBar.cpp">
+    <ClCompile Include="$(SolutionDir)/../../src/ui/win/dialogs/Win32ProgressBar.cpp">
       <Filter>ui\win\dialogs</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/ui/win/properties/PropertyDialog.cpp">
@@ -858,6 +990,9 @@
     <ClCompile Include="$(SolutionDir)/../../src/utils/BiffWriter.cpp">
       <Filter>utils</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/utils/TableHash.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/utils/ushock_output.cpp">
       <Filter>utils</Filter>
     </ClCompile>
@@ -868,6 +1003,9 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/utils/fileio.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/utils/JSONSerializer.cpp">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/utils/Logger.cpp">
@@ -882,6 +1020,9 @@
     <ClCompile Include="$(SolutionDir)/../../src/utils/CrashHandler.cpp">
       <Filter>utils</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../src/utils/md2.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/utils/MemoryStatus.cpp">
       <Filter>utils</Filter>
     </ClCompile>
@@ -890,9 +1031,6 @@
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../src/utils/objloader.cpp">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SolutionDir)/../../third-party/include/miniz/miniz.c">
-      <Filter>third-party</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../third-party/include/hidapi/windows/hid.cpp">
       <Filter>third-party</Filter>
@@ -915,8 +1053,23 @@
     <ClCompile Include="$(SolutionDir)/../../third-party/include/imgui/imgui_stdlib.cpp">
       <Filter>third-party\imgui</Filter>
     </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../third-party/include/miniz/miniz.c">
+      <Filter>third-party</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../third-party/include/pole/pole.cpp">
+      <Filter>third-party</Filter>
+    </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../third-party/include/tinyxml2/tinyxml2.cpp">
       <Filter>third-party\tinyxml2</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../third-party/include/bc6h/basisu_bc6h.cpp">
+      <Filter>third-party\bc6h</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../third-party/include/bc7e/basisu_bc7e_scalar.cpp">
+      <Filter>third-party\bc7e</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SolutionDir)/../../third-party/include/bc7f/basisu_bc7f.cpp">
+      <Filter>third-party\bc7f</Filter>
     </ClCompile>
     <ClCompile Include="$(SolutionDir)/../../third-party/include/gpuprofiler.cpp">
       <Filter>third-party\gpuprofiler</Filter>
@@ -995,9 +1148,6 @@
     <ClInclude Include="$(SolutionDir)/../../src/core/ieditable.h">
       <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/core/iselect.h">
-      <Filter>core</Filter>
-    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/core/Scriptable.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -1034,6 +1184,9 @@
     <ClInclude Include="$(SolutionDir)/../../src/core/Settings.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/core/SettingsService.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/core/Settings_properties.inl">
       <Filter>core</Filter>
     </ClInclude>
@@ -1047,6 +1200,9 @@
       <Filter>core</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/math/bbox.h">
+      <Filter>math</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/math/dragpoint.h">
       <Filter>math</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/math/ExponentialMovingAverage.h">
@@ -1179,9 +1335,6 @@
       <Filter>parts</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/parts/pinbinary.h">
-      <Filter>parts</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/parts/dragpoint.h">
       <Filter>parts</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/parts/dispreel.h">
@@ -1361,6 +1514,9 @@
     <ClInclude Include="$(SolutionDir)/../../src/renderer/Texture.h">
       <Filter>renderer</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/renderer/TextureCompressor.h">
+      <Filter>renderer</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/renderer/TextureManager.h">
       <Filter>renderer</Filter>
     </ClInclude>
@@ -1394,6 +1550,12 @@
     <ClInclude Include="$(SolutionDir)/../../src/renderer/XRVulkanBackend.h">
       <Filter>renderer</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/EditorClipboard.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/LoadProgress.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/BallControl.h">
       <Filter>ui\live</Filter>
     </ClInclude>
@@ -1415,7 +1577,10 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/EditorUI.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/EditableUIPart.h">
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/EditorUIPart.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/EditorUIPartRegistry.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/PropertyPane.h">
@@ -1431,6 +1596,9 @@
       <Filter>ui\live\editor</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/DispReelUIPart.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/EditorChrome.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/FlasherUIPart.h">
@@ -1454,6 +1622,15 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/LightSeqUIPart.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/LiveRenderContext.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/OutlinerPanel.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/PartLibraryPanel.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/PartGroupUIPart.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
@@ -1463,10 +1640,22 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/PrimitiveUIPart.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/PropertiesPanel.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/RampUIPart.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/RendererInspectionModal.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/RubberUIPart.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/ScriptPanel.h">
+      <Filter>ui\live\editor</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/Selection.h">
       <Filter>ui\live\editor</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/editor/SpinnerUIPart.h">
@@ -1523,6 +1712,12 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/ingameui/InputSettingsPage.h">
       <Filter>ui\live\ingame</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/ingameui/LoadingPage.h">
+      <Filter>ui\live\ingame</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/live/ingameui/LoggingSettingsPage.h">
+      <Filter>ui\live\ingame</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/live/ingameui/MiscSettingsPage.h">
       <Filter>ui\live\ingame</Filter>
     </ClInclude>
@@ -1577,8 +1772,89 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/ProgressDialog.h">
       <Filter>ui\win</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/IWinUIPart.h">
+      <Filter>ui\win</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/WinEditor.h">
       <Filter>ui\win</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/WinUIPartRegistry.h">
+      <Filter>ui\win</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/BallWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/BumperWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/DecalWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/DispReelWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/DragPointUIPartList.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/DragPointWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/FlasherWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/FlipperWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/GateWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/HitTargetWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/KickerWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/LightCenterWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/LightSeqWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/LightWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/PartGroupWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/PlungerWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/PrimitiveWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/RampWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/RubberWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/SpinnerWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/SurfaceWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/TableWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/TextboxWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/TimerWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/parts/TriggerWinUIPart.h">
+      <Filter>ui\win\parts</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/resource.h">
       <Filter>ui\win</Filter>
@@ -1640,9 +1916,6 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/MaterialDialog.h">
       <Filter>ui\win\dialogs</Filter>
     </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/PlayerOptionsDialog.h">
-      <Filter>ui\win\dialogs</Filter>
-    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/WhereUsedDialog.h">
       <Filter>ui\win\dialogs</Filter>
     </ClInclude>
@@ -1661,10 +1934,7 @@
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/ScriptErrorDialog.h">
       <Filter>ui\win\dialogs</Filter>
     </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/VPXLoadFileProgressBar.h">
-      <Filter>ui\win\dialogs</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/VPXSaveFileProgressBar.h">
+    <ClInclude Include="$(SolutionDir)/../../src/ui/win/dialogs/Win32ProgressBar.h">
       <Filter>ui\win\dialogs</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/ui/win/properties/PropertyDialog.h">
@@ -1811,6 +2081,9 @@
     <ClInclude Include="$(SolutionDir)/../../src/utils/CrashHandler.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/utils/denormals.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/utils/eventproxy.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -1820,6 +2093,12 @@
     <ClInclude Include="$(SolutionDir)/../../src/utils/hash.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/utils/JSONSerializer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/utils/TableHash.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/utils/ushock_output.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -1827,6 +2106,9 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/utils/lzwreader.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/utils/md2.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/utils/MemoryStatus.h">
@@ -1900,6 +2182,9 @@
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../third-party/include/nvapi/nvapi_lite_surround.h">
       <Filter>third-party\nvapi</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../third-party/include/pole/pole.h">
+      <Filter>third-party</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../third-party/include/tinyxml2/tinyxml2.h">
       <Filter>third-party\tinyxml2</Filter>
@@ -2063,6 +2348,15 @@
     <ClInclude Include="$(SolutionDir)/../../third-party/include/winsdk/hidusage.h">
       <Filter>third-party\hid</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../third-party/include/bc6h/basisu_bc6h.h">
+      <Filter>third-party\bc6h</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../third-party/include/bc7e/basisu_bc7e_scalar.h">
+      <Filter>third-party\bc7e</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../third-party/include/bc7f/basisu_bc7f.h">
+      <Filter>third-party\bc7f</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../third-party/include/gpuprofiler.h">
       <Filter>third-party\gpuprofiler</Filter>
     </ClInclude>
@@ -2105,7 +2399,7 @@
     <ClInclude Include="$(SolutionDir)/../../third-party\include\bimg\bimg.h">
       <Filter>third-party\bimg</Filter>
     </ClInclude>
-    <ClInclude Include="$(SolutionDir)/../../third-party\include\bimg\decode.h">
+    <ClInclude Include="$(SolutionDir)/../../third-party\include\bimg\encode.h">
       <Filter>third-party\bimg</Filter>
     </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../third-party\include\bgfx\bgfx.h">
@@ -2276,6 +2570,9 @@
     <ClInclude Include="$(SolutionDir)/../../third-party/include/simple-uri-parser/uri_parser.h">
       <Filter>third-party\simple-uri-parser</Filter>
     </ClInclude>
+    <ClInclude Include="$(SolutionDir)/../../src/core/resourceid.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SolutionDir)/../../src/core/DynamicScript.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -2370,6 +2667,66 @@
     <Image Include="$(SolutionDir)/../../src/assets/bumperskirt.webp">
       <Filter>assets</Filter>
     </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/ball.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/bumper.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/decal.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/flasher.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/flipper.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/gate.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/kicker.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/light.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/lightseq.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/plunger.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/primitive.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/ramp.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/reel.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/rubber.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/spinner.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/target.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/textbox.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/timer.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/trigger.png">
+      <Filter>assets\editor</Filter>
+    </Image>
+    <Image Include="$(SolutionDir)/../../src/assets/editor/wall.png">
+      <Filter>assets\editor</Filter>
+    </Image>
     <Image Include="$(SolutionDir)/../../src/assets/envmap.webp">
       <Filter>assets</Filter>
     </Image>
@@ -2403,229 +2760,229 @@
     <None Include="$(SolutionDir)/../../src/assets/TableSizes.csv">
       <Filter>assets</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\6803.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/6803.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\ALI.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/ALI.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\alving.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/alving.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\antar.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/antar.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Atari.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Atari.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Atari1.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Atari1.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Atari1b.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Atari1b.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Atari2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Atari2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\B2B.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/B2B.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\B2Bcollision.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/B2Bcollision.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\b2s.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/b2s.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Bally.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Bally.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\BallyG.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/BallyG.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\capcom.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/capcom.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Class1812.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Class1812.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\controller.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/controller.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\core.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/core.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\de.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/de.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\de2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/de2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\FPVPX.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/FPVPX.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\GamePlan.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/GamePlan.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\gts1.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/gts1.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\gts3.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/gts3.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Hankin.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Hankin.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\idsa.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/idsa.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\inder.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/inder.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\inder_atleta.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/inder_atleta.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\inder_centaur.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/inder_centaur.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\inder_skateboard.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/inder_skateboard.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\ironballs.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/ironballs.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\joctronic.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/joctronic.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\juegos.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/juegos.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\juegos2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/juegos2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\jvh.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/jvh.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\lancelot.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/lancelot.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\LTD.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/LTD.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\LTD3.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/LTD3.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\LTD4a.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/LTD4a.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\LTDPecmen.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/LTDPecmen.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\mac.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/mac.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\mrgame.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/mrgame.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\NudgePlugIn_blur2NoAccel.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/NudgePlugIn_blur2NoAccel.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\NudgePlugIn_blurNoAccel.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/NudgePlugIn_blurNoAccel.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\NudgePlugIn_mjrAccelAndTilt.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/NudgePlugIn_mjrAccelAndTilt.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\NudgePlugIn_robBlurNoAccel.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/NudgePlugIn_robBlurNoAccel.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\NudgePlugIn_robNoAccel.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/NudgePlugIn_robNoAccel.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\nuova.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/nuova.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\PDB.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/PDB.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\peyper.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/peyper.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Play1.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Play1.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Play2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Play2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\Play4.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/Play4.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\s4.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/s4.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\s6.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/s6.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\s7.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/s7.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\s8_StillCrazy.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/s8_StillCrazy.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\s11.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/s11.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\sam.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/sam.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\sega.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/sega.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\sega2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/sega2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\sleic.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/sleic.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\solarwars.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/solarwars.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\spinball.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/spinball.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\stern.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/stern.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\sys80.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/sys80.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\taito.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/taito.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\UltraDMD_Options.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/UltraDMD_Options.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\vbsdoc_outdated.html">
+    <None Include="$(SolutionDir)/../../src/scripts/vbsdoc_outdated.html">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\VPMKeys.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/VPMKeys.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\WPC.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/WPC.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\wpc_ph.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/wpc_ph.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\zac.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/zac.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\zac1.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/zac1.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\zac2.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/zac2.vbs">
       <Filter>scripts</Filter>
     </None>
-    <None Include="$(SolutionDir)/../../scripts\zacproto.vbs">
+    <None Include="$(SolutionDir)/../../src/scripts/zacproto.vbs">
       <Filter>scripts</Filter>
     </None>
   </ItemGroup>
@@ -2804,9 +3161,6 @@
       <Filter>ui\win\res</Filter>
     </None>
     <None Include="$(SolutionDir)/../../src/ui/win/res/dispreel.rgs">
-      <Filter>ui\win\res</Filter>
-    </None>
-    <None Include="$(SolutionDir)/../../src/ui/win/res/dragpoint.rgs">
       <Filter>ui\win\res</Filter>
     </None>
     <None Include="$(SolutionDir)/../../src/ui/win/res/flasher.cur">
@@ -3086,9 +3440,6 @@
       <Filter>shaders\hlsl_glsl</Filter>
     </None>
     <None Include="$(SolutionDir)/../../src/shaders/hlsl_glsl/DMDShader.glfx">
-      <Filter>shaders\hlsl_glsl</Filter>
-    </None>
-    <None Include="$(SolutionDir)/../../src/shaders/hlsl_glsl/DMDShaderVR.glfx">
       <Filter>shaders\hlsl_glsl</Filter>
     </None>
     <None Include="$(SolutionDir)/../../src/shaders/hlsl_glsl/FAAA.fxh">

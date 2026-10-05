@@ -6,15 +6,15 @@
 
 namespace B2SLegacy {
 
-Form::Form(VPXPluginAPI* vpxApi, MsgPluginAPI* msgApi, uint32_t endpointId, B2SData* pB2SData, const string& overlayType) 
+Form::Form(VPXPluginAPI* vpxApi, const MsgPluginAPI* msgApi, uint32_t endpointId, B2SData* pB2SData, const string& overlayType) 
    : Control(vpxApi), 
      m_msgApi(msgApi), 
      m_endpointId(endpointId),
      m_pB2SData(pB2SData)
 {
    if (!overlayType.empty()) {
-      m_pResURIResolver = new ResURIResolver(*msgApi, m_endpointId, true, false, false, false);
-      m_pDmdOverlay = new DMDOverlay(*m_pResURIResolver, m_dmdTex, nullptr, m_vpxApi);
+      m_pResURIResolver = new PinballPlugin::ResURIResolver(*msgApi, m_endpointId, true, false, false);
+      m_pDmdOverlay = new DMDOverlay::DMDOverlay(m_vpxApi, *m_pResURIResolver, m_dmdTex, nullptr);
       m_pDmdOverlay->LoadSettings(overlayType == "ScoreView");
    }
 }

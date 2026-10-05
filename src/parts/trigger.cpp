@@ -5,6 +5,7 @@
 
 #include "core/VPApp.h"
 #include "math/MeshUtils.h"
+#include "math/matrix.h"
 #include "meshes/triggerButtonMesh.h"
 #include "meshes/triggerInderMesh.h"
 #include "meshes/triggerSimpleMesh.h"
@@ -15,9 +16,6 @@
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
-#include "ui/win/DragPointDialogs.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 
@@ -28,85 +26,44 @@ Trigger::~Trigger()
 
 Trigger *Trigger::CopyForPlay() const
 {
-   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Trigger, m_vdpoint)
+   STANDARD_EDITABLE_WITH_DRAGPOINT_COPY_FOR_PLAY_IMPL(Trigger, m_curve)
    return dst;
 }
 
-void Trigger::UpdateStatusBarInfo()
+Trigger::StaticMeshData Trigger::SetupMeshData(const TriggerShape shape)
 {
-   if (g_pplayer)
-       return;
-
-   if (m_d.m_shape != TriggerNone)
+   switch (shape)
    {
-      const Vertex3D_NoTex2 *meshVertices;
-      switch(m_d.m_shape)
-      {
-      case TriggerWireA:
-      case TriggerWireB:
-      case TriggerWireC:
-      {
-         m_numVertices = triggerSimpleNumVertices;
-         m_numIndices = triggerSimpleNumIndices;
-         m_faceIndices = triggerSimpleIndices;
-         meshVertices = triggerSimple;
-         break;
-      }
-      case TriggerWireD:
-      {
-         m_numVertices = triggerDWireNumVertices;
-         m_numIndices = triggerDWireNumIndices;
-         m_faceIndices = triggerDWireIndices;
-         meshVertices = triggerDWireMesh;
-         break;
-      }
-      case TriggerInder:
-      {
-         m_numVertices = triggerInderNumVertices;
-         m_numIndices = triggerInderNumIndices;
-         m_faceIndices = triggerInderIndices;
-         meshVertices = triggerInderMesh;
-         break;
-      }
-      case TriggerButton:
-      {
-         m_numVertices = triggerButtonNumVertices;
-         m_numIndices = triggerButtonNumIndices;
-         m_faceIndices = triggerButtonIndices;
-         meshVertices = triggerButtonMesh;
-         break;
-      }
-      case TriggerStar:
-      {
-         m_numVertices = triggerStarNumVertices;
-         m_numIndices = triggerStarNumIndices;
-         m_faceIndices = triggerStarIndices;
-         meshVertices = triggerStar;
-         break;
-      }
-      default:
-         assert(!"Unhandled Trigger case");
-         break;
-      }
+   case TriggerNone: return {};
+   case TriggerWireA:
+   case TriggerWireB:
+   case TriggerWireC: return { triggerSimple, triggerSimpleIndices };
+   case TriggerWireD: return { triggerDWireMesh, triggerDWireIndices };
+   case TriggerInder: return { triggerInderMesh, triggerInderIndices };
+   case TriggerButton: return { triggerButtonMesh, triggerButtonIndices };
+   case TriggerStar: return { triggerStar, triggerStarIndices };
+   default: return {};
+   }
+}
 
-      m_vertices.resize(m_numVertices);
-      const Matrix3D fullMatrix = Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotation));
-      for (int i = 0; i < m_numVertices; i++)
-      {
-         m_vertices[i] = fullMatrix * meshVertices[i];
-         if (m_d.m_shape != TriggerStar && m_d.m_shape != TriggerButton)
-         {
-            m_vertices[i].x *= m_d.m_scaleX;
-            m_vertices[i].y *= m_d.m_scaleY;
-         }
-         else
-         {
-            m_vertices[i].x *= m_d.m_radius;
-            m_vertices[i].y *= m_d.m_radius;
-         }
-         m_vertices[i].x += m_d.m_vCenter.x;
-         m_vertices[i].y += m_d.m_vCenter.y;
-      }
+void Trigger::GetWireOutline(vector<Vertex2D> &outline) const
+{
+   const StaticMeshData meshData = SetupMeshData(m_d.m_shape);
+   if (meshData.indices.empty())
+      return;
+
+   const float scaleX = (m_d.m_shape == TriggerStar || m_d.m_shape == TriggerButton) ? m_d.m_radius : m_d.m_scaleX;
+   const float scaleY = (m_d.m_shape == TriggerStar || m_d.m_shape == TriggerButton) ? m_d.m_radius : m_d.m_scaleY;
+   const Matrix3D fullMatrix
+      = Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotation)) * Matrix3D::MatrixScale(scaleX, scaleY, 1.0f) * Matrix3D::MatrixTranslate(m_d.m_vCenter.x, m_d.m_vCenter.y, 0.0f);
+
+   outline.reserve(meshData.indices.size() / 3 + 1);
+   const Vertex3Ds A = fullMatrix * meshData.vertices[meshData.indices[0]];
+   outline.emplace_back(A.x, A.y);
+   for (size_t i = 0; i < meshData.indices.size(); i += 3)
+   {
+      const Vertex3Ds B = fullMatrix * meshData.vertices[meshData.indices[i + 1]];
+      outline.emplace_back(B.x, B.y);
    }
 }
 
@@ -114,42 +71,14 @@ void Trigger::InitShape(float x, float y)
 {
    constexpr float lengthX = 30.0f;
    constexpr float lengthY = 30.0f;
-   UpdateStatusBarInfo();
 
-   for (size_t i = 0; i < m_vdpoint.size(); i++)
-      m_vdpoint[i]->Release();
-   m_vdpoint.clear();
+   m_curve.ClearPoints();
 
    // First time shape has been set to custom - set up some points
-   CComObject<DragPoint> *pdp;
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - lengthX, y - lengthY, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x - lengthX, y + lengthY, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + lengthX, y + lengthY, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
-   CComObject<DragPoint>::CreateInstance(&pdp);
-   if (pdp)
-   {
-      pdp->AddRef();
-      pdp->Init(this, x + lengthX, y - lengthY, 0.f, false);
-      m_vdpoint.push_back(pdp);
-   }
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x - lengthX, y - lengthY, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x - lengthX, y + lengthY, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x + lengthX, y + lengthY, 0.f, false));
+   m_curve.PushPoint(std::make_unique<DragPoint>(&m_curve, x + lengthX, y - lengthY, 0.f, false));
 }
 
 HRESULT Trigger::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
@@ -157,14 +86,14 @@ HRESULT Trigger::Init(const float x, const float y, const bool fromMouseClick, c
    SetDefaults(fromMouseClick);
    m_d.m_vCenter.x = x;
    m_d.m_vCenter.y = y;
-   if (m_vdpoint.empty())
+   if (m_curve.GetPoints().empty())
       InitShape(x, y);
    return S_OK;
 }
 
 void Trigger::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsTrigger_##prop() : Settings::GetDefaultPropsTrigger_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsTrigger_##prop() : Settings::GetDefaultPropsTrigger_##prop##_Default()
    LinkProp(m_d.m_radius, Radius);
    LinkProp(m_d.m_rotation, Rotation);
    LinkProp(m_d.m_wireThickness, WireThickness);
@@ -184,7 +113,7 @@ void Trigger::SetDefaults(const bool fromMouseClick)
 
 void Trigger::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsTrigger_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsTrigger_##prop(field, false)
    LinkProp(m_d.m_radius, Radius);
    LinkProp(m_d.m_rotation, Rotation);
    LinkProp(m_d.m_wireThickness, WireThickness);
@@ -200,124 +129,6 @@ void Trigger::WriteRegDefaults()
    LinkProp(m_timerEnabled, TimerEnabled);
    LinkProp(m_timerInterval, TimerInterval);
 #undef LinkProp
-}
-
-void Trigger::UIRenderPass1(Sur * const psur)
-{
-   if (m_vdpoint.empty())
-      InitShape(m_d.m_vCenter.x, m_d.m_vCenter.y);
-
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetObject(this);
-
-   if (m_d.m_shape != TriggerStar && m_d.m_shape != TriggerButton)
-   {
-      psur->SetFillColor(m_ptable->RenderSolid() ? RGB(200, 220, 200) : -1);
-
-      vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
-
-      psur->Polygon(vvertex);
-   }
-   else
-   {
-      psur->SetFillColor(-1);
-      psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius);
-   }
-}
-
-void Trigger::UIRenderPass2(Sur * const psur)
-{
-   psur->SetLineColor(RGB(0, 0, 0), false, 0);
-   psur->SetObject(this);
-   psur->SetFillColor(-1);
-
-   if (m_d.m_shape != TriggerStar && m_d.m_shape != TriggerButton)
-   {
-      vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
-
-      psur->SetObject(nullptr);
-      psur->SetBorderColor(RGB(0, 180, 0), false, 1);
-
-      psur->Polygon(vvertex);
-
-      bool drawDragpoints = (m_selectstate != SelectState::NotSelected) || (m_vpinball->m_alwaysDrawDragPoints);
-      // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
-      if (!drawDragpoints)
-      {
-         // if any of the dragpoints of this object are selected then draw all the dragpoints
-         for (size_t i = 0; i < m_vdpoint.size(); i++)
-         {
-            const CComObject<DragPoint> * const pdp = m_vdpoint[i];
-            if (pdp->m_selectstate != SelectState::NotSelected)
-            {
-               drawDragpoints = true;
-               break;
-            }
-         }
-      }
-
-      if (drawDragpoints)
-      {
-         for (size_t i = 0; i < m_vdpoint.size(); i++)
-         {
-            CComObject<DragPoint> * const pdp = m_vdpoint[i];
-            psur->SetFillColor(-1);
-            psur->SetBorderColor(pdp->m_dragging ? RGB(0, 255, 0) : RGB(0, 180, 0), false, 0);
-            psur->SetObject(pdp);
-
-            psur->Ellipse2(pdp->m_v.x, pdp->m_v.y, 8);
-         }
-      }
-   }
-   else
-   {
-      psur->SetObject(nullptr);
-      psur->SetBorderColor(RGB(0, 180, 0), false, 1);
-
-      psur->Line(m_d.m_vCenter.x - m_d.m_radius, m_d.m_vCenter.y, m_d.m_vCenter.x + m_d.m_radius, m_d.m_vCenter.y);
-      psur->Line(m_d.m_vCenter.x, m_d.m_vCenter.y - m_d.m_radius, m_d.m_vCenter.x, m_d.m_vCenter.y + m_d.m_radius);
-
-      static const/*expr*/ float sp4 = (float)sin(M_PI / 4.0);
-      const float r2 = m_d.m_radius * sp4;
-
-      psur->Line(m_d.m_vCenter.x - r2, m_d.m_vCenter.y - r2, m_d.m_vCenter.x + r2, m_d.m_vCenter.y + r2);
-      psur->Line(m_d.m_vCenter.x - r2, m_d.m_vCenter.y + r2, m_d.m_vCenter.x + r2, m_d.m_vCenter.y - r2);
-   }
-
-   if (m_d.m_shape == TriggerWireA || m_d.m_shape == TriggerWireB || m_d.m_shape == TriggerWireC || m_d.m_shape == TriggerWireD || m_d.m_shape == TriggerInder)
-   {
-      if (m_numIndices > 0)
-      {
-         const size_t numPts = m_numIndices / 3 + 1;
-         vector<Vertex2D> drawVertices(numPts);
-
-         const Vertex3Ds& A = m_vertices[m_faceIndices[0]];
-         drawVertices[0] = Vertex2D(A.x, A.y);
-
-         size_t o = 1;
-         for (int i = 0; i < m_numIndices; i += 3, ++o)
-         {
-            const Vertex3Ds& B = m_vertices[m_faceIndices[i + 1]];
-            drawVertices[o] = Vertex2D(B.x, B.y);
-         }
-
-         psur->Polyline(drawVertices.data(), (int)drawVertices.size());
-      }
-   }
-}
-
-void Trigger::RenderBlueprint(Sur *psur, const bool solid)
-{
-   if (solid)
-      psur->SetFillColor(BLUEPRINT_SOLID_COLOR);
-   else
-      psur->SetFillColor(-1);
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetObject(this);
-
-   psur->Ellipse(m_d.m_vCenter.x, m_d.m_vCenter.y, m_d.m_radius);
 }
 
 
@@ -349,7 +160,11 @@ void Trigger::PhysicSetup(PhysicsEngine* physics, const bool isUI)
    else
    {
       vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
+      m_curve.GetRgVertex(vvertex);
+      // The volume hit objects derive inside/outside from the winding dependent
+      // segment and polygon normals, so restore the canonical winding: a reversed
+      // point order would swap the Hit and UnHit events
+      NormalizeWindingOrder(vvertex);
 
       const int count = (int)vvertex.size();
       for (int i = 0; i < count; i++)
@@ -422,56 +237,13 @@ void Trigger::RenderSetup(Renderer *renderer)
    if (!m_d.m_visible || m_d.m_shape == TriggerNone)
       return;
 
-   const WORD* indices;
-   switch(m_d.m_shape)
-   {
-   case TriggerWireA:
-   case TriggerWireB:
-   case TriggerWireC:
-   {
-      m_numVertices = triggerSimpleNumVertices;
-      m_numIndices = triggerSimpleNumIndices;
-      indices = triggerSimpleIndices;
-      break;
-   }
-   case TriggerWireD:
-   {
-      m_numVertices = triggerDWireNumVertices;
-      m_numIndices = triggerDWireNumIndices;
-      indices = triggerDWireIndices;
-      break;
-   }
-   case TriggerInder:
-   {
-      m_numVertices = triggerInderNumVertices;
-      m_numIndices = triggerInderNumIndices;
-      indices = triggerInderIndices;
-      break;
-   }
-   case TriggerButton:
-   {
-      m_numVertices = triggerButtonNumVertices;
-      m_numIndices = triggerButtonNumIndices;
-      indices = triggerButtonIndices;
-      break;
-   }
-   case TriggerStar:
-   {
-      m_numVertices = triggerStarNumVertices;
-      m_numIndices = triggerStarNumIndices;
-      indices = triggerStarIndices;
-      break;
-   }
-   default:
-   {
-      assert(!"Unknown Trigger");
-      break;
-   }
-   }
+   const StaticMeshData meshData = SetupMeshData(m_d.m_shape);
+   if (meshData.indices.empty())
+      return;
 
-   GenerateMesh();
-   std::shared_ptr<IndexBuffer> triggerIndexBuffer = std::make_shared<IndexBuffer>(m_renderer->m_renderDevice, m_numIndices, indices);
-   std::shared_ptr<VertexBuffer> vertexBuffer = std::make_shared<VertexBuffer>(m_renderer->m_renderDevice, m_numVertices, (float *)m_triggerVertices, true);
+   m_triggerVertices = GenerateMesh(m_boundingSphereCenter);
+   std::shared_ptr<IndexBuffer> triggerIndexBuffer = std::make_shared<IndexBuffer>(m_renderer->m_renderDevice, (unsigned int)meshData.indices.size(), meshData.indices.data());
+   std::shared_ptr<VertexBuffer> vertexBuffer = std::make_shared<VertexBuffer>(m_renderer->m_renderDevice, (unsigned int)meshData.vertices.size(), (float *)m_triggerVertices->data(), true);
    m_meshBuffer = std::make_shared<MeshBuffer>(GetName(), vertexBuffer, triggerIndexBuffer, true);
 }
 
@@ -480,7 +252,6 @@ void Trigger::RenderRelease()
    assert(m_renderer != nullptr);
    m_renderer = nullptr;
    m_meshBuffer = nullptr;
-   delete[] m_triggerVertices;
    m_triggerVertices = nullptr;
 }
 
@@ -564,18 +335,19 @@ void Trigger::Render(const unsigned int renderMask)
    if (m_animHeightOffset != m_vertexBuffer_animHeightOffset)
    {
       m_vertexBuffer_animHeightOffset = m_animHeightOffset;
+      const Vertex3D_NoTex2 *const verts = m_triggerVertices->data();
       Vertex3D_NoTex2 *buf;
       m_meshBuffer->m_vb->Lock(buf);
-      for (int i = 0; i < m_numVertices; i++)
+      for (unsigned int i = 0; i < m_meshBuffer->m_vb->m_count; i++)
       {
-         buf[i].x = m_triggerVertices[i].x;
-         buf[i].y = m_triggerVertices[i].y;
-         buf[i].z = m_triggerVertices[i].z + m_animHeightOffset;
-         buf[i].nx = m_triggerVertices[i].nx;
-         buf[i].ny = m_triggerVertices[i].ny;
-         buf[i].nz = m_triggerVertices[i].nz;
-         buf[i].tu = m_triggerVertices[i].tu;
-         buf[i].tv = m_triggerVertices[i].tv;
+         buf[i].x = verts[i].x;
+         buf[i].y = verts[i].y;
+         buf[i].z = verts[i].z + m_animHeightOffset;
+         buf[i].nx = verts[i].nx;
+         buf[i].ny = verts[i].ny;
+         buf[i].nz = verts[i].nz;
+         buf[i].tu = verts[i].tu;
+         buf[i].tv = verts[i].tv;
       }
       m_meshBuffer->m_vb->Unlock();
    }
@@ -584,7 +356,8 @@ void Trigger::Render(const unsigned int renderMask)
    if (m_d.m_shape == TriggerWireA || m_d.m_shape == TriggerWireB || m_d.m_shape == TriggerWireC || m_d.m_shape == TriggerWireD || m_d.m_shape == TriggerInder)
       m_renderer->m_renderDevice->SetRenderState(RenderState::CULLMODE, RenderState::CULL_NONE);
    m_renderer->m_renderDevice->m_basicShader->SetBasic(m_ptable->GetMaterial(m_d.m_szMaterial), nullptr);
-   m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, false, m_boundingSphereCenter, 0.f, m_meshBuffer, RenderDevice::TRIANGLELIST, 0, m_numIndices);
+   m_renderer->m_renderDevice->DrawMesh(
+      m_renderer->m_renderDevice->m_basicShader, false, m_boundingSphereCenter, 0.f, m_meshBuffer, RenderDevice::TRIANGLELIST, 0, m_meshBuffer->m_ib->m_count);
 }
 
 #pragma endregion
@@ -595,118 +368,42 @@ void Trigger::ExportMesh(ObjLoader& loader)
    if (!m_d.m_visible || m_d.m_shape == TriggerNone)
       return;
 
-   const string name = MakeString(m_wzName);
-   GenerateMesh();
+   const string& name = m_name;
+   Vertex3Ds boundingSphereCenter;
+   const auto triggerVertices = GenerateMesh(boundingSphereCenter);
+   if (!triggerVertices)
+      return;
+   const StaticMeshData meshData = SetupMeshData(m_d.m_shape);
    loader.WriteObjectName(name);
-   loader.WriteVertexInfo(m_triggerVertices, m_numVertices);
+   loader.WriteVertexInfo(triggerVertices->data(), (unsigned int)meshData.vertices.size());
    const Material * const mat = m_ptable->GetMaterial(m_d.m_szMaterial);
    loader.WriteMaterial(m_d.m_szMaterial, string(), mat);
    loader.UseTexture(m_d.m_szMaterial);
 
-   const WORD* indices;
-   switch(m_d.m_shape)
-   {
-   case TriggerWireA:
-   case TriggerWireB:
-   case TriggerWireC:
-   {
-      indices = triggerSimpleIndices;
-      break;
-   }
-   case TriggerWireD:
-   {
-      indices = triggerDWireIndices;
-      break;
-   }
-   case TriggerInder:
-   {
-      indices = triggerInderIndices;
-      break;
-   }
-   case TriggerButton:
-   {
-      indices = triggerButtonIndices;
-      break;
-   }
-   case TriggerStar:
-   {
-      indices = triggerStarIndices;
-      break;
-   }
-   default:
-   {
-      assert(!"Unknown Trigger");
-      break;
-   }
-   }
-
-   loader.WriteFaceInfoList(indices, m_numIndices);
-   loader.UpdateFaceOffset(m_numVertices);
-   
-   delete[] m_triggerVertices;
-   m_triggerVertices = nullptr;
+   loader.WriteFaceInfoList(meshData.indices.data(), (unsigned int)meshData.indices.size());
+   loader.UpdateFaceOffset((unsigned int)meshData.vertices.size());
 }
 
 // Ported at: VisualPinball.Engine/VPT/Trigger/TriggerMeshGenerator.cs
 
-void Trigger::GenerateMesh()
+std::unique_ptr<std::vector<Vertex3D_NoTex2>> Trigger::GenerateMesh(Vertex3Ds &boundingSphereCenter) const
 {
-   // This create m_triggerVertices which must be disposed by caller
-   assert(m_triggerVertices == nullptr);
    const float baseHeight = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
-   const Vertex3D_NoTex2 *verts;
    float zoffset = (m_d.m_shape == TriggerButton) ? 5.0f : 0.0f;
    if (m_d.m_shape == TriggerWireC) zoffset = -19.0f;
 
-   m_boundingSphereCenter.Set(m_d.m_vCenter.x, m_d.m_vCenter.y, baseHeight);
+   boundingSphereCenter.Set(m_d.m_vCenter.x, m_d.m_vCenter.y, baseHeight);
 
-   switch(m_d.m_shape)
-   {
-   case TriggerWireA:
-   case TriggerWireB:
-   case TriggerWireC:
-   {
-      m_numVertices = triggerSimpleNumVertices;
-      m_numIndices = triggerSimpleNumIndices;
-      verts = triggerSimple;
-      break;
-   }
-   case TriggerWireD:
-   {
-      m_numVertices = triggerDWireNumVertices;
-      m_numIndices = triggerDWireNumIndices;
-      verts = triggerDWireMesh;
-      break;
-   }
-   case TriggerInder:
-   {
-      m_numVertices = triggerInderNumVertices;
-      m_numIndices = triggerInderNumIndices;
-      verts = triggerInderMesh;
-      break;
-   }
-   case TriggerButton:
-   {
-      m_numVertices = triggerButtonNumVertices;
-      m_numIndices = triggerButtonNumIndices;
-      verts = triggerButtonMesh;
-      break;
-   }
-   case TriggerStar:
-   {
-      m_numVertices = triggerStarNumVertices;
-      m_numIndices = triggerStarNumIndices;
-      verts = triggerStar;
-      break;
-   }
-   default:
+   const StaticMeshData meshData = SetupMeshData(m_d.m_shape);
+   const std::span<const Vertex3D_NoTex2> &verts = meshData.vertices;
+   if (verts.empty())
    {
       ShowError("Unknown Trigger type");
-      return;
-   }
+      return nullptr;
    }
 
-   m_triggerVertices = new Vertex3D_NoTex2[m_numVertices];
+   auto triggerVertices = std::make_unique<std::vector<Vertex3D_NoTex2>>(verts.size());
+   Vertex3D_NoTex2 *const outVerts = triggerVertices->data();
 
    Matrix3D fullMatrix;
    if (m_d.m_shape == TriggerWireB)
@@ -722,194 +419,91 @@ void Trigger::GenerateMesh()
    else
       fullMatrix = Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotation));
 
-   for (int i = 0; i < m_numVertices; i++)
+   for (size_t i = 0; i < verts.size(); i++)
    {
       Vertex3Ds vert = fullMatrix * Vertex3Ds{verts[i].x, verts[i].y, verts[i].z};
 
       if (m_d.m_shape == TriggerButton || m_d.m_shape == TriggerStar)
       {
-         m_triggerVertices[i].x = vert.x*m_d.m_radius + m_d.m_vCenter.x;
-         m_triggerVertices[i].y = vert.y*m_d.m_radius + m_d.m_vCenter.y;
-         m_triggerVertices[i].z = vert.z*m_d.m_radius + baseHeight+zoffset;
+         outVerts[i].x = vert.x * m_d.m_radius + m_d.m_vCenter.x;
+         outVerts[i].y = vert.y * m_d.m_radius + m_d.m_vCenter.y;
+         outVerts[i].z = vert.z * m_d.m_radius + baseHeight + zoffset;
       }
-      else 
+      else
       {
-         m_triggerVertices[i].x = vert.x*m_d.m_scaleX + m_d.m_vCenter.x;
-         m_triggerVertices[i].y = vert.y*m_d.m_scaleY + m_d.m_vCenter.y;
-         m_triggerVertices[i].z = vert.z*1.0f + baseHeight+zoffset;
+         outVerts[i].x = vert.x * m_d.m_scaleX + m_d.m_vCenter.x;
+         outVerts[i].y = vert.y * m_d.m_scaleY + m_d.m_vCenter.y;
+         outVerts[i].z = vert.z * 1.0f + baseHeight + zoffset;
       }
 
       vert = Vertex3Ds(verts[i].nx, verts[i].ny, verts[i].nz);
       vert = fullMatrix.MultiplyVectorNoTranslate(vert);
-      m_triggerVertices[i].nx = vert.x;
-      m_triggerVertices[i].ny = vert.y;
-      m_triggerVertices[i].nz = vert.z;
-      m_triggerVertices[i].tu = verts[i].tu;
-      m_triggerVertices[i].tv = verts[i].tv;
+      outVerts[i].nx = vert.x;
+      outVerts[i].ny = vert.y;
+      outVerts[i].nz = vert.z;
+      outVerts[i].tu = verts[i].tu;
+      outVerts[i].tv = verts[i].tv;
 
       if (m_d.m_shape == TriggerWireA || m_d.m_shape == TriggerWireB || m_d.m_shape == TriggerWireC || m_d.m_shape == TriggerWireD || m_d.m_shape == TriggerInder)
       {
-         m_triggerVertices[i].x += m_triggerVertices[i].nx*m_d.m_wireThickness;
-         m_triggerVertices[i].y += m_triggerVertices[i].ny*m_d.m_wireThickness;
-         m_triggerVertices[i].z += m_triggerVertices[i].nz*m_d.m_wireThickness;
+         outVerts[i].x += outVerts[i].nx * m_d.m_wireThickness;
+         outVerts[i].y += outVerts[i].ny * m_d.m_wireThickness;
+         outVerts[i].z += outVerts[i].nz * m_d.m_wireThickness;
       }
    }
+   return triggerVertices;
 }
 
-void Trigger::SetObjectPos()
+void Trigger::FlipX(const Vertex2D &pvCenter)
 {
-    m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
+   m_curve.FlipPointX(pvCenter);
+   const float deltax = m_d.m_vCenter.x - pvCenter.x;
+   m_d.m_vCenter.x -= deltax * 2.0f;
 }
 
-void Trigger::MoveOffset(const float dx, const float dy)
+void Trigger::FlipY(const Vertex2D &pvCenter)
 {
-   m_d.m_vCenter.x += dx;
-   m_d.m_vCenter.y += dy;
+   m_curve.FlipPointY(pvCenter);
+   const float deltay = m_d.m_vCenter.y - pvCenter.y;
+   m_d.m_vCenter.y -= deltay * 2.0f;
+}
 
-   for (size_t i = 0; i < m_vdpoint.size(); i++)
+void Trigger::Rotate(const float ang, const Vertex2D &center, const bool useElementCenter)
+{
+   m_curve.RotatePoints(ang, useElementCenter ? GetCenter() : center);
+   if (!useElementCenter)
    {
-      CComObject<DragPoint> * const pdp = m_vdpoint[i];
-
-      pdp->m_v.x += dx;
-      pdp->m_v.y += dy;
+      const float sn = sinf(ANGTORAD(ang));
+      const float cs = cosf(ANGTORAD(ang));
+      const float dx = m_d.m_vCenter.x - center.x;
+      const float dy = m_d.m_vCenter.y - center.y;
+      const float dx2 = cs * dx - sn * dy;
+      const float dy2 = cs * dy + sn * dx;
+      m_d.m_vCenter.x = center.x + dx2;
+      m_d.m_vCenter.y = center.y + dy2;
    }
-
-   UpdateStatusBarInfo();
+   m_d.m_rotation += ang;
 }
 
-Vertex2D Trigger::GetPointCenter() const
+void Trigger::Scale(const float scalex, const float scaley, const Vertex2D &center, const bool useElementCenter)
 {
-   return m_d.m_vCenter;
-}
-
-void Trigger::PutPointCenter(const Vertex2D& pv)
-{
-   m_d.m_vCenter = pv;
-}
-
-#ifndef __STANDALONE__
-void Trigger::EditMenu(CMenu &menu)
-{
-   menu.EnableMenuItem(ID_WALLMENU_FLIP, MF_BYCOMMAND | MF_ENABLED);
-   menu.EnableMenuItem(ID_WALLMENU_MIRROR, MF_BYCOMMAND | MF_ENABLED);
-   menu.EnableMenuItem(ID_WALLMENU_ROTATE, MF_BYCOMMAND | MF_ENABLED);
-   menu.EnableMenuItem(ID_WALLMENU_SCALE, MF_BYCOMMAND | MF_ENABLED);
-   menu.EnableMenuItem(ID_WALLMENU_ADDPOINT, MF_BYCOMMAND | MF_ENABLED);
-}
-
-void Trigger::DoCommand(int icmd, int x, int y)
-{
-   ISelect::DoCommand(icmd, x, y);
-
-   switch (icmd)
+   m_curve.ScalePoints(scalex, scaley, useElementCenter ? GetCenter() : center);
+   if (!useElementCenter)
    {
-   case ID_WALLMENU_FLIP:
-      FlipPointY(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_MIRROR:
-      FlipPointX(GetPointCenter());
-      break;
-
-   case ID_WALLMENU_ROTATE:
-      VPX::WinUI::RotatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_SCALE:
-      VPX::WinUI::ScalePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_TRANSLATE:
-      VPX::WinUI::TranslatePointsDialog(this);
-      break;
-
-   case ID_WALLMENU_ADDPOINT:
-   {
-      STARTUNDO
-
-      const Vertex2D v = m_ptable->TransformPoint(x, y);
-
-      vector<RenderVertex> vvertex;
-      GetRgVertex(vvertex);
-
-      int iSeg;
-      Vertex2D vOut;
-      ClosestPointOnPolygon(vvertex, v, vOut, iSeg, true);
-
-      // Go through vertices (including iSeg itself) counting control points until iSeg
-      int icp = 0;
-      for (int i = 0; i < (iSeg + 1); i++)
-         if (vvertex[i].controlPoint)
-            icp++;
-
-      //if (icp == 0) // need to add point after the last point
-      //icp = m_vdpoint.size();
-
-      CComObject<DragPoint> *pdp;
-      CComObject<DragPoint>::CreateInstance(&pdp);
-      if (pdp)
-      {
-         pdp->AddRef();
-         pdp->Init(this, vOut.x, vOut.y, 0.f, false);
-         m_vdpoint.insert(m_vdpoint.begin() + icp, pdp); // push the second point forward, and replace it with this one.  Should work when index2 wraps.
-      }
-
-      STOPUNDO
+      const float dx = (m_d.m_vCenter.x - center.x) * scalex;
+      const float dy = (m_d.m_vCenter.y - center.y) * scaley;
+      m_d.m_vCenter.x = center.x + dx;
+      m_d.m_vCenter.y = center.y + dy;
    }
-   break;
-   }
-}
-#endif
-
-void Trigger::FlipY(const Vertex2D& pvCenter)
-{
-   if (m_d.m_shape == TriggerNone)
-      IHaveDragPoints::FlipPointY(pvCenter);
+   m_d.m_scaleX *= scalex;
+   m_d.m_scaleY *= scaley;
 }
 
-void Trigger::FlipX(const Vertex2D& pvCenter)
+void Trigger::Translate(const Vertex2D &offset)
 {
-   if (m_d.m_shape == TriggerNone)
-      IHaveDragPoints::FlipPointX(pvCenter);
-}
-
-void Trigger::Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter)
-{
-   if (m_d.m_shape == TriggerNone)
-      IHaveDragPoints::RotatePoints(ang, pvCenter, useElementCenter);
-   else
-   {
-      STARTUNDO
-      m_d.m_rotation = ang;
-      STOPUNDO
-      UpdateStatusBarInfo();
-   }
-}
-
-void Trigger::Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter)
-{
-   if (m_d.m_shape == TriggerNone)
-      IHaveDragPoints::ScalePoints(scalex, scaley, pvCenter, useElementCenter);
-   else
-   {
-      STARTUNDO
-      m_d.m_scaleX = scalex;
-      m_d.m_scaleY = scaley;
-      STOPUNDO
-      UpdateStatusBarInfo();
-   }
-}
-
-void Trigger::Translate(const Vertex2D &pvOffset)
-{
-   if (m_d.m_shape == TriggerNone)
-      IHaveDragPoints::TranslatePoints(pvOffset);
-   else
-   {
-      STARTUNDO
-      MoveOffset(pvOffset.x, pvOffset.y);
-      STOPUNDO
-   }
+   m_curve.TranslatePoints(offset);
+   m_d.m_vCenter.x += offset.x;
+   m_d.m_vCenter.y += offset.y;
 }
 
 void Trigger::Save(IObjectWriter& writer, const bool saveForUndo)
@@ -927,19 +521,16 @@ void Trigger::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteBool(FID(EBLD), m_d.m_enabled);
    writer.WriteBool(FID(VSBL), m_d.m_visible);
    writer.WriteFloat(FID(THOT), m_d.m_hit_height);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteInt(FID(SHAP), m_d.m_shape);
    writer.WriteFloat(FID(ANSP), m_d.m_animSpeed);
    writer.WriteBool(FID(REEN), m_d.m_reflectionEnabled);
    SaveSharedEditableFields(writer);
-   SavePoints(writer);
+   m_curve.SavePoints(writer);
    writer.EndObject();
 }
 
-void Trigger::ClearForOverwrite()
-{
-   ClearPointsForOverwrite();
-}
+void Trigger::ClearForOverwrite() { m_curve.ClearPoints(); }
 
 void Trigger::Load(IObjectReader& reader)
 {
@@ -966,12 +557,16 @@ void Trigger::Load(IObjectReader& reader)
          case FID(REEN): m_d.m_reflectionEnabled = reader.AsBool(); break;
          case FID(SHAP): m_d.m_shape = static_cast<TriggerShape>(reader.AsInt()); break;
          case FID(ANSP): m_d.m_animSpeed = reader.AsFloat(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
-         case FID(DPNT): LoadPointToken(reader); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
+         case FID(DPNT): m_curve.LoadPointToken(reader); break;
          default: LoadSharedEditableField(tag, reader); break;
          }
          return true;
       });
+
+   // Seed the default shape for tables saved without drag points
+   if (m_curve.GetPoints().empty())
+      InitShape(m_d.m_vCenter.x, m_d.m_vCenter.y);
 }
 
 STDMETHODIMP Trigger::InterfaceSupportsErrorInfo(REFIID riid)
@@ -1003,9 +598,6 @@ STDMETHODIMP Trigger::put_Radius(float newVal)
 STDMETHODIMP Trigger::get_X(float *pVal)
 {
    *pVal = m_d.m_vCenter.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 
@@ -1138,7 +730,6 @@ STDMETHODIMP Trigger::get_Rotation(float *pVal)
 STDMETHODIMP Trigger::put_Rotation(float newVal)
 {
    m_d.m_rotation = newVal;
-   UpdateStatusBarInfo();
 
    return S_OK;
 }
@@ -1194,7 +785,6 @@ STDMETHODIMP Trigger::get_TriggerShape(TriggerShape *pVal)
 STDMETHODIMP Trigger::put_TriggerShape(TriggerShape newVal)
 {
    m_d.m_shape = newVal;
-   UpdateStatusBarInfo();
 
    return S_OK;
 }

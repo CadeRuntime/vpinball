@@ -2,12 +2,13 @@
 
 #pragma once
 
+#include "core/resourceid.h"
+#include "math/matrix.h"
 #include "parts/Collection.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
 #include "renderer/Texture.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 class MeshBuffer;
@@ -42,7 +43,6 @@ class Bumper :
    public EventProxy<Bumper, &DIID_IBumperEvents>,
    public IConnectionPointContainerImpl<Bumper>,
    public IProvideClassInfo2Impl<&CLSID_Bumper, &DIID_IBumperEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -51,7 +51,7 @@ class Bumper :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -73,7 +73,7 @@ public:
    // Remove the comment from the line above if you don't want your object to
    // support aggregation.
 
-   STANDARD_EDITABLE_DECLARES(Bumper, eItemBumper, BUMPER, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Bumper, eItemBumper, BUMPER)
 
    BEGIN_CONNECTION_POINT_MAP(Bumper)
       CONNECTION_POINT_ENTRY(DIID_IBumperEvents)
@@ -84,20 +84,13 @@ public:
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
-   // ISelect implementation
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader &loader) final;
 
    // IEditable implementation
-   void RenderBlueprint(Sur *psur, const bool solid) final;
    void WriteRegDefaults() final;
-
-   // IHitable implementation
-   ItemTypeEnum HitableGetItemType() const final { return eItemBumper; }
 
    // IBumper
    STDMETHOD(get_BaseMaterial)(/*[out, retval]*/ BSTR *pVal);

@@ -9,7 +9,7 @@
 #include "ui/win/WinEditor.h"
 
 
-FlasherVisualsProperty::FlasherVisualsProperty(const VectorProtected<ISelect> *pvsel)
+FlasherVisualsProperty::FlasherVisualsProperty(const vector<IWinUIPart *> *pvsel)
    : BasePropertyDialog(IDD_PROPFLASHER_VISUALS, pvsel)
 {
    m_modeCombo.SetDialog(this);
@@ -40,6 +40,7 @@ FlasherVisualsProperty::FlasherVisualsProperty(const VectorProtected<ISelect> *p
 
    m_opacityAmountEdit.SetDialog(this);
    m_lightmapCombo.SetDialog(this);
+   m_addBlendCombo.SetDialog(this);
    m_modulateEdit.SetDialog(this);
 
    m_heightEdit.SetDialog(this);
@@ -52,11 +53,11 @@ FlasherVisualsProperty::FlasherVisualsProperty(const VectorProtected<ISelect> *p
 
 void FlasherVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
 {
-   for (int i = 0; i < m_pvsel->size(); i++)
+   for (int i = 0; i < SelCount(); i++)
    {
-      if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemFlasher))
+      if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemFlasher))
          continue;
-      Flasher *const flash = (Flasher *)m_pvsel->ElementAt(i);
+      Flasher *const flash = (Flasher *)SelAt(i)->GetEditable();
       FlasherData::RenderMode mode = clamp(flash->m_d.m_renderMode, FlasherData::FLASHER, FlasherData::EXT_RENDER);
 
       if (dispid == IDC_STYLE_COMBO || dispid == -1)
@@ -167,7 +168,8 @@ void FlasherVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
          const int isAlphaOrExt = (mode != FlasherData::ALPHASEG && mode != FlasherData::EXT_RENDER) ? SW_SHOWNORMAL : SW_HIDE;
          GetDlgItem(IDC_STATIC19).ShowWindow(isAlphaOrExt);
          m_lightmapCombo.ShowWindow(isAlphaOrExt);
-         ::ShowWindow(m_hAdditiveBlendCheck, isAlphaOrExt);
+         GetDlgItem(IDC_STATIC30).ShowWindow(isAlphaOrExt);
+         m_addBlendCombo.ShowWindow(isAlphaOrExt);
          GetDlgItem(IDC_STATIC11).ShowWindow(isAlphaOrExt);
          m_modulateEdit.ShowWindow(isAlphaOrExt);
       }
@@ -188,7 +190,7 @@ void FlasherVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
          {
             m_styleCombo.SetCurSel(clamp(flash->m_d.m_renderStyle, 0,
                flash->m_d.m_renderMode == FlasherData::DMD           ? (7 - 1)
-                  : flash->m_d.m_renderMode == FlasherData::DISPLAY  ? (2 - 1)
+                  : flash->m_d.m_renderMode == FlasherData::DISPLAY  ? (3 - 1)
                   : flash->m_d.m_renderMode == FlasherData::ALPHASEG ? (5 * 8 - 1)
                                                                      : 0));
          }
@@ -233,15 +235,22 @@ void FlasherVisualsProperty::UpdateVisuals(const int dispid /*=-1*/)
          PropertyDialog::SetIntTextbox(m_opacityAmountEdit, flash->m_d.m_alpha);
       if (dispid == IDC_LIGHTMAP || dispid == -1)
          UpdateLightmapComboBox(flash->GetPTable(), m_lightmapCombo, flash->m_d.m_szLightmap);
-      if (dispid == IDC_ADDBLEND || dispid == -1)
-         PropertyDialog::SetCheckboxState(m_hAdditiveBlendCheck, flash->m_d.m_addBlend);
+      if (dispid == IDC_ADDBLEND_COMBO || dispid == IDC_DMD || dispid == -1) // IDC_DMD is the render style, which decides whether absorbing is honored
+      {
+         // Entries match FlasherData::AddBlendMode. Absorbing is only offered where it is honored, and since this list
+         // drives the commit path as well it has to be rebuilt, not just filtered for display. The selection is then
+         // clamped to it, so that absorb shows as amplify where it is not honored, which is also how it renders there
+         m_addBlendList = flash->CanAbsorbBlend() ? vector<string> { "Off"s, "On, amplify"s, "On, absorb"s }
+                                                  : vector<string> { "Off"s, "On, amplify"s };
+         PropertyDialog::UpdateComboBox(m_addBlendList, m_addBlendCombo, m_addBlendList[clamp(flash->m_d.m_addBlend, 0, static_cast<int>(m_addBlendList.size()) - 1)]);
+      }
       if (dispid == IDC_MODULATE_VS_ADD || dispid == -1)
          PropertyDialog::SetFloatTextbox(m_modulateEdit, flash->m_d.m_modulate_vs_add);
 
       if (dispid == 5 || dispid == -1)
-         PropertyDialog::SetFloatTextbox(m_posXEdit, flash->m_d.m_vCenter.x);
+         PropertyDialog::SetFloatTextbox(m_posXEdit, flash->GetCenter().x);
       if (dispid == 6 || dispid == -1)
-         PropertyDialog::SetFloatTextbox(m_posYEdit, flash->m_d.m_vCenter.y);
+         PropertyDialog::SetFloatTextbox(m_posYEdit, flash->GetCenter().y);
       if (dispid == IDC_HEIGHT_EDIT || dispid == -1)
          PropertyDialog::SetFloatTextbox(m_heightEdit, flash->m_d.m_height);
       if (dispid == 9 || dispid == -1)
@@ -292,11 +301,11 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
    const bool isDisplay = mode != FlasherData::FLASHER;
    const bool isDmd = mode == FlasherData::DMD;
    const bool isFlasher = mode == FlasherData::FLASHER;
-   for (int i = 0; i < m_pvsel->size(); i++)
+   for (int i = 0; i < SelCount(); i++)
    {
-      if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemFlasher))
+      if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemFlasher))
          continue;
-      Flasher *const flash = (Flasher *)m_pvsel->ElementAt(i);
+      Flasher *const flash = (Flasher *)SelAt(i)->GetEditable();
       switch (dispid)
       {
       case IDC_STYLE_COMBO:
@@ -333,7 +342,7 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
       case IDC_GLASS_DOT_LIGHT: CHECK_UPDATE_ITEM(flash->m_d.m_glassRoughness, PropertyDialog::GetFloatTextbox(m_glassRoughnessEdit), flash); break;
       case IDC_GLASS_AMBIENT:
       {
-         CComObject<PinTable> *const ptable = g_pvp->GetActiveTable();
+         CComObject<PinTable> *const ptable = GetTable();
          if (ptable == nullptr)
             break;
          CHOOSECOLOR cc = m_colorDialog.GetParameters();
@@ -355,7 +364,7 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
       case IDC_GLASS_PAD_RIGHT: CHECK_UPDATE_ITEM(flash->m_d.m_glassPadRight, PropertyDialog::GetFloatTextbox(m_glassPadRightEdit), flash); break;
       case IDC_VISIBLE_CHECK: CHECK_UPDATE_ITEM(flash->m_d.m_isVisible, PropertyDialog::GetCheckboxState(m_hVisibleCheck), flash); break;
       case IDC_DISPLAY_IMAGE_CHECK: CHECK_UPDATE_ITEM(flash->m_d.m_displayTexture, PropertyDialog::GetCheckboxState(m_hDisplayInEditorCheck), flash); break;
-      case IDC_ADDBLEND: CHECK_UPDATE_ITEM(flash->m_d.m_addBlend, PropertyDialog::GetCheckboxState(m_hAdditiveBlendCheck), flash); break;
+      case IDC_ADDBLEND_COMBO: CHECK_UPDATE_ITEM(flash->m_d.m_addBlend, PropertyDialog::GetComboBoxIndex(m_addBlendCombo, m_addBlendList), flash); break;
       case DISPID_Image: if (isFlasher) CHECK_UPDATE_COMBO_TEXT_STRING(flash->m_d.m_szImageA, m_imageACombo, flash); break;
       case DISPID_Image2: CHECK_UPDATE_COMBO_TEXT_STRING(flash->m_d.m_szImageB, m_imageBCombo, flash); break;
       case IDC_FLASHER_MODE_COMBO: CHECK_UPDATE_ITEM(flash->m_d.m_imagealignment, (RampImageAlignment)(PropertyDialog::GetComboBoxIndex(m_texModeCombo, m_imageAlignList)), flash); break;
@@ -366,26 +375,26 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
       case IDC_MODULATE_VS_ADD: CHECK_UPDATE_ITEM(flash->m_d.m_modulate_vs_add, PropertyDialog::GetFloatTextbox(m_modulateEdit), flash); break;
       case 5:
       {
-         const float oldX = flash->m_d.m_vCenter.x;
+         const float oldX = flash->GetCenter().x;
          const float newX = PropertyDialog::GetFloatTextbox(m_posXEdit);
          if (oldX != newX)
          {
             const float dx = newX - oldX;
             PropertyDialog::StartUndo(flash);
-            flash->MoveOffset(dx, 0.0f);
+            flash->Translate(Vertex2D(dx, 0.0f));
             PropertyDialog::EndUndo(flash);
          }
          break;
       }
       case 6:
       {
-         const float oldY = flash->m_d.m_vCenter.y;
+         const float oldY = flash->GetCenter().y;
          const float newY = PropertyDialog::GetFloatTextbox(m_posYEdit);
          if (oldY != newY)
          {
             const float dy = newY - oldY;
             PropertyDialog::StartUndo(flash);
-            flash->MoveOffset(0.0f, dy);
+            flash->Translate(Vertex2D(0.0f, dy));
             PropertyDialog::EndUndo(flash);
          }
          break;
@@ -396,7 +405,7 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
       case 1: CHECK_UPDATE_ITEM(flash->m_d.m_rotZ, PropertyDialog::GetFloatTextbox(m_rotZEdit), flash); break;
       case IDC_COLOR_BUTTON1:
       {
-         CComObject<PinTable> *const ptable = g_pvp->GetActiveTable();
+         CComObject<PinTable> *const ptable = GetTable();
          if (ptable == nullptr)
             break;
          CHOOSECOLOR cc = m_colorDialog.GetParameters();
@@ -415,7 +424,7 @@ void FlasherVisualsProperty::UpdateProperties(const int dispid)
       case IDC_LIGHTMAP: CHECK_UPDATE_COMBO_TEXT_STRING(flash->m_d.m_szLightmap, m_lightmapCombo, flash); break;
       default: break;
       }
-      flash->UpdateStatusBarInfo();
+      PropertyDialog::UpdateStatusBarInfo(flash);
    }
    UpdateVisuals(dispid);
 }
@@ -453,7 +462,7 @@ BOOL FlasherVisualsProperty::OnInitDialog()
    m_opacityAmountEdit.AttachItem(IDC_ALPHA_EDIT);
    m_modulateEdit.AttachItem(IDC_MODULATE_VS_ADD);
    m_lightmapCombo.AttachItem(IDC_LIGHTMAP);
-   m_hAdditiveBlendCheck = GetDlgItem(IDC_ADDBLEND);
+   m_addBlendCombo.AttachItem(IDC_ADDBLEND_COMBO);
 
    m_posXEdit.AttachItem(5);
    m_posYEdit.AttachItem(6);
@@ -492,7 +501,7 @@ BOOL FlasherVisualsProperty::OnInitDialog()
    m_resizer.AddChild(m_opacityAmountEdit, CResizer::topright, RD_STRETCH_WIDTH);
    m_resizer.AddChild(GetDlgItem(IDC_STATIC8), CResizer::topright, 0);
    m_resizer.AddChild(m_lightmapCombo, CResizer::topleft, RD_STRETCH_WIDTH);
-   m_resizer.AddChild(m_hAdditiveBlendCheck, CResizer::topleft, 0);
+   m_resizer.AddChild(m_addBlendCombo, CResizer::topleft, RD_STRETCH_WIDTH);
    m_resizer.AddChild(m_modulateEdit, CResizer::topleft, RD_STRETCH_WIDTH);
 
    m_resizer.AddChild(GetDlgItem(IDC_STATIC12), CResizer::topleft, RD_STRETCH_WIDTH); // Position Group

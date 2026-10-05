@@ -18,13 +18,13 @@ PerfUI::PerfUI(Player *const player)
    : m_player(player)
 {
    ImPlot::CreateContext();
-   m_showPerf = (PerfMode)g_app->m_settings.GetPlayer_ShowFPS();
+   m_showPerf = (PerfMode)g_settingsService.GetAppSettings().GetPlayer_ShowFPS();
 }
 
 PerfUI::~PerfUI()
 {
-   g_app->m_settings.SetPlayer_ShowFPS(m_showPerf, false);
-   g_app->m_settings.Save();
+   g_settingsService.GetAppSettings().SetPlayer_ShowFPS(m_showPerf, false);
+   g_settingsService.GetAppSettings().Save();
    ImPlot::DestroyContext();
 }
 

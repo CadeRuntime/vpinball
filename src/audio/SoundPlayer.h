@@ -17,7 +17,7 @@ class SoundPlayer
 {
 public:
    static SoundPlayer* Create(const AudioPlayer* audioPlayer, Sound* sound);
-   static SoundPlayer* Create(const AudioPlayer* audioPlayer, const string& filename);
+   static SoundPlayer* Create(const AudioPlayer* audioPlayer, const std::filesystem::path& filename);
    ~SoundPlayer();
 
    void Play(float volume, const float randompitch, const int pitch, float pan, float frontRearFade, const int loopcount);
@@ -33,9 +33,11 @@ public:
    void SetMainVolume(float backglassVolume, float playfieldVolume);
    void SetVolume(float volume);
 
+   SoundOutTypes GetOutputTarget() const { return m_outputTarget; }
+
 private:
    SoundPlayer(const AudioPlayer* audioPlayer, Sound* sound);
-   SoundPlayer(const AudioPlayer* audioPlayer, const string& filename);
+   SoundPlayer(const AudioPlayer* audioPlayer, const std::filesystem::path& filename);
 
    const class AudioPlayer* const m_audioPlayer;
    const SoundOutTypes m_outputTarget;

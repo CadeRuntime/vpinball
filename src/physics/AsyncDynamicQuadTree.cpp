@@ -6,6 +6,7 @@
 #include "parts/pintable.h"
 #include "physics/quadtree.h"
 #include "physics/hitable.h"
+#include "utils/denormals.h"
 
 #include <algorithm>
 
@@ -13,7 +14,7 @@
 AsyncDynamicQuadTree::AsyncDynamicQuadTree(PhysicsEngine* const physics, PinTable* const table, bool isUI)
    : m_physics(physics)
    , m_isUI(isUI)
-   , m_quadTree(new HitQuadtree())
+   , m_quadTree(new HitQuadtree(physics))
 {
    vector<HitObject*>* hitObjects = &m_quadTree->BeginReset();
    for (IEditable* const pe : table->GetParts())
@@ -144,10 +145,51 @@ void AsyncDynamicQuadTree::SetStatic(IEditable* editable)
    UpdateAsync();
 }
 
+void AsyncDynamicQuadTree::AddEditable(IEditable* editable)
+{
+   assert(editable->GetIHitable() != nullptr);
+
+   // Purge any pending update that may modify the static quadtree we are going to update
+   while (m_quadTreeUpdateInProgress)
+   {
+      m_quadtreeUpdateReady.acquire();
+      m_quadtreeUpdateReady.release();
+      UpdateAsync();
+   }
+
+   // Collect the hit objects of the new editable and add them to the static quadtree
+   vector<HitObject*> hitObjects;
+   m_physics->CollectColliders(editable, &hitObjects, m_isUI);
+   if (hitObjects.empty())
+      return;
+   vector<HitObject*>& vho = m_quadTree->BeginReset();
+   std::erase(vho, nullptr); // Compact away the slots nulled for dynamic parts (their recorded indices would be stale after insertion anyway)
+   m_nullSlots.clear();
+   vho.insert(vho.end(), hitObjects.begin(), hitObjects.end());
+   m_quadTree->EndReset();
+}
+
 void AsyncDynamicQuadTree::Remove(IEditable* editable)
 {
    assert(editable->GetIHitable() != nullptr);
-   assert(editable->GetItemType() != eItemBall); // Balls are not supported as they manage the hit object lifecycle
+
+   if (editable->GetItemType() == eItemBall)
+   {
+      // Balls are not supported as dynamic editables as they manage their hit object lifecycle.
+      // Their HitBall is always part of the static quadtree, remove it without deleting it (owned by the ball)
+      while (m_quadTreeUpdateInProgress)
+      {
+         m_quadtreeUpdateReady.acquire();
+         m_quadtreeUpdateReady.release();
+         UpdateAsync();
+      }
+      vector<HitObject*>& vho = m_quadTree->BeginReset();
+      std::erase_if(vho, [editable](HitObject* ho) { return (ho != nullptr) && (ho->m_editable == editable); });
+      std::erase(vho, nullptr); // Compact away the slots nulled for dynamic parts (their recorded indices would be stale after removal anyway)
+      m_nullSlots.clear();
+      m_quadTree->EndReset();
+      return;
+   }
 
    // Remove from static quadtree
    if (IsStatic(editable))
@@ -171,14 +213,38 @@ void AsyncDynamicQuadTree::Remove(IEditable* editable)
 void AsyncDynamicQuadTree::Update(IEditable* editable)
 {
    assert(editable->GetIHitable() != nullptr);
-   assert(editable->GetItemType() != eItemBall); // Balls are not supported as they manage the hit object lifecycle
    //PLOGD << "Updating item " << editable->GetName();
 
+   if (editable->GetItemType() == eItemBall)
+   {
+      // Balls are always part of the quadtree as they own their (shared) HitBall: simply update its bounds
+      for (HitObject* const ho : GetHitObjects(editable))
+         ho->CalcHitBBox();
+      return;
+   }
+
+   if (IsStatic(editable))
+   {
+      // Purge any pending update first as it may be processing this part's hit objects.
+      while (m_quadTreeUpdateInProgress)
+      {
+         m_quadtreeUpdateReady.acquire();
+         m_quadtreeUpdateReady.release();
+         UpdateAsync();
+      }
+      SetDynamic(editable);
+      SetStatic(editable);
+      return;
+   }
+
    const auto dynEdIt = std::ranges::find_if(m_dynamicEditables, [editable](const std::unique_ptr<DynamicEditable>& dynEd) { return dynEd->editable == editable; });
-   assert(dynEdIt != m_dynamicEditables.end() && !(*dynEdIt)->pendingStaticInclusion); // We do not support updating static parts
+   assert(dynEdIt != m_dynamicEditables.end() && !(*dynEdIt)->pendingStaticInclusion);
    if (!editable->GetIHitable()->PhysicUpdate(m_physics, m_isUI))
+   {
       // update was not performed: release and reallocate colliders
+      *dynEdIt = nullptr; 
       *dynEdIt = std::make_unique<DynamicEditable>(editable, m_physics, m_isUI);
+   }
 }
 
 void AsyncDynamicQuadTree::UpdateAsync()
@@ -220,7 +286,7 @@ void AsyncDynamicQuadTree::UpdateAsync()
          // > but only to nullify a cell, so maybe we could move this (lengthy) copy to the update thread
          // > we could also avoid the copy by keeping track of the update before this one and reusing the array from m_pendingQuadTree
          if (m_pendingQuadTree == nullptr)
-            m_pendingQuadTree = new HitQuadtree();
+            m_pendingQuadTree = new HitQuadtree(m_physics);
          m_quadTreeHitobjects = &m_pendingQuadTree->BeginReset();
          *m_quadTreeHitobjects = m_quadTree->GetHitObjects();
 
@@ -234,6 +300,7 @@ void AsyncDynamicQuadTree::UpdateAsync()
 void AsyncDynamicQuadTree::UpdateQuadtreeThread()
 {
    SetThreadName("VPX.QuadTree.UpdateThread"s);
+   set_denormals_flush_to_zero(); // FPU mode is per thread
 
    while (true)
    {
@@ -320,9 +387,9 @@ void AsyncDynamicQuadTree::DynamicEditable::HitTestBall(const HitBall* const pba
    const float rcHitRadiusSqr = pball->HitRadiusSqr();
    for (const HitObject* const pho : hitObjects)
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->m_physics->c_tested++;
-      #endif
+#ifdef DEBUGPHYSICS
+      m_physics->c_tested++;
+#endif
       if ((pball != pho) // ball can not hit itself
          && fRectIntersect3D(pball->m_hitBBox, pho->m_hitBBox)
          && fRectIntersect3D(pball->m_d.m_pos, rcHitRadiusSqr, pho->m_hitBBox))
@@ -338,16 +405,16 @@ void AsyncDynamicQuadTree::DynamicEditable::HitTestXRay(const HitBall* const pba
    const float rcHitRadiusSqr = pball->HitRadiusSqr();
    for (HitObject* const pho : hitObjects)
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->m_physics->c_tested++;
-      #endif
+#ifdef DEBUGPHYSICS
+      m_physics->c_tested++;
+#endif
       if ((pball != pho) // ball can not hit itself
          && fRectIntersect3D(pball->m_hitBBox, pho->m_hitBBox)
          && fRectIntersect3D(pball->m_d.m_pos, rcHitRadiusSqr, pho->m_hitBBox))
       {
-         #ifdef DEBUGPHYSICS
-            g_pplayer->m_physics->c_deepTested++;
-         #endif
+#ifdef DEBUGPHYSICS
+         m_physics->c_deepTested++;
+#endif
          const float newtime = pho->HitTest(pball->m_d, coll.m_hittime, coll);
          if (newtime >= 0.f)
             pvhoHit.push_back({pho, newtime});

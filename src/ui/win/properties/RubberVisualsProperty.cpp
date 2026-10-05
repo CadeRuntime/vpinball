@@ -7,7 +7,7 @@
 #include "ui/win/resource.h"
 
 
-RubberVisualsProperty::RubberVisualsProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPRUBBER_VISUALS, pvsel)
+RubberVisualsProperty::RubberVisualsProperty(const vector<IWinUIPart *> *pvsel) : BasePropertyDialog(IDD_PROPRUBBER_VISUALS, pvsel)
 {
     m_heightEdit.SetDialog(this);
     m_thicknessEdit.SetDialog(this);
@@ -20,11 +20,11 @@ RubberVisualsProperty::RubberVisualsProperty(const VectorProtected<ISelect> *pvs
 
 void RubberVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemRubber))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemRubber))
             continue;
-        Rubber *const rubber = (Rubber *)m_pvsel->ElementAt(i);
+        Rubber *const rubber = (Rubber *)SelAt(i)->GetEditable();
 
         if (dispid == IDC_STATIC_RENDERING_CHECK || dispid == -1)
             PropertyDialog::SetCheckboxState(m_hStaticRenderingCheck, rubber->m_d.m_staticRendering);
@@ -49,11 +49,11 @@ void RubberVisualsProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void RubberVisualsProperty::UpdateProperties(const int dispid)
 {
-    for (int i = 0; i < m_pvsel->size(); i++)
+    for (int i = 0; i < SelCount(); i++)
     {
-        if ((m_pvsel->ElementAt(i) == nullptr) || (m_pvsel->ElementAt(i)->GetItemType() != eItemRubber))
+        if ((SelAt(i) == nullptr) || (SelAt(i)->GetItemType() != eItemRubber))
             continue;
-        Rubber *const rubber = (Rubber *)m_pvsel->ElementAt(i);
+        Rubber *const rubber = (Rubber *)SelAt(i)->GetEditable();
 
         switch (dispid)
         {
@@ -82,7 +82,7 @@ void RubberVisualsProperty::UpdateProperties(const int dispid)
                 UpdateBaseProperties(rubber, &rubber->m_d, dispid);
                 break;
         }
-        rubber->UpdateStatusBarInfo();
+        PropertyDialog::UpdateStatusBarInfo(rubber);
     }
     UpdateVisuals(dispid);
 }

@@ -11,42 +11,72 @@ static std::mutex mtx; //!! only used for Wine multithreading bug workaround
 #endif
 
 
-BiffReader::BiffReader(IStream *pistream, const int version, const HCRYPTHASH hcrypthash, const HCRYPTKEY hcryptkey)
-   : m_pistream(pistream)
-   , m_hcrypthash(hcrypthash)
+BiffReader::BiffReader(POLE::Stream *stream, const int version, TableHash *const hash, const HCRYPTKEY hcryptkey)
+   : m_stream(stream)
+   , m_hash(hash)
    , m_hcryptkey(hcryptkey)
    , m_version(version)
 {
 }
 
+BiffReader::BiffReader(const uint8_t *data, const uint32_t size, const int version, TableHash *const hash, const HCRYPTKEY hcryptkey)
+   : m_hash(hash)
+   , m_hcryptkey(hcryptkey)
+   , m_data(data)
+   , m_dataSize(size)
+   , m_version(version)
+{
+}
+
+uint64_t BiffReader::ReadSource(unsigned char *pv, const uint32_t count)
+{
+   if (m_stream)
+      return m_stream->read(pv, count);
+
+   const uint32_t available = (m_dataPos < m_dataSize) ? (m_dataSize - m_dataPos) : 0;
+   const uint32_t read = std::min(count, available);
+   memcpy(pv, m_data + m_dataPos, read);
+   m_dataPos += read;
+   return read;
+}
+
+bool BiffReader::ValidateLength(const int32_t len)
+{
+   const uint64_t size = m_stream ? m_stream->size() : m_dataSize;
+   const uint64_t pos = m_stream ? m_stream->tell() : m_dataPos; // May be past the end after skipping a corrupted record
+   const uint64_t remaining = pos < size ? size - pos : 0;
+   if (len < 0 || static_cast<uint64_t>(len) > remaining)
+      m_hasError = true;
+   return !m_hasError;
+}
+
 void BiffReader::ReadBytes(void * const pv, const uint32_t count)
+{
+   ReadBytesNoHash(pv, count);
+   TableHash::Update(m_hash, pv, count);
+}
+
+void BiffReader::ReadBytesNoHash(void * const pv, const uint32_t count)
 {
    const bool iow = IsOnWine();
    if (iow)
       mtx.lock();
-   ULONG read = 0;
-   m_hasError |= FAILED(m_pistream->Read(pv, count, &read));
-   m_hasError |= read != count;
+
+   m_hasError |= ReadSource(reinterpret_cast<unsigned char *>(pv), count) != count;
+
    if (iow)
       mtx.unlock();
-
-#ifndef __STANDALONE__
-   if (m_hcrypthash)
-      CryptHashData(m_hcrypthash, (BYTE *)pv, count, 0);
-#endif
 }
 
 int BiffReader::GetIntNoHash()
 {
    m_bytesinrecordremaining -= sizeof(int32_t);
 
-   ULONG read = 0;
    const bool iow = IsOnWine();
    if (iow)
       mtx.lock();
    int32_t value;
-   m_hasError |= FAILED(m_pistream->Read(&value, sizeof(int32_t), &read));
-   m_hasError |= read != sizeof(int32_t);
+   m_hasError |= ReadSource(reinterpret_cast<unsigned char *>(&value), sizeof(value)) != sizeof(value);
    if (iow)
       mtx.unlock();
    return value;
@@ -88,12 +118,12 @@ string BiffReader::AsString()
 {
    int32_t len;
    ReadBytes(&len, sizeof(int32_t));
-   if (m_hasError)
+   if (!ValidateLength(len))
       return string();
    m_bytesinrecordremaining -= len + (int)sizeof(int32_t);
    string value(len, '\0');
    ReadBytes(value.data(), len);
-   return value;
+   return string_from_utf8_or_cp1252(std::move(value)); // Text is UTF-8, older files may contain legacy ANSI
 }
 
 wstring BiffReader::AsWideString()
@@ -101,7 +131,7 @@ wstring BiffReader::AsWideString()
    // TODO it seems there used to be a bug in collection that would save string twice as long as they should => do we need special processing (truncation ?)
    int32_t len;
    ReadBytes(&len, sizeof(int32_t));
-   if (m_hasError)
+   if (!ValidateLength(len))
       return wstring();
    m_bytesinrecordremaining -= len + (int)sizeof(int32_t);
    const int numChars = len / 2;
@@ -146,18 +176,17 @@ string BiffReader::AsScript(bool isScriptProtected)
 {
    static_assert(sizeof(char) == 1);
    string script;
-   ULONG read = 0;
    int32_t cchar;
-   m_hasError |= FAILED(m_pistream->Read(&cchar, sizeof(int32_t), &read));
+   m_hasError |= ReadSource(reinterpret_cast<unsigned char *>(&cchar), sizeof(cchar)) != sizeof(cchar);
+   if (!ValidateLength(cchar))
+      return script;
 
    char *szText = new char[cchar + 1];
-   m_hasError |= FAILED(m_pistream->Read(szText, cchar, &read));
-   m_hasError |= read != cchar;
+   m_hasError |= ReadSource(reinterpret_cast<unsigned char *>(szText), cchar) != cchar;
 
-#ifndef __STANDALONE__
-   if (m_hcrypthash)
-      CryptHashData(m_hcrypthash, (BYTE *)szText, cchar, 0);
+   TableHash::Update(m_hash, szText, cchar);
 
+#ifdef VPX_HAS_CRYPTOAPI
    // if there is a valid key, then decrypt the script text (now in szText, must be done after the hash is updated)
    if (isScriptProtected && (m_hcryptkey != 0))
    {
@@ -190,16 +219,21 @@ string BiffReader::AsScript(bool isScriptProtected)
 
 FontDesc BiffReader::AsFontDescriptor()
 {
+   // This descriptor is deliberately kept out of the table hash. Fonts used to be read
+   // straight off the stream with IPersistStream::Load, which bypassed the reader, so no
+   // MAC was ever computed over these bytes: hashing them reports every (legacy) table holding a
+   // textbox or decal as corrupt. The tag itself is hashed, as it always was
+   // (The standalone build did read them through the reader and so did hash them, which made the two disagree on exactly those tables. Both skip them now)
    FontDesc fontdesc;
-   ReadBytes(&fontdesc.version, 1); // Should always be equal to 1
-   ReadBytes(&fontdesc.charset, 2);
-   ReadBytes(&fontdesc.attributes, 1);
-   ReadBytes(&fontdesc.weight, 2);
-   ReadBytes(&fontdesc.size, 4);
+   ReadBytesNoHash(&fontdesc.version, 1); // Should always be equal to 1
+   ReadBytesNoHash(&fontdesc.charset, 2);
+   ReadBytesNoHash(&fontdesc.attributes, 1);
+   ReadBytesNoHash(&fontdesc.weight, 2);
+   ReadBytesNoHash(&fontdesc.size, 4);
    uint8_t nameLen;
-   ReadBytes(&nameLen, 1);
+   ReadBytesNoHash(&nameLen, 1);
    fontdesc.name.resize(nameLen, '\0');
-   ReadBytes(fontdesc.name.data(), nameLen);
+   ReadBytesNoHash(fontdesc.name.data(), nameLen);
    return fontdesc;
 }
 
@@ -212,12 +246,15 @@ void BiffReader::AsRaw(void *pvalue, const int size)
 void BiffReader::AsObject(const std::function<bool(const int, IObjectReader &)> &processField, bool isSkippable)
 {
    const int recordSize = m_bytesinrecordremaining;
-   ULARGE_INTEGER pos;
-   if (isSkippable && m_version > 30)
+   const bool skip = isSkippable && m_version > 30;
+   const auto getStreamPos = [this]()
    {
-      LARGE_INTEGER seek {};
-      m_pistream->Seek(seek, STREAM_SEEK_CUR, &pos);
-   }
+      if (m_stream)
+         return static_cast<uint64_t>(m_stream->tell());
+      return static_cast<uint64_t>(m_dataPos);
+   };
+
+   uint64_t pos = skip ? getStreamPos() : 0;
    while (true)
    {
       if (m_version > 30)
@@ -245,6 +282,8 @@ void BiffReader::AsObject(const std::function<bool(const int, IObjectReader &)> 
          {
             PLOGI << "While reading tag " << (char)(tag & 0xFF) << (char)((tag >> 8) & 0xFF) << (char)((tag >> 16) & 0xFF) << (char)((tag >> 24) & 0xFF) << " " << m_bytesinrecordremaining
                   << " were not read and therefore skipped";
+            if (!ValidateLength(m_bytesinrecordremaining))
+               return;
             vector<uint8_t> tmp(m_bytesinrecordremaining);
             ReadBytes(tmp.data(), m_bytesinrecordremaining);
             if (m_hasError)
@@ -253,16 +292,21 @@ void BiffReader::AsObject(const std::function<bool(const int, IObjectReader &)> 
       }
    }
 
-   if (isSkippable && m_version > 30)
+   if (skip)
    {
-      LARGE_INTEGER seek {};
-      ULARGE_INTEGER newpos;
-      m_pistream->Seek(seek, STREAM_SEEK_CUR, &newpos);
-      const int sizeRead = static_cast<int>(newpos.QuadPart - pos.QuadPart);
+      uint64_t newpos = getStreamPos();
+      const int sizeRead = static_cast<int>(newpos - pos);
       if (const int toSkip = recordSize - sizeRead; toSkip > 0)
       {
-         vector<uint8_t> tmp(toSkip);
-         ReadBytes(tmp.data(), toSkip);
+         if (m_stream && !m_hash)
+         {
+            m_stream->seek(newpos + toSkip);
+         }
+         else if (ValidateLength(toSkip))
+         {
+            vector<uint8_t> tmp(toSkip);
+            ReadBytes(tmp.data(), toSkip);
+         }
       }
    }
 }

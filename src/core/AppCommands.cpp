@@ -3,16 +3,44 @@
 #include "core/stdafx.h"
 #include "AppCommands.h"
 
-#include <iostream>
-#include <fstream>
-
 #include "extern.h"
 #include "core/TournamentFile.h"
 #include "core/VPApp.h"
 #include "parts/Material.h"
 #include "parts/pintable.h"
+#include "ui/LoadProgress.h"
+#include "ui/VPXFileFeedback.h"
+#include "ui/live/LiveUI.h"
+#ifdef VPX_ENABLE_WIN32_EDITOR
 #include "ui/win/WinEditor.h"
+#endif
 #include "utils/BiffReader.h"
+#include "utils/color.h"
+
+#include "pole/pole.h"
+
+#include <iostream>
+#include <fstream>
+
+
+// A Visual Pinball table is an OLE compound file (CFB). Validate the signature so passing a
+// non-table file (wrong type, or a path typo resolving to something else) reports a clear error
+// instead of loading into a black screen.
+static bool IsTableFile(const std::filesystem::path& path)
+{
+   std::ifstream f(path, std::ios::binary);
+   if (!f.is_open())
+      return false;
+   unsigned char sig[8] = {};
+   f.read(reinterpret_cast<char*>(sig), sizeof(sig));
+   static constexpr unsigned char cfb[8] = { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
+   if (f.gcount() != static_cast<std::streamsize>(sizeof(sig)))
+      return false;
+   for (size_t k = 0; k < sizeof(sig); ++k)
+      if (sig[k] != cfb[k])
+         return false;
+   return true;
+}
 
 
 ShowInfoAndExitCommand::ShowInfoAndExitCommand(const string& title, const string& message, int exitCode)
@@ -28,9 +56,7 @@ void ShowInfoAndExitCommand::Execute()
       std::cout << m_title << "\n\n";
    if (!m_message.empty())
       std::cout << m_message << "\n\n";
-#ifndef __STANDALONE__
-   ::MessageBox(nullptr, m_message.c_str(), m_title.empty() ? "Visual Pinball" : m_title.c_str(), MB_OK);
-#endif
+   ShowMessage(MsgSeverity::Info, m_message, m_title);
    exit(m_exitCode);
 }
 
@@ -45,10 +71,37 @@ CComObject<PinTable>* TableBasedCommand::LoadTable()
    CComObject<PinTable>* table;
    CComObject<PinTable>::CreateInstance(&table);
    table->AddRef();
-   table->LoadGameFromFilename(m_tableFilename.string());
+   VPXFileFeedback feedback;
+   table->LoadGameFromFilename(m_tableFilename, feedback);
    if (!m_tableIniFileName.empty() && FileExists(m_tableIniFileName))
       table->SetSettingsFileName(m_tableIniFileName);
    return table;
+}
+
+
+// Runs consecutive player sessions on the given table, following the table switch requests made
+// through Player::SetTable with a table of a different base table (each switch ends the session and
+// restarts a new player on the requested table). The given reference on the table is adopted and
+// released by this function.
+static void RunPlayerSessions(PinTable* table, Player::PlayMode playMode, const std::function<void(Player*)>& onSessionStart = nullptr)
+{
+   while (table != nullptr)
+   {
+      PinTable* nextTable = nullptr;
+      {
+         LoadProgress loadProgress;
+         auto player = std::make_unique<Player>(table, playMode, loadProgress);
+         {
+            ScopedUserMessageSink msgSink(player->m_liveUI);
+            if (onSessionStart)
+               onSessionStart(player.get());
+            player->GameLoop();
+         }
+         nextTable = player->TakeTableSwitch(playMode);
+      }
+      table->Release();
+      table = nextTable;
+   }
 }
 
 
@@ -60,56 +113,41 @@ ExportVBSCommand::ExportVBSCommand(const std::filesystem::path& tableFilename)
 void ExportVBSCommand::Execute()
 {
    string script;
-   HRESULT hr;
-   IStorage* pstgRoot;
-   if (SUCCEEDED(hr = StgOpenStorage(m_tableFilename.wstring().c_str(), nullptr, STGM_TRANSACTED | STGM_READ, nullptr, 0, &pstgRoot)))
+   POLE::Storage rootStorage(POLE::PathToFilename(m_tableFilename).c_str());
+   rootStorage.open();
+   if (rootStorage.result() == POLE::Storage::Ok && rootStorage.exists("GameStg/Version") && rootStorage.exists("GameStg/GameData"))
    {
-      IStorage* pstgData;
-      if (SUCCEEDED(hr = pstgRoot->OpenStorage(L"GameStg", nullptr, STGM_DIRECT | STGM_READ | STGM_SHARE_EXCLUSIVE, nullptr, 0, &pstgData)))
-      {
-         int loadfileversion = 0;
-         IStream* pstmVersion;
-         if (SUCCEEDED(hr = pstgData->OpenStream(L"Version", nullptr, STGM_DIRECT | STGM_READ | STGM_SHARE_EXCLUSIVE, 0, &pstmVersion)))
+      int loadfileversion = 0;
+      POLE::Stream versionStream(&rootStorage, "GameStg/Version");
+      versionStream.read(reinterpret_cast<unsigned char*>(&loadfileversion), sizeof(int));
+      bool isProtected = false;
+      POLE::Stream gameStream(&rootStorage, "GameStg/GameData");
+      BiffReader reader(&gameStream, loadfileversion, nullptr, 0);
+      reader.AsObject(
+         [&script, &isProtected](int tag, IObjectReader& reader)
          {
-            ULONG read;
-            hr = pstmVersion->Read(&loadfileversion, sizeof(int), &read);
-            pstmVersion->Release();
-            IStream* pstmGame;
-            if (SUCCEEDED(hr = pstgData->OpenStream(L"GameData", nullptr, STGM_DIRECT | STGM_READ | STGM_SHARE_EXCLUSIVE, 0, &pstmGame)))
+            switch (tag)
             {
-               bool isProtected = false;
-               BiffReader reader(pstmGame, loadfileversion, 0, 0);
-               reader.AsObject(
-                  [&script, &isProtected](int tag, IObjectReader& reader)
-                  {
-                     switch (tag)
-                     {
-                     case FID(SECB): // old protection/encryption data
-                     {
-                        struct ProtectionData
-                        {
-                           int32_t fileversion;
-                           int32_t size;
-                           uint8_t paraphrase[16 + 8];
-                           uint32_t flags;
-                           int32_t keyversion;
-                           int32_t spare1;
-                           int32_t spare2;
-                        } protectionData;
-                        reader.AsRaw(&protectionData, sizeof(ProtectionData));
-                        isProtected = ((protectionData.flags & DISABLE_EVERYTHING) == DISABLE_EVERYTHING) || ((protectionData.flags & DISABLE_SCRIPT_EDITING) == DISABLE_SCRIPT_EDITING);
-                        break;
-                     }
-                     case FID(CODE): script = reader.AsScript(isProtected); break;
-                     }
-                     return true;
-                  });
-               pstmGame->Release();
+            case FID(SECB): // old protection/encryption data
+            {
+               struct ProtectionData
+               {
+                  int32_t fileversion;
+                  int32_t size;
+                  uint8_t paraphrase[16 + 8];
+                  uint32_t flags;
+                  int32_t keyversion;
+                  int32_t spare1;
+                  int32_t spare2;
+               } protectionData;
+               reader.AsRaw(&protectionData, sizeof(ProtectionData));
+               isProtected = ((protectionData.flags & DISABLE_EVERYTHING) == DISABLE_EVERYTHING) || ((protectionData.flags & DISABLE_SCRIPT_EDITING) == DISABLE_SCRIPT_EDITING);
+               break;
             }
-         }
-         pstgData->Release();
-      }
-      pstgRoot->Release();
+            case FID(CODE): script = reader.AsScript(isProtected); break;
+            }
+            return true;
+         });
    }
 
    //CComObject<PinTable>* table = LoadTable();
@@ -134,8 +172,8 @@ void ExportPOVCommand::Execute()
 {
    CComObject<PinTable>* table = LoadTable();
    for (int i = 0; i < 3; i++)
-      table->mViewSetups[i].SaveToTableOverrideSettings(table->m_settings, (ViewSetupID)i);
-   table->m_settings.Save();
+      table->mViewSetups[i].SaveToTableOverrideSettings(table->GetSettings(), (ViewSetupID)i);
+   table->GetSettings().Save();
    table->Release();
 }
 
@@ -145,14 +183,7 @@ PlayTableCommand::PlayTableCommand(const std::filesystem::path& tableFilename)
 {
 }
 
-void PlayTableCommand::Execute()
-{
-   CComObject<PinTable>* table = LoadTable();
-   auto player = std::make_unique<Player>(table, Player::PlayMode::Play);
-   player->GameLoop();
-   player = nullptr;
-   table->Release();
-}
+void PlayTableCommand::Execute() { RunPlayerSessions(LoadTable(), Player::PlayMode::Play); }
 
 
 AuditTableCommand::AuditTableCommand(const std::filesystem::path& tableFilename)
@@ -173,17 +204,10 @@ PovEditCommand::PovEditCommand(const std::filesystem::path& tableFilename)
 {
 }
 
-void PovEditCommand::Execute()
-{
-   CComObject<PinTable>* table = LoadTable();
-   auto player = std::make_unique<Player>(table, Player::PlayMode::EditPOV);
-   player->GameLoop();
-   player = nullptr;
-   table->Release();
-}
+void PovEditCommand::Execute() { RunPlayerSessions(LoadTable(), Player::PlayMode::EditPOV); }
 
 
-#ifndef __STANDALONE__
+#ifdef VPX_ENABLE_WIN32_EDITOR
 Win32EditCommand::Win32EditCommand()
    : Win32EditCommand(""s)
 {
@@ -201,14 +225,16 @@ void Win32EditCommand::Execute()
    vpxEditor.m_open_minimized = m_minimized;
    vpxEditor.m_disable_pause_menu = m_disablePauseMenu;
    vpxEditor.Create(nullptr);
+   Win32DialogSink msgSink(vpxEditor.GetHwnd());
+   ScopedUserMessageSink scopedMsgSink(&msgSink);
    vpxEditor.LoadEditorSetupFromSettings();
    if (!m_tableFilename.empty() && FileExists(m_tableFilename))
    {
-      vpxEditor.LoadFileName(m_tableFilename.string(), true);
+      vpxEditor.LoadFileName(m_tableFilename, true);
       if (!m_tableIniFileName.empty() && FileExists(m_tableIniFileName) && vpxEditor.GetActiveTable())
          vpxEditor.GetActiveTable()->SetSettingsFileName(m_tableIniFileName);
    }
-   else if (g_app->m_settings.GetEditor_SelectTableOnStart())
+   else if (g_settingsService.GetAppSettings().GetEditor_SelectTableOnStart())
    {
       vpxEditor.m_table_played_via_SelectTableOnStart = vpxEditor.LoadFile(false);
       if (vpxEditor.m_table_played_via_SelectTableOnStart)
@@ -232,11 +258,44 @@ LiveEditCommand::LiveEditCommand(const std::filesystem::path& tableFilename)
 
 void LiveEditCommand::Execute()
 {
-   CComObject<PinTable>* table = LoadTable();
-   auto player = std::make_unique<Player>(table, Player::PlayMode::FullEdit);
-   player->GameLoop();
-   player = nullptr;
-   table->Release();
+   CComObject<PinTable>* table;
+   CComObject<PinTable>::CreateInstance(&table);
+   table->AddRef();
+   VPXFileFeedback feedback;
+
+   // Try to load the requested table, if a filename was provided
+   bool loadFailed = false;
+   if (!m_tableFilename.empty())
+   {
+      HRESULT hr = E_FAIL;
+      if (IsTableFile(m_tableFilename))
+         hr = table->LoadGameFromFilename(m_tableFilename, feedback);
+      // Same as the Win32 editor: hash/corrupt content errors still keep the loaded table
+      loadFailed = FAILED(hr) && (hr != APPX_E_BLOCK_HASH_INVALID) && (hr != APPX_E_CORRUPT_CONTENT);
+   }
+
+   if (m_tableFilename.empty() || loadFailed)
+   {
+      // No table was provided, or loading it failed: fall back to the default table (same as 'New Table' in the editor)
+      table->m_glassTopHeight = table->m_glassBottomHeight = 210;
+      for (int i = 0; i < 16; i++)
+         table->m_rgcolorcustom[i] = RGB(0, 0, 0);
+      table->LoadGameFromFilename(g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets, "blankTable.vpx"), feedback);
+      table->m_title = "Table1"s;
+      table->GetSettings().SetIniPath(std::filesystem::path());
+      table->m_filename.clear();
+   }
+
+   if (!m_tableIniFileName.empty() && FileExists(m_tableIniFileName))
+      table->SetSettingsFileName(m_tableIniFileName);
+
+   bool notifyLoadFailed = loadFailed;
+   RunPlayerSessions(table, Player::PlayMode::FullEdit,
+      [&](Player* player)
+      {
+         if (std::exchange(notifyLoadFailed, false))
+            player->m_liveUI->PushNotification("Failed to load table '" + PathToUTF8(m_tableFilename) + "', starting with a new table", 10000);
+      });
 }
 
 
@@ -253,7 +312,9 @@ void CaptureAttractCommand::Execute()
    PLOGI << "Video capture mode requested for " << m_nFrames << " frames at " << m_framesPerSecond << "FPS from table '" << m_tableFilename << "' " << (m_cutToLoop ? "with " : "without ")
          << "loop truncation";
    CComObject<PinTable>* table = LoadTable();
-   auto player = std::make_unique<Player>(table, Player::PlayMode::CaptureAttract);
+   LoadProgress loadProgress;
+   auto player = std::make_unique<Player>(table, Player::PlayMode::CaptureAttract, loadProgress);
+   ScopedUserMessageSink msgSink(nullptr); // Batch capture: report user messages to the log only
    player->m_nFrameToCapture = m_nFrames;
    player->m_frameCaptureFPS = m_framesPerSecond;
    player->m_cutCaptureToLoop = m_cutToLoop;
@@ -288,16 +349,16 @@ enum option_names
    OPTION_H,
    OPTION_HELP,
    OPTION_QMARK,
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_REGISTERED_TYPELIB
    OPTION_UNREGSERVER,
    OPTION_REGSERVER,
+#endif
+#ifdef VPX_ENABLE_WIN32_EDITOR
    OPTION_MINIMIZED,
    OPTION_EXTMINIMIZED,
    OPTION_EDIT,
 #endif
-#ifdef _DEBUG
    OPTION_LIVE_EDIT,
-#endif
    OPTION_PLAY,
    OPTION_POVEDIT,
    OPTION_POV,
@@ -336,16 +397,16 @@ static const CommandLineOption options[] = {
    { OPTION_H, "h"s, string() },
    { OPTION_HELP, "help"s, string() },
    { OPTION_QMARK, "?"s, string() },
-#ifndef __STANDALONE__
+#ifdef VPX_HAS_REGISTERED_TYPELIB
    { OPTION_UNREGSERVER, "UnregServer"s, "Unregister VP functions"s },
    { OPTION_REGSERVER, "RegServer"s,"Register VP functions"s },
+#endif
+#ifdef VPX_ENABLE_WIN32_EDITOR
    { OPTION_MINIMIZED, "Minimized"s, "Start the windows editor in the 'invisible' minimized window mode"s },
    { OPTION_EXTMINIMIZED, "ExtMinimized"s, "Start the windows editor in the 'invisible' minimized window mode, but with enabled Pause Menu"s },
    { OPTION_EDIT, "Edit"s, "[filename]  Load file into VP"s },
 #endif
-#ifdef _DEBUG
-   { OPTION_LIVE_EDIT, "LiveEdit"s, "[opt filename]  Start in live editor mode. if a filename is provided, loads it as the table to edit"s },
-#endif
+   { OPTION_LIVE_EDIT, "LiveEdit"s, "[opt filename]  Start in live editor mode. if a filename is provided, loads it as the table to edit. WARNING Unstable feature only provided for early testing"s },
    { OPTION_PLAY, "Play"s, "[filename]  Load and play file"s },
    { OPTION_POVEDIT, "PovEdit"s, "[filename]  Load and run file in live editing mode, then export new pov on exit"s },
    { OPTION_POV, "Pov"s, "[filename]  Load, export pov and close"s },
@@ -384,7 +445,7 @@ std::filesystem::path CommandLineProcessor::GetPathFromArg(const string& arg)
    if (pathString.length() >= 2 && pathString[0] == '"') // Remove " "
       pathString = pathString.substr(1, pathString.size() - 2);
 
-   std::filesystem::path path(pathString);
+   std::filesystem::path path = PathFromUTF8(pathString);
    path = std::filesystem::absolute(path);
    path = std::filesystem::weakly_canonical(path);
    return path;
@@ -403,39 +464,14 @@ string CommandLineProcessor::GetCommandLineHelp()
    return ss.str();
 }
 
-void CommandLineProcessor::OnCommandLineError(const string& title, const string& message)
-{
-   #ifndef __STANDALONE__
-      MessageBox(nullptr, message.c_str(), title.c_str(), MB_ICONERROR);
-   #else
-      std::cout << title << "\n\n" << message << "\n\n";
-   #endif
-}
-
-// A Visual Pinball table is an OLE compound file (CFB). Validate the signature so passing a
-// non-table file (wrong type, or a path typo resolving to something else) reports a clear error
-// instead of loading into a black screen.
-static bool IsTableFile(const std::filesystem::path& path)
-{
-   std::ifstream f(path, std::ios::binary);
-   if (!f.is_open())
-      return false;
-   unsigned char sig[8] = {};
-   f.read(reinterpret_cast<char*>(sig), sizeof(sig));
-   static constexpr unsigned char cfb[8] = { 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
-   if (f.gcount() != static_cast<std::streamsize>(sizeof(sig)))
-      return false;
-   for (size_t k = 0; k < sizeof(sig); ++k)
-      if (sig[k] != cfb[k])
-         return false;
-   return true;
-}
+void CommandLineProcessor::OnCommandLineError(const string& title, const string& message) { ShowMessage(MsgSeverity::Error, message, title); }
 
 void CommandLineProcessor::ProcessCommandLine()
 {
 #ifndef __STANDALONE__
    int nArgs;
-   const char** szArglist = CommandLineToArgvA(GetCommandLine(), &nArgs);
+   const string commandLine = MakeString(GetCommandLineW()); // UTF-8 like all strings (the narrow command line is in the ANSI code page)
+   const char** szArglist = CommandLineToArgvA(commandLine.c_str(), &nArgs);
    ProcessCommandLine(nArgs, szArglist);
    free(szArglist);
 #else
@@ -474,12 +510,12 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             std::filesystem::path filename = GetPathFromArg(szArglist[i]);
             if (!std::filesystem::exists(filename))
             {
-               OnCommandLineError("Command Line Error"s, "Table file '" + filename.string() + "' was not found");
+               OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(filename) + "' was not found");
                exit(1);
             }
             if (!IsTableFile(filename))
             {
-               OnCommandLineError("Command Line Error"s, "'" + filename.string() + "' is not a Visual Pinball table (.vpx)");
+               OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(filename) + "' is not a Visual Pinball table (.vpx)");
                exit(1);
             }
             commands.push_back(std::make_unique<PlayTableCommand>(filename));
@@ -548,7 +584,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          }
          break;
 
-      #ifndef __STANDALONE__
+      #ifdef VPX_HAS_REGISTERED_TYPELIB
       case OPTION_UNREGSERVER:
          defaultToWin32Editor = false;
          VPApp::m_module.UpdateRegistryFromResource(IDR_VPINBALL, FALSE);
@@ -564,7 +600,9 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             ShowError("Register VP functions failed");
          exit(0);
          break;
+      #endif
 
+      #ifdef VPX_ENABLE_WIN32_EDITOR
       case OPTION_MINIMIZED:
          win32EditorMinimized = true;
          break;
@@ -609,12 +647,13 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          commands.push_back(std::make_unique<ShowInfoAndExitCommand>("", "Visual Pinball "s + VP_VERSION_STRING_FULL_LITERAL, 0));
          break;
 
-      #ifdef _DEBUG
       case OPTION_LIVE_EDIT:
          if (i + 1 < nArgs)
          {
             const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 1]);
-            if (FileExists(tableFileName))
+            // Take the next argument as the table filename unless it is another option. A missing or
+            // invalid file is still passed along so the command can report the load failure.
+            if (FileExists(tableFileName) || ((szArglist[i + 1][0] != '-') && (szArglist[i + 1][0] != '/')))
             {
                commands.push_back(std::make_unique<LiveEditCommand>(tableFileName));
                i++;
@@ -629,14 +668,13 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             commands.push_back(std::make_unique<LiveEditCommand>());
          }
          break;
-      #endif
 
       case OPTION_POVEDIT:
       case OPTION_PLAY:
       case OPTION_AUDIT:
       case OPTION_POV:
       case OPTION_EXTRACTVBS:
-      #ifndef __STANDALONE__
+      #ifdef VPX_ENABLE_WIN32_EDITOR
          case OPTION_EDIT:
       #endif
       {
@@ -650,12 +688,12 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
 
          if (!FileExists(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "Table file '" + tableFileName.string() + "' was not found");
+            OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          else if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "'" + tableFileName.string() + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
             exit(1);
          }
          else
@@ -667,9 +705,10 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
             case OPTION_AUDIT: commands.push_back(std::make_unique<AuditTableCommand>(tableFileName)); break;
             case OPTION_POV: commands.push_back(std::make_unique<ExportPOVCommand>(tableFileName)); break;
             case OPTION_EXTRACTVBS: commands.push_back(std::make_unique<ExportVBSCommand>(tableFileName)); break;
-            #ifndef __STANDALONE__
+            #ifdef VPX_ENABLE_WIN32_EDITOR
             case OPTION_EDIT: commands.push_back(std::make_unique<Win32EditCommand>(tableFileName)); break;
             #endif
+            default: break;
             }
          }
          break;
@@ -697,12 +736,12 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          const std::filesystem::path tableFileName = GetPathFromArg(szArglist[i + 3]);
          if (!FileExists(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "Table file '" + tableFileName.string() + "' was not found");
+            OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "'" + tableFileName.string() + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
             exit(1);
          }
          bool captureAttractLoop = true;
@@ -731,19 +770,19 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
          i++;
          if (!FileExists(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "Table file '" + tableFileName.string() + "' was not found");
+            OnCommandLineError("Command Line Error"s, "Table file '" + PathToUTF8(tableFileName) + "' was not found");
             exit(1);
          }
          if (!IsTableFile(tableFileName))
          {
-            OnCommandLineError("Command Line Error"s, "'" + tableFileName.string() + "' is not a Visual Pinball table (.vpx)");
+            OnCommandLineError("Command Line Error"s, '\'' + PathToUTF8(tableFileName) + "' is not a Visual Pinball table (.vpx)");
             exit(1);
          }
-         const std::filesystem::path tournamentFileName = GetPathFromArg(szArglist[i + 2]);
+         const std::filesystem::path tournamentFileName = GetPathFromArg(szArglist[i + 1]);
          i++;
          if (!FileExists(tournamentFileName))
          {
-            OnCommandLineError("Command Line Error"s, "Tournament file '" + tournamentFileName.string() + "' was not found");
+            OnCommandLineError("Command Line Error"s, "Tournament file '" + PathToUTF8(tournamentFileName) + "' was not found");
             exit(1);
          }
          commands.push_back(std::make_unique<ValidateTournamentCommand>(tableFileName, tournamentFileName));
@@ -766,7 +805,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
       }
    }
 
-   #ifndef __STANDALONE__
+   #ifdef VPX_ENABLE_WIN32_EDITOR
    if (defaultToWin32Editor && commands.empty())
       commands.push_back(std::make_unique<Win32EditCommand>());
    #endif
@@ -782,7 +821,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
       commands.push_back(std::make_unique<ShowInfoAndExitCommand>("Visual Pinball Usage"s, GetCommandLineHelp(), 0));
    m_command = std::move(commands[0]);
 
-   #ifndef __STANDALONE__
+   #ifdef VPX_ENABLE_WIN32_EDITOR
    if (win32EditorMinimized)
    {
       if (auto win32EditCmd = dynamic_cast<Win32EditCommand*>(m_command.get()); win32EditCmd)
@@ -822,7 +861,7 @@ void CommandLineProcessor::ProcessCommandLine(int nArgs, const char* szArglist[]
       }
       if (!FileExists(tableIniFileName))
       {
-         OnCommandLineError("Command Line Error"s, "Table ini file '" + tableIniFileName.string() + "' was not found");
+         OnCommandLineError("Command Line Error"s, "Table ini file '" + PathToUTF8(tableIniFileName) + "' was not found");
          exit(1);
       }
       tableCmd->SetTableIniFileName(tableIniFileName);

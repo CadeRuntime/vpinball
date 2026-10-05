@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "parts/dragpoint.h"
+#include "core/resourceid.h"
+#include "math/dragpoint.h"
 #include "parts/Material.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 
@@ -44,25 +44,23 @@ class Ramp :
    public EventProxy<Ramp, &DIID_IRampEvents>,
    public IConnectionPointContainerImpl<Ramp>,
    public IProvideClassInfo2Impl<&CLSID_Ramp, &DIID_IRampEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
    public IScriptable,
-   public IHaveDragPoints,
    public IFireEvents,
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
    HRESULT FireDispID(const DISPID dispid, DISPPARAMS * const pdispparams) final;
 #endif
    Ramp()
+      : m_curve(this, 2)
    {
-      m_menuid = IDR_SURFACEMENU;
       m_d.m_collidable = true;
       m_d.m_visible = true;
       m_d.m_depthBias = 0.0f;
@@ -86,54 +84,49 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IRampEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Ramp, eItemRamp, RAMP, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Ramp, eItemRamp, RAMP)
 
-      //DECLARE_NOT_AGGREGATABLE(Ramp)
-      // Remove the comment from the line above if you don't want your object to
-      // support aggregation.
+   //DECLARE_NOT_AGGREGATABLE(Ramp)
+   // Remove the comment from the line above if you don't want your object to
+   // support aggregation.
 
    DECLARE_REGISTRY_RESOURCEID(IDR_RAMP)
 
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
-   void RenderBlueprint(Sur *psur, const bool solid) final;
-
    void ClearForOverwrite() final;
-
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
-
-#ifndef __STANDALONE__
-   void DoCommand(int icmd, int x, int y) final;
-#endif
-
-   int GetMinimumPoints() const final { return 2; }
 
    void FlipY(const Vertex2D& pvCenter) final;
    void FlipX(const Vertex2D& pvCenter) final;
    void Rotate(const float ang, const Vertex2D &pvCenter, const bool useElementCenter) final;
    void Scale(const float scalex, const float scaley, const Vertex2D &pvCenter, const bool useElementCenter) final;
-   void Translate(const Vertex2D &pvOffset) final;
+   void Translate(const Vertex2D &offset) final;
 
-   Vertex2D GetCenter() const final { return GetPointCenter(); }
-   void PutCenter(const Vertex2D &pv) final { PutPointCenter(pv); }
+   Vertex2D GetCenter() const final { return m_curve.GetCenter(); }
 
    void GetBoundingVertices(vector<Vertex3Ds> &bounds, vector<Vertex3Ds> *const legacy_bounds) final;
 
    float GetDepth(const Vertex3Ds &viewDir) const final;
-   ItemTypeEnum HitableGetItemType() const final { return eItemRamp; }
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader &loader) final;
-   void AddPoint(int x, int y, const bool smooth) final;
-   void UpdateStatusBarInfo() final;
 
    void WriteRegDefaults() final;
+
+   void AddPoint(const Vertex2D &v, const bool smooth);
 
    float GetSurfaceHeight(float x, float y) const;
    bool IsHabitrail() const;
 
+   // Computes the vertices and additional information for the ramp shape.
+   // Also refreshes the drag points' m_calcHeight display cache (derived value, written through the owned DragPoint pointers)
+   Vertex2D *GetRampVertex(
+      int &pcvertex, float **const ppheight, bool **const ppfCross, float **const ppratio, Vertex2D **const pMiddlePoints, const float _accuracy, const bool inc_width) const;
+
    RampData m_d;
+
+   // The ramp center curve (drag points defining the ramp path)
+   DragPointCurve m_curve;
 
 private:
    Renderer *m_renderer = nullptr;
@@ -172,13 +165,13 @@ private:
 
       accuracy = 4.0f*powf(10.0f, (10.0f - accuracy)*(float)(1.0 / 1.5)); // min = 4 (highest accuracy/detail level), max = 4 * 10^(10/1.5) = ~18.000.000 (lowest accuracy/detail level)
 
-      IHaveDragPoints::GetRgVertex(vv, false, accuracy);
+      m_curve.GetRgVertex(vv, false, accuracy);
    }
 
-   Vertex2D *GetRampVertex(int &pcvertex, float ** const ppheight, bool ** const ppfCross, float ** const ppratio, Vertex2D **const pMiddlePoints, const float _accuracy, const bool inc_width);
    void PrepareHabitrail();
 
-   void AssignHeightToControlPoint(const RenderVertex3D &v, const float height);
+   // Updates the m_calcHeight display cache of matching drag points (derived value, written through the owned DragPoint pointers)
+   void AssignHeightToControlPoint(const RenderVertex3D &v, const float height) const;
 
    void AddJoint(class PhysicsEngine *physics, const Vertex3Ds &v1, const Vertex3Ds &v2, const bool isUI);
    void AddJoint2D(class PhysicsEngine *physics, const Vertex2D &p, const float zlow, const float zhigh, const bool isUI);

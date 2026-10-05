@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "ui/win/resource.h"
+#include "core/resourceid.h"
 #include "utils/eventproxy.h"
 #include "utils/fileio.h"
 #include "timer.h"
@@ -43,14 +43,13 @@ class PartGroup :
    public EventProxy<PartGroup, &DIID_IPartGroupEvents>,
    public IConnectionPointContainerImpl<PartGroup>,
    public IProvideClassInfo2Impl<&CLSID_PartGroup, &DIID_IPartGroupEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IScriptable,
    public IFireEvents,
-   public IPerPropertyBrowsing     // Ability to fill in dropdown(s) in property browser
+   public IPerPropertyBrowsing // Ability to fill in dropdown(s) in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -72,14 +71,10 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IPartGroupEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES_NO_RENDERABLE_NO_HITABLE(PartGroup, eItemPartGroup, PARTGROUP, VIEW_PLAYFIELD | VIEW_BACKGLASS)
+   STANDARD_EDITABLE_DECLARES_NO_RENDERABLE_NO_HITABLE(PartGroup, eItemPartGroup, PARTGROUP)
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D& offset) final;
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D& pv) final;
-
-   void RenderBlueprint(Sur *psur, const bool solid) final;
 
    void WriteRegDefaults() final;
 

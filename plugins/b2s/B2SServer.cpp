@@ -4,12 +4,18 @@
 
 #include "B2SServer.h"
 
-namespace B2S {
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <random>
 
-B2SServer* B2SServer::m_singleton = nullptr;
+#include "plugins/PluginStrings.h"
+
+namespace B2S
+{
 
 B2SServer::B2SServer(const MsgPluginAPI* const msgApi, unsigned int endpointId, const VPXPluginAPI* const vpxApi, ScriptClassDef* serverClassDef)
-   : m_controllerClassProxy(msgApi, endpointId, "PinMAME_", "PinMAME_Controller", "B2S_", serverClassDef)
+   : m_controllerClassProxy(msgApi, endpointId, "PinMAME_"s, "PinMAME_Controller"s, "B2S_"s, serverClassDef)
    , m_controllerProxy(m_controllerClassProxy)
    , m_msgApi(msgApi)
    , m_endpointId(endpointId)
@@ -17,22 +23,21 @@ B2SServer::B2SServer(const MsgPluginAPI* const msgApi, unsigned int endpointId, 
    , m_onGetAuxRendererId(msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_AUX_RENDERER))
    , m_onAuxRendererChgId(msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_EVT_AUX_RENDERER_CHG))
    , m_ancillaryRendererDef({ "B2S", "B2S Backglass & FullDMD", "Renderer for directb2s backglass files", this, OnRender })
-   , m_onGameStartId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_START))
-   , m_onGameEndId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_END))
-   , m_onGetDevSrcId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG))
-   , m_onDevSrcChgId(msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_ON_SRC_CHG_MSG))
+   , m_onStateChangeEventId(msgApi->GetMsgID("B2S", "OnStateChange:1"))
+   , m_exposedControllers(msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG)
+   , m_exposedStates(msgApi, endpointId, CTLPI_STATE_GET_SRC_MSG, CTLPI_STATE_ON_SRC_CHG_MSG)
 {
-   m_singleton = this;
-
-   VPXTableInfo tableInfo;
+   VPXTableInfo tableInfo {};
    m_vpxApi->GetTableInfo(&tableInfo);
 
    // Search for an exact match (same file name with .directb2s extension)
-   const std::filesystem::path tablePath(tableInfo.path);
-   std::filesystem::path b2sFilename = find_case_insensitive_file_path(tablePath.parent_path() / tablePath.filename().replace_extension(".directb2s"));
+   const std::filesystem::path tablePath = PluginStrings::PathFromNative(tableInfo.path);
+   std::filesystem::path b2sFilename;
+   if (!tablePath.empty())
+      b2sFilename = find_case_insensitive_file_path(tablePath.parent_path() / tablePath.filename().replace_extension(".directb2s"));
 
    // Search for a file matching the template 'foldername.directb2s' for file layout where tables are located in a folder with their companion files (b2s, pup, flex, music, ...)
-   if (b2sFilename.empty())
+   if (b2sFilename.empty() && !tablePath.empty())
    {
       std::filesystem::path folderName = tablePath.parent_path().filename();
       folderName += ".directb2s"sv;
@@ -46,14 +51,28 @@ B2SServer::B2SServer(const MsgPluginAPI* const msgApi, unsigned int endpointId, 
          std::shared_ptr<B2STable> b2s;
          try
          {
+            std::ifstream file(path, std::ios::binary);
+            if (!file)
+            {
+               LOGE("Failed to open B2S file: " + PluginStrings::PathToUTF8(path));
+               return b2s;
+            }
+            const std::string buffer((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             tinyxml2::XMLDocument b2sTree;
-            b2sTree.LoadFile(path.string().c_str());
+            if (b2sTree.Parse(buffer.c_str(), buffer.size()) != tinyxml2::XML_SUCCESS)
+            {
+               const char* const error = b2sTree.ErrorStr();
+               LOGE("Failed to parse B2S file: " + PluginStrings::PathToUTF8(path) + " (" + (error ? error : "") + ')');
+               return b2s;
+            }
             if (b2sTree.FirstChildElement("DirectB2SData"))
                b2s = std::make_shared<B2STable>(*b2sTree.FirstChildElement("DirectB2SData"));
+            else
+               LOGE("Invalid B2S file: " + PluginStrings::PathToUTF8(path));
          }
          catch (...)
          {
-            LOGE("Failed to load B2S file: " + path.string());
+            LOGE("Failed to load B2S file: " + PluginStrings::PathToUTF8(path));
          }
          return b2s;
       };
@@ -64,153 +83,72 @@ B2SServer::B2SServer(const MsgPluginAPI* const msgApi, unsigned int endpointId, 
    m_msgApi->SubscribeMsg(m_endpointId, m_onGetAuxRendererId, OnGetRenderer, this);
    m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
 
-   m_devSrc.id.endpointId = m_endpointId;
-   m_devSrc.GetByteState = GetByteState;
-   m_devSrc.GetFloatState = GetFloatState;
-   m_devSrc.SetChangeCallback = RegisterStateChangeCallback;
-   m_msgApi->SubscribeMsg(m_endpointId, m_onGetDevSrcId, OnGetDevSrc, this);
-   UpdateDevSrc();
+   m_b2sName = "b2s::"sv;
+   SetB2SName(""s);
 }
 
 B2SServer::~B2SServer()
 {
    if (m_loadedB2S.valid())
-      m_loadedB2S.get();
+      m_loadedB2S.wait();
    m_renderer = nullptr;
 
-   if (m_gameRunning)
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
-   m_msgApi->ReleaseMsgID(m_onGameStartId);
-   m_msgApi->ReleaseMsgID(m_onGameEndId);
-
-   if (m_states.size() > 0)
-   {
-      m_states.clear();
-      UpdateDevSrc();
-   }
+   m_gameRunning = false;
+   m_exposedControllers.ClearItems();
+   m_exposedStates.ClearItems();
 
    m_msgApi->UnsubscribeMsg(m_onGetAuxRendererId, OnGetRenderer, this);
    m_msgApi->BroadcastMsg(m_endpointId, m_onAuxRendererChgId, nullptr);
    m_msgApi->ReleaseMsgID(m_onGetAuxRendererId);
    m_msgApi->ReleaseMsgID(m_onAuxRendererChgId);
+   m_msgApi->ReleaseMsgID(m_onStateChangeEventId);
 
-   m_msgApi->UnsubscribeMsg(m_onGetDevSrcId, OnGetDevSrc, this);
-   m_msgApi->ReleaseMsgID(m_onGetDevSrcId);
-   m_msgApi->ReleaseMsgID(m_onDevSrcChgId);
-   
    if (m_onDestroyHandler)
       m_onDestroyHandler(this);
-   
-   m_singleton = nullptr;
+}
+
+static std::string CreateGuidString()
+{
+   std::random_device rd;
+   std::mt19937_64 gen(rd());
+   std::uniform_int_distribution<uint64_t> dist;
+
+   uint64_t hi = dist(gen);
+   uint64_t lo = dist(gen);
+
+   // Set UUID version (4) and variant bits per RFC 4122
+   hi = (hi & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
+   lo = (lo & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+
+   char buf[37];
+   std::snprintf(buf, sizeof(buf),
+      "%08llx-%04llx-%04llx-%04llx-%012llx",
+      (hi >> 32) & 0xFFFFFFFFULL,
+      (hi >> 16) & 0xFFFFULL,
+      hi & 0xFFFFULL,
+      (lo >> 48) & 0xFFFFULL,
+      lo & 0xFFFFFFFFFFFFULL);
+
+   return std::string(buf);
 }
 
 string B2SServer::GetB2SName() const { return m_b2sName; }
 
-void B2SServer::SetB2SName(const std::string& b2sName) { 
+void B2SServer::SetB2SName(const std::string& b2sName)
+{
    if (b2sName == m_b2sName)
       return;
-   if (m_gameRunning)
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
    m_b2sName = b2sName;
-   if (m_gameRunning)
-   {
-      CtlOnGameStartMsg msg = { m_b2sName.c_str(), 0 };
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameStartId, reinterpret_cast<void*>(&msg));
-   }
-}
-
-void B2SServer::OnGetDevSrc(const unsigned int, void* userData, void* msgData)
-{
-   auto me = static_cast<B2SServer*>(userData);
-   auto msg = static_cast<GetDevSrcMsg*>(msgData);
-
-   if (msg->count < msg->maxEntryCount)
-      memcpy(&msg->entries[msg->count], &me->m_devSrc, sizeof(DevSrcId));
-   msg->count++;
-}
-
-void B2SServer::UpdateDevSrc()
-{
-   if (m_gameRunning && m_states.empty())
-   {
-      m_gameRunning = false;
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameEndId, nullptr);
-   }
-   else if (!m_gameRunning && !m_states.empty())
-   {
-      m_gameRunning = true;
-      CtlOnGameStartMsg msg = { m_b2sName.c_str(), 0 };
-      m_msgApi->BroadcastMsg(m_endpointId, m_onGameStartId, reinterpret_cast<void*>(&msg));
-   }
-
-   delete[] m_devSrc.deviceDefs;
-   m_devSrc.nDevices = static_cast<unsigned int>(m_states.size());
-   m_devSrc.deviceDefs = new DeviceDef[m_devSrc.nDevices];
-   m_devSrcNames.resize(m_devSrc.nDevices);
-   uint16_t index = 0;
-   for (const auto& [id, v] : m_states)
-   {
-      m_devSrcNames[index] = std::format("B2S.Data #{}", id);
-      m_devSrc.deviceDefs[index].name = m_devSrcNames[index].c_str();
-      m_devSrc.deviceDefs[index].id.groupId = 0x0001;
-      m_devSrc.deviceDefs[index].id.deviceId = static_cast<uint16_t>(id);
-      index++;
-   }
-   m_stateChgCallbacks.clear();
-   m_msgApi->BroadcastMsg(m_endpointId, m_onDevSrcChgId, nullptr);
-}
-
-uint8_t MSGPIAPI B2SServer::GetByteState(const unsigned int deviceIndex)
-{
-   if (B2SServer::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-      return 0;
-   int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   return static_cast<uint8_t>(m_singleton->GetState(b2sId) * 255.f);
-}
-
-float MSGPIAPI B2SServer::GetFloatState(const unsigned int deviceIndex)
-{
-   if (B2SServer::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-      return 0.f;
-   int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   return m_singleton->GetState(b2sId);
-}
-
-void MSGPIAPI B2SServer::RegisterStateChangeCallback(unsigned int deviceIndex, int isRegister, ctlpi_chg_callback cb, void* ctx)
-{
-   if (B2SServer::m_singleton == nullptr || deviceIndex >= m_singleton->m_devSrc.nDevices)
-   {
-      LOGE("Invalid state listener registration requested"s);
-      assert(false);
-      return;
-   }
-   const int b2sId = m_singleton->m_devSrc.deviceDefs[deviceIndex].id.deviceId;
-   if (auto mapIt = m_singleton->m_stateChgCallbacks.find(b2sId); mapIt == m_singleton->m_stateChgCallbacks.end())
-      m_singleton->m_stateChgCallbacks[b2sId] = vector<ChgCallback>();
-   auto& callbacks = m_singleton->m_stateChgCallbacks[b2sId];
-   auto it = std::ranges::find_if(callbacks, [&cb, ctx](const ChgCallback& a) { return a.m_callback == cb && a.m_context == ctx; });
-   if (isRegister)
-   {
-      if (it != callbacks.end())
-      {
-         LOGE("Requested to register an already registered state change listener"s);
-      }
-      else
-      {
-         callbacks.emplace_back(cb, deviceIndex, ctx);
-      }
-   }
+   string id = trim_string(b2sName);
+   if (id.empty())
+      m_controllerGameId = "b2s::" + CreateGuidString();
    else
-   {
-      if (it != callbacks.end())
-      {
-         callbacks.erase(it);
-      }
-      else
-      {
-         LOGE("Requested to unregister an unknown state change listener"s);
-      }
-   }
+      m_controllerGameId = "b2s::" + string_to_lower(id);
+
+   if (m_gameRunning)
+      m_exposedControllers.SetItem({ m_endpointId, m_controllerGameId.c_str() });
+   else
+      m_exposedControllers.ClearItems();
 }
 
 int B2SServer::OnRender(VPXRenderContext2D* ctx, void* userData)
@@ -226,7 +164,11 @@ int B2SServer::OnRender(VPXRenderContext2D* ctx, void* userData)
    {
       if (me->m_loadedB2S.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
       {
-         me->m_renderer = std::make_unique<B2SRenderer>(me->m_msgApi, me->m_endpointId, me->m_loadedB2S.get());
+         // get() invalidates the future, so a failed load is not retried on the next frames
+         std::shared_ptr<B2STable> loadedB2S = me->m_loadedB2S.get();
+         if (loadedB2S == nullptr)
+            return false;
+         me->m_renderer = std::make_unique<B2SRenderer>(me->m_msgApi, me->m_vpxApi, me->m_endpointId, loadedB2S);
          me->m_renderer->Render(ctx, me);
       }
       return true; // Until loaded, we assume that the file will succeed loading with the expected backglass/score view
@@ -247,62 +189,257 @@ void B2SServer::OnGetRenderer(const unsigned int, void* userData, void* msgData)
    }
 }
 
-
-
-void B2SServer::B2SSetData(int b2sId, int value)
+void B2SServer::ForwardCall(void* me, int memberIndex, ScriptVariant* pArgs, ScriptVariant* pRet)
 {
-   LOGD(std::format("B2SSetData {}={}", b2sId, value));
-   const auto it = m_states.find(b2sId);
-   if (it == m_states.end())
+   m_controllerProxy.ForwardCall(me, memberIndex, pArgs, pRet);
+
+   const char* methodName = m_controllerProxy.GetProxyClass().GetProxyClassDef()->members[memberIndex].name.name;
+   if (methodName == "GameName"sv)
    {
-      m_states[b2sId] = static_cast<float>(value);
-      UpdateDevSrc();
+      SetB2SName("");
    }
-   else
+   else if (methodName == "Run"sv)
    {
-      it->second = static_cast<float>(value);
-      const auto chgIt = m_stateChgCallbacks.find(b2sId);
-      if (chgIt != m_stateChgCallbacks.end())
+      if (!m_gameRunning)
       {
-         for (const auto& cb : chgIt->second)
-            cb.m_callback(cb.m_index, cb.m_context);
+         m_gameRunning = true;
+         m_exposedControllers.SetItem({ m_endpointId, m_controllerGameId.c_str() });
+      }
+   }
+   else if (methodName == "Stop"sv)
+   {
+      if (m_gameRunning)
+      {
+         m_gameRunning = false;
+         m_exposedControllers.ClearItems();
       }
    }
 }
 
-void B2SServer::B2SSetData(const std::string& group, int value)
-{
+// Game states
 
+struct B2SPluginEvent
+{
+   uint8_t type;
+   int32_t index;
+   int32_t value;
+};
+
+void B2SServer::UpdateStateSrc()
+{
+   // Ensure that no other thread is using the exposed states while we are updating them
+   m_exposedStates.ClearItems();
+
+   {
+      m_lampStateDefs.clear();
+      m_lampStateIds.clear();
+      m_lampStateIds.reserve(m_lampStates.size());
+      for (const auto& [id, _] : m_lampStates)
+         m_lampStateIds.push_back({ this, id });
+      std::ranges::sort(m_lampStateIds, [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+      m_lampStateNames.resize(m_lampStates.size());
+      for (size_t index = 0; index < m_lampStateIds.size(); ++index)
+      {
+         const auto id = m_lampStateIds[index].id;
+         m_lampStateNames[index] = std::format("Illumination #{}", id);
+         if (id >= 0 && id < 64 && (m_defaultStateNameMask & (1ull << id))) // Script provided ids may be out of the mask range
+         {
+            switch (id)
+            {
+            case 25: m_lampStateNames[index] = "Player #1 Active"sv; break;
+            case 26: m_lampStateNames[index] = "Player #2 Active"sv; break;
+            case 27: m_lampStateNames[index] = "Player #3 Active"sv; break;
+            case 28: m_lampStateNames[index] = "Player #4 Active"sv; break;
+            case 30: m_lampStateNames[index] = "Player Up"sv; break;
+            case 31: m_lampStateNames[index] = "Can Play"sv; break;
+            case 32: m_lampStateNames[index] = "Ball In Play"sv; break;
+            case 33: m_lampStateNames[index] = "Tilt"sv; break;
+            case 34: m_lampStateNames[index] = "Match"sv; break;
+            case 35: m_lampStateNames[index] = "Game Over"sv; break;
+            case 36: m_lampStateNames[index] = "Shoot Again"sv; break;
+            }
+         }
+         m_lampStateDefs.emplace_back(StateDef {
+            m_lampStateNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_FLOAT, CTLPI_STATE_TYPE_CUSTOM, &m_lampStateIds[index], GetLampState, nullptr });
+      }
+   }
+
+   {
+      m_playerScoreStateDefs.clear();
+      m_playerScoreIds.clear();
+      m_playerScoreIds.reserve(m_playerScores.size());
+      for (const auto& [id, _] : m_playerScores)
+         m_playerScoreIds.push_back({ this, id });
+      std::ranges::sort(m_playerScoreIds, [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+      m_playerScoreNames.resize(m_playerScores.size());
+      for (size_t index = 0; index < m_playerScoreIds.size(); ++index)
+      {
+         const auto id = m_playerScoreIds[index].id;
+         m_playerScoreNames[index] = std::format("Player Score #{}", id);
+         if (id == 29 && (m_defaultStateNameMask & (1ull << 29)))
+            m_playerScoreNames[index] = "Credits"sv;
+         m_playerScoreStateDefs.emplace_back(StateDef {
+            m_playerScoreNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_INT64, CTLPI_STATE_TYPE_CUSTOM, &m_playerScoreIds[index], GetPlayerScore, nullptr });
+      }
+   }
+
+   {
+      m_scoreDigitStateDefs.clear();
+      m_scoreDigitIds.clear();
+      m_scoreDigitIds.reserve(m_scoreDigits.size());
+      for (const auto& [id, _] : m_scoreDigits)
+         m_scoreDigitIds.push_back({ this, id });
+      std::ranges::sort(m_scoreDigitIds, [](const CallContext& a, const CallContext& b) { return a.id < b.id; });
+      m_scoreDigitNames.resize(m_scoreDigits.size());
+      for (size_t index = 0; index < m_scoreDigitIds.size(); ++index)
+      {
+         const auto id = m_scoreDigitIds[index].id;
+         m_scoreDigitNames[index] = std::format("Digit Score #{}", id);
+         m_scoreDigitStateDefs.emplace_back(StateDef {
+            m_scoreDigitNames[index].c_str(), nullptr, static_cast<uint32_t>(id), CTLPI_STATE_FORMAT_INT64, CTLPI_STATE_TYPE_CUSTOM, &m_scoreDigitIds[index], GetScoreDigit, nullptr });
+      }
+   }
+
+   m_exposedStates.AddItems({ //
+      { .id = { m_endpointId, 1 }, //
+         .name = "Illuminations",
+         .desc = "Lamp states",
+         .nStates = static_cast<unsigned int>(m_lampStateDefs.size()),
+         .stateDefs = m_lampStateDefs.data() },
+      { .id = { m_endpointId, 2 },
+         .name = "Scores (players)",
+         .desc = "Player score",
+         .nStates = static_cast<unsigned int>(m_playerScoreStateDefs.size()),
+         .stateDefs = m_playerScoreStateDefs.data() },
+      { .id = { m_endpointId, 3 },
+         .name = "Scores (digits)",
+         .desc = "Individual digit (reel) scores",
+         .nStates = static_cast<unsigned int>(m_scoreDigitStateDefs.size()),
+         .stateDefs = m_scoreDigitStateDefs.data() } });
 }
 
-float B2SServer::GetState(int b2sId) const
+void MSGPIAPI B2SServer::GetLampState(void* callContext, void* pResult)
 {
-   const auto it = m_states.find(b2sId);
-   return it == m_states.end() ? 0.f : it->second;
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<float*>(pResult) = static_cast<float>(ctx->me->GetLampState(ctx->id));
 }
 
-// Scores
+void MSGPIAPI B2SServer::GetPlayerScore(void* callContext, void* pResult)
+{
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<int64_t*>(pResult) = static_cast<int64_t>(ctx->me->GetPlayerScore(ctx->id));
+}
+
+void MSGPIAPI B2SServer::GetScoreDigit(void* callContext, void* pResult)
+{
+   auto ctx = static_cast<CallContext*>(callContext);
+   *static_cast<int64_t*>(pResult) = static_cast<int64_t>(ctx->me->GetScoreDigit(ctx->id));
+}
+
+
+// B2SSetScore / B2SSetScorePlayer
+
+void B2SServer::B2SSetScore(int digit, int value, bool animate)
+{
+   if (auto it = m_scoreDigits.find(digit); it != m_scoreDigits.end())
+   {
+      it->second = value;
+   }
+   else
+   {
+      m_exposedStates.ClearItems();
+      m_scoreDigits[digit] = value;
+      UpdateStateSrc();
+   }
+
+   B2SPluginEvent event { 'B', digit, value };
+   m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
+}
+
+int B2SServer::GetScoreDigit(int digit) const
+{
+   const auto it = m_scoreDigits.find(digit);
+   return it == m_scoreDigits.end() ? 0 : it->second.load();
+}
 
 void B2SServer::B2SSetScorePlayer(int playerno, int score)
 {
-   m_playerScores[playerno] = score;
+   if (auto it = m_playerScores.find(playerno); it != m_playerScores.end())
+   {
+      it->second = score;
+   }
+   else
+   {
+      m_exposedStates.ClearItems();
+      m_playerScores[playerno] = score;
+      UpdateStateSrc();
+   }
+
+   B2SPluginEvent event { 'C', playerno, score };
+   m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
 }
 
 int B2SServer::GetPlayerScore(int player) const
 {
+   // This function is exposed through:
+   // - scripting API which guarantees single-threaded access on the MsgAPI thread, which is the thread where m_playerScores mutates
+   // - Controller advertised state, which is accessed from any thread, but only when advertised. m_playerScores onyl mutates when states are NOT advertised
    const auto it = m_playerScores.find(player);
-   return it == m_playerScores.end() ? 0 : it->second;
+   return it == m_playerScores.end() ? 0 : it->second.load();
 }
 
-void B2SServer::B2SSetScoreDigit(int digit, int value)
+
+// B2SSetData and helpers that are allowed to:
+// - change main image illumination
+// - change picture box state (illumination, flipbook)
+// - change reel illumination
+// - start/stop animations
+
+void B2SServer::B2SSetData(int b2sId, const string& value, bool sendPluginEvent)
 {
-   m_scoreDigits[digit] = value;
+   if (is_string_numeric(value, 0))
+      B2SSetData(b2sId, string_to_int(value, 0), sendPluginEvent);
 }
 
-int B2SServer::GetScoreDigit(int b2sId) const
+void B2SServer::B2SSetData(int b2sId, int value, bool sendPluginEvent)
 {
-   const auto it = m_scoreDigits.find(b2sId);
-   return it == m_scoreDigits.end() ? 0 : it->second;
+   LOGD(std::format("B2SSetData {}={}", b2sId, value));
+
+   if (auto it = m_lampStates.find(b2sId); it != m_lampStates.end())
+   {
+      it->second = static_cast<float>(value);
+   }
+   else
+   {
+      m_exposedStates.ClearItems();
+      m_lampStates[b2sId] = static_cast<float>(value);
+      UpdateStateSrc();
+   }
+
+   if (sendPluginEvent)
+   {
+      B2SPluginEvent event { 'E', b2sId, value };
+      m_msgApi->BroadcastMsg(m_endpointId, m_onStateChangeEventId, &event);
+   }
+}
+
+void B2SServer::B2SSetData(const std::string& group, const std::string& value)
+{
+   if (is_string_numeric(value, 0))
+      B2SSetData(group, string_to_int(value, 0));
+}
+
+void B2SServer::B2SSetData(const std::string& group, int value)
+{
+   // Same as B2SSetData, applied to a group of illumination elements, but does not broadcast a plugin event
+   // FIXME implement
+   assert(false);
+}
+
+float B2SServer::GetLampState(int b2sId) const
+{
+   const auto it = m_lampStates.find(b2sId);
+   return it == m_lampStates.end() ? 0.f : it->second.load();
 }
 
 }

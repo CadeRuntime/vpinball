@@ -1,33 +1,45 @@
 #pragma once
 
-#include "EditableUIPart.h"
+#include "EditorUIPart.h"
+#include "math/matrix.h"
 #include "parts/primitive.h"
 
 namespace VPX::EditorUI
 {
 
-class PrimitiveUIPart final : public EditableUIPart
+class PrimitiveUIPart final : public EditableUIPart<Primitive>
 {
 public:
    explicit PrimitiveUIPart(Primitive* primitive);
-   ~PrimitiveUIPart() override;
-
-   IEditable* GetEditable() const override { return m_primitive; }
-
-   const string& GetOutlinerPath() const override { return m_outlinerPath; }
-   void SetOutlinerPath(const string& path) override { m_outlinerPath = path; }
 
    TransformMask GetTransform(Matrix3D& transform) override;
    void SetTransform(const vec3& pos, const vec3& scale, const vec3& rot) override;
 
-   void Render(const EditorRenderContext& ctx) override;
+   void RenderOverlay(const EditorRenderContext& ctx) override;
 
    void UpdatePropertyPane(PropertyPane& props) override;
 
 private:
-   Primitive* const m_primitive;
-   string m_outlinerPath;
-   bool m_visible;
+   void ImportMesh();
+   void ExportMesh();
+   void UpdateMeshUnitsUI();
+
+   bool m_meshUnitsMeters = false;
+
+   // Import option dialog state, mirroring the WinUI 'Wavefront OBJ Importer' dialog
+   std::shared_ptr<string> m_pendingMeshImport;
+   string m_meshImportFileName;
+   bool m_meshImportAbsolutePosition = false;
+   bool m_meshImportCenterMesh = false;
+   bool m_meshImportMaterial = false;
+   bool m_meshImportAnimation = false;
+   bool m_meshImportNoForsyth = false;
+   bool m_meshImportFailed = false;
+
+   // Export option dialog state, mirroring the WinUI 'Wavefront OBJ Exporter' dialog
+   std::shared_ptr<string> m_pendingMeshExport;
+   string m_meshExportFileName;
+   bool m_meshExportFailed = false;
 };
 
 }

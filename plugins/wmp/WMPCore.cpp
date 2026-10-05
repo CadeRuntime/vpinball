@@ -7,7 +7,7 @@
 
 namespace WMP {
 
-WMPCore::WMPCore(MsgPluginAPI* msgApi, uint32_t endpointId, unsigned int onAudioUpdateId)
+WMPCore::WMPCore(const MsgPluginAPI* msgApi, uint32_t endpointId, unsigned int onAudioUpdateId)
 {
    m_playState = wmppsUndefined;
    m_pAudioPlayer = new WMPAudioPlayer(msgApi, endpointId, onAudioUpdateId);
@@ -67,7 +67,7 @@ WMPPlayState WMPCore::GetPlayState() const
 bool WMPCore::LoadAudio(const string& url)
 {
    LOGI("Loading audio file: " + url);
-   return m_pAudioPlayer->LoadFile(url);
+   return m_pAudioPlayer->LoadFile(PluginStrings::PathFromUTF8(url));
 }
 
 void WMPCore::UnloadAudio()

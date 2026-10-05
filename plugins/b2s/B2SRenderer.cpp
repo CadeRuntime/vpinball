@@ -5,6 +5,8 @@
 #include "B2SRenderer.h"
 #include "B2SServer.h"
 
+#include "pinmame/PinMAMEPlugin.h"
+
 #include <vector>
 #include <algorithm>
 
@@ -12,16 +14,57 @@ namespace B2S {
 
 MSGPI_BOOL_VAL_SETTING(showGrillProp, "ShowGrill", "Show Grill", "Show Grill", true, false);
 
-B2SRenderer::B2SRenderer(const MsgPluginAPI* const msgApi, const unsigned int endpointId, std::shared_ptr<B2STable> b2s)
+B2SRenderer::B2SRenderer(const MsgPluginAPI* const msgApi, const VPXPluginAPI* const vpxApi, const unsigned int endpointId, std::shared_ptr<B2STable> b2s)
    : m_b2s(b2s)
    , m_msgApi(msgApi)
    , m_endpointId(endpointId)
-   , m_resURIResolver(*msgApi, endpointId, true, false, false, false)
-   , m_scoreViewDmdOverlay(m_resURIResolver, m_dmdTex, m_b2s->m_dmdImage.m_image)
-   , m_backglassDmdOverlay(m_resURIResolver, m_dmdTex,
+   , m_resURIResolver(*msgApi, endpointId, true, false, false)
+   , m_scoreViewDmdOverlay(vpxApi, m_resURIResolver, m_dmdTex, m_b2s->m_dmdImage.m_image)
+   , m_backglassDmdOverlay(vpxApi, m_resURIResolver, m_dmdTex,
         m_b2s->m_backglassImage.m_image         ? m_b2s->m_backglassImage.m_image
            : m_b2s->m_backglassOffImage.m_image ? m_b2s->m_backglassOffImage.m_image
                                                 : m_b2s->m_backglassOnImage.m_image)
+   , m_pinmameControllers(
+        msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG,
+        [](std::vector<ControllerDef>& items)
+        {
+           const string pinmamePrefix(PMPI_GAMEID_PREFIX);
+           std::erase_if(items, [&pinmamePrefix](const ControllerDef& src) { return !string(src.gameId).starts_with(pinmamePrefix); });
+        },
+        nullptr, [this]() { m_stateSources.Refresh(); m_segSources.Refresh(); })
+   , m_segSources(
+        msgApi, endpointId, CTLPI_SEG_GET_SRC_MSG, CTLPI_SEG_ON_SRC_CHG_MSG,
+        [this](std::vector<SegSrcId>& items)
+        {
+           m_pinmameControllers.With(
+              [&items](const std::vector<ControllerDef>& controllers)
+              {
+                 std::erase_if(items,
+                    [&controllers](const SegSrcId& source)
+                    {
+                       return std::find_if(controllers.begin(), controllers.end(), [source](const ControllerDef& ctrl) { return ctrl.endpointId == source.id.endpointId; })
+                          == controllers.end();
+                    });
+              });
+        },
+        nullptr, nullptr)
+   , m_stateSources(
+        msgApi, endpointId, CTLPI_STATE_GET_SRC_MSG, CTLPI_STATE_ON_SRC_CHG_MSG,
+        [this](std::vector<StateSrcId>& items)
+        {
+           m_pinmameControllers.With(
+              [&items](const std::vector<ControllerDef>& controllers)
+              {
+                 std::erase_if(items,
+                    [&controllers](const StateSrcId& source)
+                    {
+                       return std::find_if(controllers.begin(), controllers.end(), [source](const ControllerDef& ctrl) { return ctrl.endpointId == source.id.endpointId; })
+                          == controllers.end();
+                    });
+              });
+        },
+        [this]() { m_stateSources.With([this](const std::vector<StateSrcId>& items) { OnStateSrcChanged({ }); }); },
+        [this]() { m_stateSources.With([this](const std::vector<StateSrcId>& items) { OnStateSrcChanged(items); }); })
 {
    m_backglassDmdOverlay.LoadSettings(false);
    m_scoreViewDmdOverlay.LoadSettings(true);
@@ -32,28 +75,16 @@ B2SRenderer::B2SRenderer(const MsgPluginAPI* const msgApi, const unsigned int en
    m_dmdWidth = dmdTexInfo ? static_cast<float>(dmdTexInfo->width) : 1024.f;
    m_dmdHeight = dmdTexInfo ? static_cast<float>(dmdTexInfo->height) : 768.f;
 
-   m_getDevSrcMsgId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_GET_SRC_MSG);
-   m_onDevChangedMsgId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DEVICE_ON_SRC_CHG_MSG);
-   m_msgApi->SubscribeMsg(m_endpointId, m_onDevChangedMsgId, OnDevSrcChanged, this);
-   OnDevSrcChanged(m_onDevChangedMsgId, this, nullptr);
-
-   m_getSegSrcMsgId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_SEG_GET_SRC_MSG);
-   m_onSegChangedMsgId = m_msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_SEG_ON_SRC_CHG_MSG);
-   m_msgApi->SubscribeMsg(m_endpointId, m_onSegChangedMsgId, OnSegSrcChanged, this);
-   OnSegSrcChanged(m_onSegChangedMsgId, this, nullptr);
+   m_segSources.Subscribe();
+   m_stateSources.Subscribe();
+   m_pinmameControllers.Subscribe();
 }
 
 B2SRenderer::~B2SRenderer()
 {
-   m_msgApi->UnsubscribeMsg(m_onDevChangedMsgId, OnDevSrcChanged, this);
-   m_msgApi->ReleaseMsgID(m_onDevChangedMsgId);
-   m_msgApi->ReleaseMsgID(m_getDevSrcMsgId);
-   delete[] m_deviceStateSrc.deviceDefs;
-
-   m_msgApi->UnsubscribeMsg(m_onSegChangedMsgId, OnSegSrcChanged, this);
-   m_msgApi->ReleaseMsgID(m_onSegChangedMsgId);
-   m_msgApi->ReleaseMsgID(m_getSegSrcMsgId);
-   m_segDisplays.clear();
+   m_segSources.Unsubscribe();
+   m_stateSources.Unsubscribe();
+   m_pinmameControllers.Unsubscribe();
 }
 
 void B2SRenderer::RegisterSettings(const MsgPluginAPI* const msgApi, unsigned int endpointId)
@@ -61,98 +92,55 @@ void B2SRenderer::RegisterSettings(const MsgPluginAPI* const msgApi, unsigned in
    msgApi->RegisterSetting(endpointId, &showGrillProp);
 }
 
-void B2SRenderer::OnSegSrcChanged(const unsigned int, void* userData, void*)
+void B2SRenderer::OnStateSrcChanged(const std::vector<StateSrcId>& items)
 {
-   auto me = static_cast<B2SRenderer*>(userData);
-   me->m_segDisplays.clear();
-
-   unsigned int pinmameEndpoint = me->m_msgApi->GetPluginEndpoint("PinMAME");
-   if (pinmameEndpoint == 0)
-      return;
-
-   GetSegSrcMsg getSrcMsg = { 0, 0, nullptr };
-   me->m_msgApi->SendMsg(me->m_endpointId, me->m_getSegSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   vector<SegSrcId> entries(getSrcMsg.count);
-   getSrcMsg = { getSrcMsg.count, 0, entries.data() };
-   me->m_msgApi->SendMsg(me->m_endpointId, me->m_getSegSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   for (unsigned int i = 0; i < getSrcMsg.count; i++)
-   {
-      if (getSrcMsg.entries[i].id.endpointId == pinmameEndpoint)
-      {
-         me->m_segDisplays.push_back(getSrcMsg.entries[i]);
-      }
-   }
-}
-
-void B2SRenderer::OnDevSrcChanged(const unsigned int, void* userData, void*)
-{
-   auto me = static_cast<B2SRenderer*>(userData);
-   delete[] me->m_deviceStateSrc.deviceDefs;
-   memset(&me->m_deviceStateSrc, 0, sizeof(me->m_deviceStateSrc));
-   if (me->m_b2s->m_backglassOnImage.m_image)
-      me->m_b2s->m_backglassOnImage.m_romUpdater = []() { /* No ROM source */ };
-   for (auto& bulb : me->m_b2s->m_backglassIlluminations)
+   if (m_b2s->m_backglassOnImage.m_image)
+      m_b2s->m_backglassOnImage.m_romUpdater = []() { /* No ROM source */ };
+   for (auto& bulb : m_b2s->m_backglassIlluminations)
       bulb->m_romUpdater = []() { /* No ROM source */ };
 
-   unsigned int pinmameEndpoint = me->m_msgApi->GetPluginEndpoint("PinMAME");
-   if (pinmameEndpoint == 0)
-      return;
 
-   GetDevSrcMsg getSrcMsg = { 0, 0, nullptr };
-   me->m_msgApi->SendMsg(me->m_endpointId, me->m_getDevSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   vector<DevSrcId> entries(getSrcMsg.count);
-   getSrcMsg = { getSrcMsg.count, 0, entries.data() };
-   me->m_msgApi->SendMsg(me->m_endpointId, me->m_getDevSrcMsgId, pinmameEndpoint, &getSrcMsg);
-   for (unsigned int i = 0; i < getSrcMsg.count; i++)
-   {
-      if (getSrcMsg.entries[i].id.endpointId == pinmameEndpoint)
-      {
-         me->m_deviceStateSrc = getSrcMsg.entries[i];
-         if (getSrcMsg.entries[i].deviceDefs)
-         {
-            me->m_deviceStateSrc.deviceDefs = new DeviceDef[getSrcMsg.entries[i].nDevices];
-            memcpy(me->m_deviceStateSrc.deviceDefs, getSrcMsg.entries[i].deviceDefs, getSrcMsg.entries[i].nDevices * sizeof(DeviceDef));
-         }
-         break;
-      }
-   }
+   if (m_b2s->m_backglassOnImage.m_image)
+      m_b2s->m_backglassOnImage.m_romUpdater
+         = ResolveRomPropUpdater(items, &m_b2s->m_backglassOnImage.m_brightness, m_b2s->m_backglassOnImage.m_romIdType, m_b2s->m_backglassOnImage.m_romId);
 
-   if (me->m_deviceStateSrc.deviceDefs == nullptr)
-      return;
-
-   if (me->m_b2s->m_backglassOnImage.m_image)
-      me->m_b2s->m_backglassOnImage.m_romUpdater = me->ResolveRomPropUpdater(&me->m_b2s->m_backglassOnImage.m_brightness, me->m_b2s->m_backglassOnImage.m_romIdType, me->m_b2s->m_backglassOnImage.m_romId);
-
-   for (auto& bulb : me->m_b2s->m_backglassIlluminations)
+   for (auto& bulb : m_b2s->m_backglassIlluminations)
       switch (bulb->m_snippitType)
       {
-      case B2SSnippitType::StandardImage: bulb->m_romUpdater = me->ResolveRomPropUpdater(&bulb->m_brightness, bulb->m_romIdType, bulb->m_romId); break;
-      case B2SSnippitType::MechRotatingImage: bulb->m_romUpdater = me->ResolveRomPropUpdater(&bulb->m_mechRot, bulb->m_romIdType, bulb->m_romId); break;
+      case B2SSnippitType::StandardImage: bulb->m_romUpdater = ResolveRomPropUpdater(items, &bulb->m_brightness, bulb->m_romIdType, bulb->m_romId); break;
+      case B2SSnippitType::MechRotatingImage: bulb->m_romUpdater = ResolveRomPropUpdater(items, &bulb->m_mechRot, bulb->m_romIdType, bulb->m_romId); break;
       case B2SSnippitType::SelfRotatingImage: break;
       }
 }
 
-std::function<void()> B2SRenderer::ResolveRomPropUpdater(float* value, const B2SRomIDType romIdType, const int romId, const bool romInverted) const
+std::function<void()> B2SRenderer::ResolveRomPropUpdater(const std::vector<StateSrcId> & items, float * value, const B2SRomIDType romIdType, const int romId, const bool romInverted) const
 {
-   for (unsigned int i = 0; i < m_deviceStateSrc.nDevices; i++)
+   int groupId;
+   switch (romIdType)
    {
-      if (romId == m_deviceStateSrc.deviceDefs[i].id.deviceId)
+   case B2SRomIDType::Solenoid: groupId = PMPI_GROUP_SOLENOID; break;
+   case B2SRomIDType::GIString: groupId = PMPI_GROUP_GI; break;
+   case B2SRomIDType::Lamp: groupId = PMPI_GROUP_LAMP; break;
+   case B2SRomIDType::Mech: groupId = PMPI_GROUP_MECH; break;
+   default: return []() { /* No ROM source */ };
+   }
+   for (const StateSrcId& src : items)
+   {
+      if (src.id.resId != groupId)
+         continue;
+      for (unsigned int i = 0; i < src.nStates; i++)
       {
-         bool found;
-         switch (m_deviceStateSrc.deviceDefs[i].id.groupId & 0xFF00)
-         {
-         case 0x0000: found = romIdType == B2SRomIDType::Solenoid; break;
-         case 0x0100: found = romIdType == B2SRomIDType::GIString; break;
-         case 0x0200: found = romIdType == B2SRomIDType::Lamp; break;
-         case 0x0300: found = romIdType == B2SRomIDType::Mech; break;
-         default: found = false; break;
-         }
-         if (found)
+         const auto& def = src.stateDefs[i];
+         if (def.mappingId == romId && def.dataFormat == CTLPI_STATE_FORMAT_FLOAT && def.GetState)
          {
             if (romInverted)
-               return [this, value, i]() { *value = 1.f - m_deviceStateSrc.GetFloatState(i); };
+               return [this, value, def]()
+               {
+                  m_stateSources.With([this, value, &def](const std::vector<StateSrcId>&) { def.GetState(def.callContext, value); });
+                  *value = 1.f - *value;
+               };
             else
-               return [this, value, i]() { *value = m_deviceStateSrc.GetFloatState(i); };
+               return [this, value, def]() { m_stateSources.With([this, value, &def](const std::vector<StateSrcId>&) { def.GetState(def.callContext, value); }); };
          }
       }
    }
@@ -175,7 +163,10 @@ void B2SRenderer::RenderBulbs(VPXRenderContext2D* ctx, const B2SServer* server, 
    {
       if (bulb->m_b2sId >= 0 && server)
       {
-         bulb->m_brightness = server->GetState(bulb->m_b2sId);
+         const float state = server->GetLampState(bulb->m_b2sId);
+         bulb->m_brightness = (bulb->m_b2sValue > 0) ? 
+            ((static_cast<int>(state) == bulb->m_b2sValue) ? 1.f : 0.f) :
+            state;
       }
       else
       {
@@ -212,66 +203,68 @@ void B2SRenderer::RenderScores(VPXRenderContext2D* ctx, B2SServer* server, const
    vector<float> luminances;
    vector<VPXSegDisplayRenderStyle> styles;
    vector<VPXSegDisplayHint> hints;
-   int digitIndex = 1;
-   for (const auto& display : m_segDisplays)
-   {
-      SegDisplayFrame state = display.GetState(display.id);
-      for (unsigned int i = 0; i < display.nElements; i++)
+   m_segSources.With([&segTypes, &styles, &hints, &luminances, server](const std::vector<SegSrcId>& segDisplays){
+      int digitIndex = 1;
+      for (const auto& display : segDisplays)
       {
-         VPXSegDisplayHint hint = VPXSegDisplayHint::Generic;
-         VPXSegDisplayRenderStyle style = VPXSegDisplayRenderStyle::VPXSegStyle_Plasma;
-         if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_NEON_PLASMA)
-            style = VPXSegDisplayRenderStyle::VPXSegStyle_Plasma;
-         else if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_VFD_GREEN)
-            style = VPXSegDisplayRenderStyle::VPXSegStyle_GreenVFD;
-         else if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_VFD_BLUE)
+         SegDisplayFrame state = display.GetState(display.callContext);
+         for (unsigned int i = 0; i < display.nElements; i++)
          {
-            style = VPXSegDisplayRenderStyle::VPXSegStyle_BlueVFD;
-            if (display.hardware == CTLPI_SEG_HARDWARE_GTS1_4DIGIT //
-               || display.hardware == CTLPI_SEG_HARDWARE_GTS1_6DIGIT //
-               || display.hardware == CTLPI_SEG_HARDWARE_GTS80A_7DIGIT //
-               || display.hardware == CTLPI_SEG_HARDWARE_GTS80B_20DIGIT //
-            )
-               hint = VPXSegDisplayHint::Gottlieb;
-         }
-         segTypes.push_back(display.elementType[i]);
-         styles.push_back(style);
-         hints.push_back(hint);
+            VPXSegDisplayHint hint = VPXSegDisplayHint::Generic;
+            VPXSegDisplayRenderStyle style = VPXSegDisplayRenderStyle::VPXSegStyle_Plasma;
+            if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_NEON_PLASMA)
+               style = VPXSegDisplayRenderStyle::VPXSegStyle_Plasma;
+            else if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_VFD_GREEN)
+               style = VPXSegDisplayRenderStyle::VPXSegStyle_GreenVFD;
+            else if ((display.hardware & CTLPI_SEG_HARDWARE_FAMILY_MASK) == CTLPI_SEG_HARDWARE_VFD_BLUE)
+            {
+               style = VPXSegDisplayRenderStyle::VPXSegStyle_BlueVFD;
+               if (display.hardware == CTLPI_SEG_HARDWARE_GTS1_4DIGIT //
+                  || display.hardware == CTLPI_SEG_HARDWARE_GTS1_6DIGIT //
+                  || display.hardware == CTLPI_SEG_HARDWARE_GTS80A_7DIGIT //
+                  || display.hardware == CTLPI_SEG_HARDWARE_GTS80B_20DIGIT //
+               )
+                  hint = VPXSegDisplayHint::Gottlieb;
+            }
+            segTypes.push_back(display.elementType[i]);
+            styles.push_back(style);
+            hints.push_back(hint);
 
-         int bitState = 0;
-         for (int j = 0; j < 16; j++)
-         {
-            luminances.push_back(state.frame[i * 16 + j]);
-            if (state.frame[i * 16 + j] > 0.5f)
-               bitState |= 1 << j;
+            int bitState = 0;
+            for (int j = 0; j < 16; j++)
+            {
+               luminances.push_back(state.frame[i * 16 + j]);
+               if (state.frame[i * 16 + j] > 0.5f)
+                  bitState |= 1 << j;
+            }
+            int ret;
+            switch (bitState & ~0x80) // Remove the comma
+            {
+            // 7-segment stuff
+            case 0x003F: ret = 0; break;
+            case 0x0006: ret = 1; break;
+            case 0x005B: ret = 2; break;
+            case 0x004F: ret = 3; break;
+            case 0x0066: ret = 4; break;
+            case 0x006D: ret = 5; break;
+            case 0x007D: ret = 6; break;
+            case 0x0007: ret = 7; break;
+            case 0x007F: ret = 8; break;
+            case 0x006F: ret = 9; break;
+            // Additional 10-segment stuff
+            case 0x0300: ret = 1; break;
+            case 0x007C: ret = 6; break;
+            case 0x0067: ret = 9; break;
+            // Default is empty
+            default: ret = -1; break;
+            }
+            server->B2SSetScoreDigit(digitIndex, ret);
+            digitIndex++;
          }
-         int ret;
-         switch (bitState & ~0x80) // Remove the comma
-         {
-         // 7-segment stuff
-         case 0x003F: ret = 0; break;
-         case 0x0006: ret = 1; break;
-         case 0x005B: ret = 2; break;
-         case 0x004F: ret = 3; break;
-         case 0x0066: ret = 4; break;
-         case 0x006D: ret = 5; break;
-         case 0x007D: ret = 6; break;
-         case 0x0007: ret = 7; break;
-         case 0x007F: ret = 8; break;
-         case 0x006F: ret = 9; break;
-         // Additional 10-segment stuff
-         case 0x0300: ret = 1; break;
-         case 0x007C: ret = 6; break;
-         case 0x0067: ret = 9; break;
-         // Default is empty
-         default: ret = -1; break;
-         }
-         server->B2SSetScoreDigit(digitIndex, ret);
-         digitIndex++;
       }
-   }
+   });
 
-   digitIndex = 1;
+   int digitIndex = 1;
    for (const auto& reel : scores.m_scores)
    {
       // Skip digits located on the grill when the grill is hidden

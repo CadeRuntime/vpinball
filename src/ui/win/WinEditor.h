@@ -8,44 +8,30 @@
 #include "ui/win/resource.h"
 #include "utils/vector.h"
 
-#ifndef __STANDALONE__
-   #include <wxx_docking.h>
-   #include <wxx_dockframe.h>
-   #include "dialogs/ImageDialog.h"
-   #include "dialogs/SoundDialog.h"
-   #include "dialogs/EditorOptionsDialog.h"
-   #include "dialogs/CollectionManagerDialog.h"
-   #include "dialogs/PhysicsOptionsDialog.h"
-   #include "dialogs/RenderProbeDialog.h"
-   #include "dialogs/TableInfoDialog.h"
-   #include "dialogs/DimensionDialog.h"
-   #include "dialogs/MaterialDialog.h"
-   #include "dialogs/AboutDialog.h"
-   #include "dialogs/ToolbarDialog.h"
-   #include "dialogs/LayersListDialog.h"
-   #include "dialogs/NotesDialog.h"
-   #include "properties/PropertyDialog.h"
+#include <wxx_docking.h>
+#include <wxx_dockframe.h>
+#include "dialogs/EditorOptionsDialog.h"
+#include "dialogs/AboutDialog.h"
+#include "dialogs/ToolbarDialog.h"
+#include "dialogs/LayersListDialog.h"
+#include "dialogs/NotesDialog.h"
+#include "properties/PropertyDialog.h"
 
-   #define OVERRIDE override
-#else
-   class ImageDialog final { };
-   class SoundDialog final { };
-   class EditorOptionsDialog final { };
-   class CollectionManagerDialog final { };
-   class PhysicsOptionsDialog final { };
-   class TableInfoDialog final { };
-   class DimensionDialog final { };
-   class RenderProbeDialog final { };
-   class MaterialDialog final { };
-   class AboutDialog final { };
-   class ToolbarDialog final { };
-   class NotesDialog final { };
-   #define OVERRIDE
-#endif
+// The frame has no window menu of its own: win32xx hosts it in a CMenuBar inside the rebar, and it is only opened
+// by DefWindowProc turning an Alt press into the WM_SYSCOMMAND/SC_KEYMENU which CFrameT::OnSysCommand forwards to
+// that menu bar. So these messages have to reach DispatchMessage, while the default PreTranslateMessage of any
+// modeless dialog instead hands them to IsDialogMessage, which consumes them for its own mnemonics. Panes from
+// which the menu is meant to open therefore let them through explicitly, the dialog like ones (notes, property
+// pages) keep the default and do not open it
+constexpr bool IsAltKeyMessage(const UINT message)
+{
+   return (message == WM_SYSKEYDOWN) || (message == WM_SYSKEYUP) || (message == WM_SYSCHAR) || (message == WM_SYSDEADCHAR);
+}
 
 class PinTable;
 class PinTableMDI;
 class VPXFileFeedback;
+class IWinUIPart;
 
 class WinEditor final : public CMDIDockFrame
 {
@@ -64,7 +50,7 @@ public:
     };
 
    WinEditor(HINSTANCE appInstance);
-   ~WinEditor() OVERRIDE;
+   ~WinEditor() override;
 
    void ShowSubDialog(CDialog& dlg, const bool show);
 
@@ -77,12 +63,15 @@ private:
    void AddControlPoint();
    void AddSmoothControlPoint();
    void SaveTable(const bool saveAs);
+   void ExportTableMesh();
    void OpenNewTable(size_t tableId);
    void ProcessDeleteElement();
    void OpenRecentFile(const size_t menuId);
    void CopyPasteElement(const CopyPasteModes mode);
    void InitTools();
-   bool CanClose();
+   // Closes every table that can be closed, stopping at the first one which refuses (so some tables may
+   // already be closed when returning false). Returns true if all of them are closed
+   bool CloseWhatIsPossible();
    void UpdateRecentFileList(const std::filesystem::path& filename);
 
 public:
@@ -95,9 +84,8 @@ public:
 
    class PinTableWnd* GetActiveTableEditor();
    CComObject<PinTable>* GetActiveTable();
-   bool LoadFile(const bool updateEditor, VPXFileFeedback* feedback = nullptr);
-   void LoadFileName(const string& szFileName, const bool updateEditor, VPXFileFeedback* feedback = nullptr);
-   void SetClipboard(vector<IStream*> * const pvstm);
+   bool LoadFile(const bool updateEditor);
+   void LoadFileName(const std::filesystem::path& filename, const bool updateEditor);
 
    void DoPlay(const int playMode);
 
@@ -105,14 +93,15 @@ public:
    void SetObjectPosCur(float x, float y);
    void ClearObjectPosCur();
    float ConvertToUnit(const float value) const;
-   void SetPropSel(VectorProtected<ISelect> &pvsel);
+   void SetPropSel(const vector<IWinUIPart *> &pvsel);
+   void ReleasePropSel(const vector<IWinUIPart *> &pvsel); // Call before destroying a selection the property pane may point to
 
    void RenameEditable(IEditable* editable, const string& newName);
 
    void SetActionCur(const string& szaction);
-   void SetCursorCur(HINSTANCE hInstance, LPCTSTR lpCursorName);
+   void SetCursorCur(LPCTSTR lpCursorName);
 
-   void CloseTable(PinTableWnd * ppt);
+   bool CloseTable(PinTableWnd * ppt);
 
    void ToggleToolbar();
    void SetEnableMenuItems();
@@ -159,9 +148,7 @@ public:
        }
     }
 
-#ifndef __STANDALONE__
     ::SendMessage(m_hwndStatusBar, SB_SETTEXT, 5 | 0, (size_t)textBuf.c_str());
-#endif
    }
 
    bool OpenFileDialog(const string& initDir, vector<string>& filename, const char* const fileFilter, const char* const defaultExt, const DWORD flags, const string& windowTitle = string());
@@ -179,10 +166,9 @@ public:
       m_dockNotes = nullptr;
    }
    void CreateDocker();
-   #ifndef __STANDALONE__
    LayersListDialog* GetLayersListDialog() { return GetLayersDocker()->GetContainLayers()->GetLayersDialog(); }
-   #endif
    bool IsClosing() const { return m_closing; }
+   bool IsUnloadingTable() const { return m_unloadingTable; }
 
    ULONG m_cref;
 
@@ -193,10 +179,6 @@ public:
 
 //    HWND m_hwndToolbarMain;
    HWND m_hwndStatusBar;
-
-   int m_palettescroll;
-
-   vector<IStream*> m_vstmclipboard;
 
    int m_ToolCur; // palette button currently pressed
 
@@ -228,18 +210,16 @@ protected:
    void PreCreate(CREATESTRUCT& cs) override;
    void PreRegisterClass(WNDCLASS& wc) override;
    void OnClose() override;
-   void OnDestroy() OVERRIDE;
+   void OnDestroy() override;
    int  OnCreate(CREATESTRUCT& cs) override;
-   LRESULT OnPaint(UINT msg, WPARAM wparam, LPARAM lparam) OVERRIDE;
+   LRESULT OnPaint(UINT msg, WPARAM wparam, LPARAM lparam) override;
    void OnInitialUpdate() override;
    BOOL OnCommand(WPARAM wparam, LPARAM lparam) override;
    LRESULT WndProc(UINT uMsg, WPARAM wParam, LPARAM lParam) override;
-   LRESULT OnMDIActivated(UINT msg, WPARAM wparam, LPARAM lparam) OVERRIDE;
-   LRESULT OnMDIDestroyed(UINT msg, WPARAM wparam, LPARAM lparam) OVERRIDE;
-#ifndef __STANDALONE__
+   LRESULT OnMDIActivated(UINT msg, WPARAM wparam, LPARAM lparam) override;
+   LRESULT OnMDIDestroyed(UINT msg, WPARAM wparam, LPARAM lparam) override;
    BOOL PreTranslateMessage(MSG& msg) override;
    DockPtr NewDockerFromID(int id) override;
-#endif
 
 private:
    const HINSTANCE m_instance;
@@ -248,22 +228,14 @@ private:
 
    volatile bool m_unloadingTable;
    //CMenu m_mainMenu;
-   vector<string> m_recentTableList;
+   vector<std::filesystem::path> m_recentTableList;
 
    HANDLE  m_workerthread;
    unsigned int m_workerthreadid;
    bool    m_closing;
    HMODULE m_scintillaDll;
 
-   ImageDialog m_imageMngDlg;
-   SoundDialog m_soundMngDlg;
    EditorOptionsDialog m_editorOptDialog;
-   CollectionManagerDialog m_collectionMngDlg;
-   PhysicsOptionsDialog m_physicsOptDialog;
-   TableInfoDialog m_tableInfoDialog;
-   DimensionDialog m_dimensionDialog;
-   RenderProbeDialog m_renderProbeDialog;
-   MaterialDialog m_materialDialog;
    AboutDialog m_aboutDialog;
 
    ToolbarDialog *m_toolbarDialog = nullptr;

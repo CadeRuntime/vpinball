@@ -139,14 +139,14 @@ typedef enum {
 } eSnippitRotationStopBehaviour;
 
 typedef enum {
-    SegmentNumberType_7Seg = 0,
-    SegmentNumberType_10Seg = 1,
-    SegmentNumberType_14Seg = 2,
-    SegmentNumberType_16Seg = 3,
-    SegmentNumberType_SevenSegment = 0,
-    SegmentNumberType_TenSegment = 1,
-    SegmentNumberType_FourteenSegment = 2,
-    SegmentNumberType_SixteenSegment = 3
+    SegmentNumberType_7Seg = 7,
+    SegmentNumberType_10Seg = 10,
+    SegmentNumberType_14Seg = 14,
+    SegmentNumberType_16Seg = 16,
+    SegmentNumberType_SevenSegment = 7,
+    SegmentNumberType_TenSegment = 10,
+    SegmentNumberType_FourteenSegment = 14,
+    SegmentNumberType_SixteenSegment = 16
 } SegmentNumberType;
 
 typedef enum {
@@ -234,15 +234,17 @@ constexpr inline char cLower(char c)
    return c;
 }
 
+string trim_string(const string& str);
+string string_to_lower(string str);
 std::filesystem::path find_case_insensitive_file_path(const std::filesystem::path& searchedFile);
 vector<uint8_t> base64_decode(const char * const __restrict value, const size_t size_bytes);
 bool string_starts_with_case_insensitive(const string& str, const string& prefix);
 int string_to_int(const string& str, int defaultValue);
-bool is_string_numeric(const string& str);
+bool is_string_numeric(const string& str, int* const __restrict result);
 
 }
 
-template <typename T> constexpr inline T clamp(const T x, const T mn, const T mx) { return std::max(std::min(x, mx), mn); }
+template <typename T> constexpr inline T clamp(const T x, const T mn, const T mx) { assert(!(mx < mn)); const T c = x < mx ? x : mx; return c < mn ? mn : c; }
 
 class vec3 final
 {

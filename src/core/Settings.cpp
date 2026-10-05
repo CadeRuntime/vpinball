@@ -153,7 +153,7 @@ void Settings::UpdateDefaults()
          reg.Register(GetWindow_FSWidth_Property(i)->WithDefault(conf.videomode.GetPixelWidth()));
          reg.Register(GetWindow_FSHeight_Property(i)->WithDefault(conf.videomode.GetPixelHeight()));
          reg.Register(GetWindow_Width_Property(i)->WithDefault(i == 0 ? conf.videomode.GetPixelWidth() : (conf.videomode.GetPixelWidth() / 4)));
-         reg.Register(GetWindow_Height_Property(i)->WithDefault(i == 0 ? conf.videomode.GetPixelWidth() : min(conf.videomode.GetPixelWidth() * 4 / 9, conf.videomode.GetPixelHeight())));
+         reg.Register(GetWindow_Height_Property(i)->WithDefault(i == 0 ? conf.videomode.GetPixelHeight() : min(conf.videomode.GetPixelWidth() * 4 / 9, conf.videomode.GetPixelHeight())));
          break;
       }
       case VPX::RenderOutput::OutputMode::OM_EMBEDDED:
@@ -258,7 +258,7 @@ void Settings::Load(const Settings &settings)
 
 #define PropFloatStepped(groupId, propId, label, comment, minVal, maxVal, step, defVal) PropFloatBase(groupId, propId, label, comment, false, minVal, maxVal, step, defVal)
 #define PropFloatSteppedDyn(groupId, propId, label, comment, minVal, maxVal, step, defVal) PropFloatBase(groupId, propId, label, comment, true, minVal, maxVal, step, defVal)
-#define PropFloatUnbounded(groupId, propId, label, comment, defVal) PropFloatBase(groupId, propId, label, comment, false, FLT_MIN, FLT_MAX, 0.f, defVal)
+#define PropFloatUnbounded(groupId, propId, label, comment, defVal) PropFloatBase(groupId, propId, label, comment, false, -FLT_MAX, FLT_MAX, 0.f, defVal)
 #define PropFloat(groupId, propId, label, comment, minVal, maxVal, defVal) PropFloatBase(groupId, propId, label, comment, false, minVal, maxVal, 0.f, defVal)
 #define PropFloatDyn(groupId, propId, label, comment, minVal, maxVal, defVal) PropFloatBase(groupId, propId, label, comment, true, minVal, maxVal, 0.f, defVal)
 

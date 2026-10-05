@@ -69,7 +69,13 @@ FEATURES:
 
 - add support to visual screen nudge to sensor based nudge (strength/disabling is available in the 'Nudge/Tilt Settings' page).
 
-- the BGFX library employs all the latest rendering backends (Vulkan, Metal, DirectX11, OpenGL, ...) with some unique benefits: (note that DX11 should be preferred on Windows) (DX12 currently disabled)
+- plunger sensor support was refactored:
+  . the position is continuously evaluated at the physics engine pace from the position sensor
+  . the hit speed is either taken from a hit speed sensor (e.g. Pinscape), or derived with a logic matching the one of the keyboard plunger
+  . the legacy asymetric sensor calibration was removed (this was removed from joystick calibration before Windows 10 and always gave worse results compared to the default symetric calibration)
+  . the legacy (optional) position filter was removed
+
+- the BGFX library employs all the latest rendering backends (Vulkan, Metal, DirectX11, DirectX12, OpenGL, ...) with some unique benefits: (note that DX11 should be preferred on Windows)
   . it supports Variable Refresh Rate display (when VSync is switched off)
   . it uses multiple CPU cores to separately process the rendering from the game simulation, allowing for lower input/physics/controller latency,
     better nudging, more stable gameplay emulation, as well as a performance boost
@@ -145,6 +151,8 @@ FEATURES:
     VFD segment display, CRT video, ...) needs to be chosen. A few options allow to setup the glass tint/roughness and the position of the light source
     beneath it. Segment display flashers are 'max blended' to support overlapping without graphical glitches.
   . flashers may now be placed on the desktop backdrop, deprecating the use of a textbox for DMD rendering on the desktop backdrop.
+  . 'Additive Blend' was extended with a second sub-mode which darkens what is behind the flasher instead of brightening it (same added light, but with 'Modulate' steering how much is absorbed),
+    to fake Fresnel-like reflections (i.e. the CRT reflected of a Pinball 2000 playfield glass).
 
 - replace layers by hierarchical groups
   Allow groups to have properties (VR space reference, view visibility, ...)
@@ -159,6 +167,7 @@ FEATURES:
   . DMDUtil: supports rendering to physical DMDs (ZeDMD,...)
   . DOF: a preliminary port of the Direct Output Framework which allows to drive all kinds of physical feedback hardware (lights, shaker, fan,...)
   . FlexDMD: a port of FlexDMD & UltraDMD, which are tools to render and animate DMDs for original/homebrew tables
+  . Inspector: opens a local web server that shows dynamic played machine game states
   . PinMAME: a direct interface to PinMAME with some exclusive bonus features like full alphanumeric segment fading
   . PinUp: a preliminary port of PinUp Player that renders and animates video backglass, topper and fullDMD display
   . Remote Control: a plugin that allows to control an instance of VPX from another running instance. For example running VPX on a little controller PC that communicates with a more powerful computer that runs VPX driving a VR headset
@@ -200,6 +209,8 @@ FEATURES:
 
 - backside lighting for normal-mapped parts
 
+- debug builds have now been "replaced" by release builds with debug info, so that stack traces show more usable info by default, and there is less to generate/compile in the github actions
+
 FIXES:
 
 - fix SMAA looking worse compared to 10.7.X, and slightly improve its quality in general
@@ -229,7 +240,19 @@ FIXES:
 
 - remove some of the limits (like maximum line length) of the code view/script editor
 
+- fix script editor changes not leading to flagging the table as changed (visible via the added '*')
+- fix ctrl+s not working within the script editor 
+
+- WinUI: fix zooming on a wall with image
+-        fix zoom blocking at max or min
+-        redraw display when grid/playfield is toggled
+-        do not filter navigation inside property pane
+-        delete elements of deleted layer
+-        fix crash on second Select Dialog open
+
 - LiveUI: fix delayed mipmap generation (happens when starting with static rendering, then opening LiveUI) (used for trilinear and anisotropic texture filtering)
+
+- allow FreeImage to decode PNG with corrupted gamma chunks
 
 - BAM headtracking has been removed again. It could be re-added via the new plugin system though. Any volunteers?
 
@@ -243,6 +266,8 @@ FIXES:
 - the BASS sound engine was replaced/unified with SDL3+miniaudio, fixing the pitch/volume adjustment of 'ogg' files.
   As a consequence 'ogg' files should now be favored over legacy 'wav'.
   In general, multiple issues/regressions (e.g. too low volume) found in 10.8 were fixed due to this.
+
+- the win32 vpx container regarding has been replaced for all builds with the (heavily modified and optimized) POLE library
 
 - see Changelog_Scripts.txt for the respective core script changes (version 3.62)
 - see CommandReference.txt for the changelog of all the scripting properties/interface changes

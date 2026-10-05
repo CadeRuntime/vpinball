@@ -135,10 +135,11 @@ if ($gen_dmd)
 		Process-Shader "vs_dmd.sc" "dmd.h"  ("vs_dmd_world_" + $variant3.ToLower() + "_")    "vertex" @("WORLD", $variant3)
 		Process-Shader "vs_dmd.sc" "dmd.h"  ("vs_dmd_world_" + $variant3.ToLower() + "_st_") "vertex" @("WORLD", "STEREO", $variant3)
 		Process-Shader "fs_dmd.sc" "dmd.h"  ("fs_dmd_"  + $variant3.ToLower() + "_") "fragment" @("DMD", $variant3)
-		foreach ($variant2 in @("DMD", "SEG", "CRT"))
+		# CRTNUANCE is a second CRT permutation using the other filter, see fs_display.sc
+		foreach ($variant2 in @("DMD", "SEG", "CRT", "CRTNUANCE"))
 		{
 			Process-Shader "fs_display.sc" "dmd.h" ("fs_display_" + $variant2.ToLower() + "_" + $variant3.ToLower() + "_") "fragment" @($variant2, $variant3)
-		}	
+		}
 		foreach ($variant2 in @("TEX", "NOTEX"))
 		{
 			Process-Shader "fs_dmd.sc" "dmd.h" ("fs_sprite_" + $variant2.ToLower() + "_" + $variant3.ToLower() + "_") "fragment" @("SPRITE", $variant2, $variant3)
@@ -347,9 +348,8 @@ if ($gen_mipmap)
 {
 	Write-Host "`n>>>>>>>>>>>>>>>> MipMap shaders"
 	New-Item -Path . -Name "../bgfx_mipmap.h" -ItemType "File" -Force -Value "// MipMap Shaders`n"
-	$fmts = @("srgba8", "rgba8", "rgba16f", "rgba32f")
-	foreach ($fmt in $fmts)
-	{
-		Process-Shader "cs_mipmap.sc" "mipmap.h" ("cs_mipmap_" + $fmt + "_") "compute" @("FMT_" + $fmt)
-	}
+	# Process-Shader "cs_mipmap.sc" "mipmap.h" ("cs_mipmap_rgba16f_") "compute" @("FMT_rgba16f")
+	# Process-Shader "cs_mipmap.sc" "mipmap.h" ("cs_mipmap_rgba32f_") "compute" @("FMT_rgba32f")
+	# Process-Shader "cs_mipmap.sc" "mipmap.h" ("cs_mipmap_rgba8_") "compute" @("FMT_rgba8")
+	Process-Shader "cs_mipmap.sc" "mipmap.h" ("cs_mipmap_srgba8_") "compute" @("FMT_srgba8")
 }

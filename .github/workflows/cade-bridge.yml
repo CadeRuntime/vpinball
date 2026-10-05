@@ -1,0 +1,101 @@
+name: cade-bridge
+
+# Cade fork only. The upstream workflows never install gRPC/protobuf, so the
+# CadeBridge plugin silently skips itself there (see make/CMakeLists_plugin_CadeBridge.txt).
+# This workflow builds it on its own (BUILD_APP=OFF, no external.sh dependencies needed)
+# and fails if it was skipped. Kept in its own file to avoid conflicts with upstream syncs.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'plugins/cade-bridge/**'
+      - 'plugins/plugins/**'
+      - 'src/core/VPXPluginAPIImpl.*'
+      - 'src/core/VPXGameElementBridge.h'
+      - 'make/CMakeLists_plugin*.txt'
+      - 'CMakeLists.txt'
+      - '.github/workflows/cade-bridge.yml'
+  pull_request:
+    paths:
+      - 'plugins/cade-bridge/**'
+      - 'plugins/plugins/**'
+      - 'src/core/VPXPluginAPIImpl.*'
+      - 'src/core/VPXGameElementBridge.h'
+      - 'make/CMakeLists_plugin*.txt'
+      - 'CMakeLists.txt'
+      - '.github/workflows/cade-bridge.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-24.04
+    # Arch ships gRPC and protobuf with their CMake config packages, which the plugin's find_package(... CONFIG) needs
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed base-devel cmake git grpc protobuf
+      - uses: actions/checkout@v6
+      - name: Configure
+        run: cmake -DBUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release -B build | tee configure.log
+      - name: Check plugin is enabled
+        run: |
+          grep -q "CadeBridge plugin: grpc++ and protobuf found" configure.log
+      - name: Build
+        run: cmake --build build --target CadeBridgePlugin -j$(nproc)
+      - name: Check output
+        run: |
+          ls -l build/plugins/cade-bridge/
+          test -f build/plugins/cade-bridge/plugin.cfg
+          # Not piped into grep -q: its early exit would SIGPIPE nm, failing the step under pipefail
+          nm -D build/plugins/cade-bridge/plugin-cade-bridge.so > symbols.txt
+          grep -q CadeBridgePluginLoad symbols.txt
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v6
+      # VCPKG_INSTALLATION_ROOT is a runner environment variable, not available in the workflow env context
+      - name: Get vcpkg location and revision
+        id: vcpkg
+        run: |
+          echo "root=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_OUTPUT
+          echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
+      # Building gRPC from source takes a long time, cache the installed packages per vcpkg revision
+      - name: Cache vcpkg packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.vcpkg.outputs.root }}/installed
+          key: cade-vcpkg-grpc-x64-windows-release-${{ steps.vcpkg.outputs.rev }}
+      # Release only dynamic triplet, also used as host triplet so that the protoc / grpc_cpp_plugin
+      # tools are built once (release) and installed next to the libraries.
+      # The C: drive is too small for gRPC build trees: build on D: and clean after each port.
+      - name: Install gRPC
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install grpc:x64-windows-release protobuf:x64-windows-release \
+            --host-triplet=x64-windows-release --clean-after-build \
+            --x-buildtrees-root=D:/vcpkg-buildtrees --x-packages-root=D:/vcpkg-packages
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
+      - name: Configure
+        run: cmake -G "Visual Studio 18 2026" -A x64 -DBUILD_APP=OFF -B build | tee configure.log
+      - name: Check plugin is enabled
+        run: |
+          grep -q "CadeBridge plugin: grpc++ and protobuf found" configure.log
+      - name: Build
+        run: cmake --build build --config Release --target CadeBridgePlugin --parallel
+      - name: Check output
+        run: |
+          ls -l build/plugins/cade-bridge/
+          test -f build/plugins/cade-bridge/plugin.cfg
+          test -f build/plugins/cade-bridge/plugin-cade-bridge64.dll
+          df -h /c /d || true

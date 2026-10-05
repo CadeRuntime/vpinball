@@ -22,12 +22,14 @@
 #include "parts/textbox.h"
 #include "parts/timer.h"
 #include "parts/trigger.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
 
-DrawingOrderDialog::DrawingOrderDialog(bool select)
+DrawingOrderDialog::DrawingOrderDialog(PinTableWnd *tableEditor, bool select)
    : CDialog(IDD_DRAWING_ORDER)
+   , m_tableEditor(tableEditor)
    , m_drawingOrderSelect(select)
    , hOrderList(nullptr)
 {
@@ -44,7 +46,8 @@ void DrawingOrderDialog::OnClose()
 
 BOOL DrawingOrderDialog::OnInitDialog()
 {
-   CCO(PinTable) * const pt = g_pvp->GetActiveTable();
+   PinTableWnd *const ptw = m_tableEditor;
+   CComObject<PinTable> *const pt = ptw->m_table;
    hOrderList = GetDlgItem(IDC_DRAWING_ORDER_LIST).GetHwnd();
    LVITEM lv;
 
@@ -66,22 +69,23 @@ BOOL DrawingOrderDialog::OnInitDialog()
    lv.mask = LVIF_TEXT;
 
    // create a selection in the same drawing order as the selected elements are stored in the main vector
-   vector<ISelect*> selection;
+   vector<IWinUIPart *> selection;
    if (m_drawingOrderSelect)
    {
+      const vector<IWinUIPart *> selParts = ptw->GetSelectedParts();
       for (SSIZE_T i = pt->GetParts().size() - 1; i >= 0; i--)
-         for (int t = 0; t < pt->m_vmultisel.size(); t++)
+         for (IWinUIPart *const sel : selParts)
          {
-            if (pt->m_vmultisel.ElementAt(t) == pt->GetParts()[i]->GetISelect())
-               selection.push_back(pt->m_vmultisel.ElementAt(t));
+            if (sel->GetEditable() == pt->GetParts()[i])
+               selection.push_back(sel);
          }
    }
-   for (size_t i = 0; i < (m_drawingOrderSelect ? selection.size() : pt->m_allHitElements.size()); i++)
+   for (size_t i = 0; i < (m_drawingOrderSelect ? selection.size() : ptw->m_allHitElements.size()); i++)
    {
-      IEditable * const pedit = m_drawingOrderSelect ? selection[i]->GetIEditable() : pt->m_allHitElements[i]->GetIEditable();
+      IEditable *const pedit = m_drawingOrderSelect ? selection[i]->GetEditable() : ptw->m_allHitElements[i]->GetEditable();
       if (pedit)
       {
-         const string szTemp = PinTable::GetElementName(pedit);
+         const string szTemp = pedit->GetName();
          if (!szTemp.empty())
          {
             lv.iItem = (int)i;
@@ -195,7 +199,8 @@ void DrawingOrderDialog::OnOK()
 
 void DrawingOrderDialog::UpdateDrawingOrder(IEditable *ptr, bool up)
 {
-   CComObject<PinTable> * const pt = g_pvp->GetActiveTable();
+   PinTableWnd *const ptw = m_tableEditor;
+   CComObject<PinTable> *const pt = ptw->m_table;
    char text0[256], text1[256], text2[256];
    LVITEM lv;
    lv.mask = LVIF_TEXT;
@@ -223,16 +228,14 @@ void DrawingOrderDialog::UpdateDrawingOrder(IEditable *ptr, bool up)
          ::SetFocus(hOrderList);
          if (m_drawingOrderSelect)
          {
-            ISelect * const psel = pt->m_vmultisel.ElementAt(idx);
-            pt->m_vmultisel.erase(idx);
-            pt->m_vmultisel.insert(psel, idx - 1);
+            ptw->MoveSelection(idx, idx - 1);
             pt->ReorderParts(m_drawingOrderSelect);
          }
          else
          {
-            ISelect * const psel = pt->m_allHitElements[idx];
-            pt->m_allHitElements.erase(pt->m_allHitElements.begin() + idx);
-            pt->m_allHitElements.insert(pt->m_allHitElements.begin() + (idx - 1), psel);
+            IWinUIPart * const psel = ptw->m_allHitElements[idx];
+            ptw->m_allHitElements.erase(ptw->m_allHitElements.begin() + idx);
+            ptw->m_allHitElements.insert(ptw->m_allHitElements.begin() + (idx - 1), psel);
             pt->ReorderParts(m_drawingOrderSelect);
          }
       }
@@ -242,7 +245,7 @@ void DrawingOrderDialog::UpdateDrawingOrder(IEditable *ptr, bool up)
       pt->SetNonUndoableDirty(eSaveDirty);
       if (m_drawingOrderSelect)
       {
-         if (idx < pt->m_vmultisel.size() - 1)
+         if (idx < ptw->GetMultiSelCount() - 1)
          {
             ListView_GetItemText(hOrderList, idx, 0, text0, std::size(text0));
             ListView_GetItemText(hOrderList, idx, 1, text1, std::size(text1));
@@ -258,20 +261,13 @@ void DrawingOrderDialog::UpdateDrawingOrder(IEditable *ptr, bool up)
             ListView_SetItemState(hOrderList, idx + 1, LVIS_SELECTED, LVIS_SELECTED);
             ListView_SetItemState(hOrderList, idx + 1, LVIS_FOCUSED, LVIS_FOCUSED);
             ::SetFocus(hOrderList);
-            ISelect * const psel = pt->m_vmultisel.ElementAt(idx);
-            pt->m_vmultisel.erase(idx);
-
-            if (idx + 1 >= pt->m_vmultisel.size())
-               pt->m_vmultisel.push_back(psel);
-            else
-               pt->m_vmultisel.insert(psel, idx + 1);
-
+            ptw->MoveSelection(idx, idx + 1);
             pt->ReorderParts(m_drawingOrderSelect);
          }
       }
       else
       {
-         if (idx < (int)pt->m_allHitElements.size() - 1)
+         if (idx < (int)ptw->m_allHitElements.size() - 1)
          {
             ListView_GetItemText(hOrderList, idx, 0, text0, std::size(text0));
             ListView_GetItemText(hOrderList, idx, 1, text1, std::size(text1));
@@ -288,13 +284,13 @@ void DrawingOrderDialog::UpdateDrawingOrder(IEditable *ptr, bool up)
             ListView_SetItemState(hOrderList, idx + 1, LVIS_FOCUSED, LVIS_FOCUSED);
             ::SetFocus(hOrderList);
 
-            ISelect * const psel = pt->m_allHitElements[idx];
-            pt->m_allHitElements.erase(pt->m_allHitElements.begin() + idx);
+            IWinUIPart * const psel = ptw->m_allHitElements[idx];
+            ptw->m_allHitElements.erase(ptw->m_allHitElements.begin() + idx);
 
-            if (idx + 1 >= (int)pt->m_allHitElements.size())
-               pt->m_allHitElements.push_back(psel);
+            if (idx + 1 >= (int)ptw->m_allHitElements.size())
+               ptw->m_allHitElements.push_back(psel);
             else
-               pt->m_allHitElements.insert(pt->m_allHitElements.begin() + (idx+1), psel);
+               ptw->m_allHitElements.insert(ptw->m_allHitElements.begin() + (idx+1), psel);
 
             pt->ReorderParts(m_drawingOrderSelect);
          }

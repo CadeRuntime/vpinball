@@ -13,6 +13,8 @@
 #include "HomePage.h"
 #include "InputProfilePage.h"
 #include "InputSettingsPage.h"
+#include "LoadingPage.h"
+#include "LoggingSettingsPage.h"
 #include "MiscSettingsPage.h"
 #include "NudgeSettingsPage.h"
 #include "PluginSettingsPage.h"
@@ -34,12 +36,14 @@ InGameUI::InGameUI(LiveUI &liveUI)
    : m_player(g_pplayer)
 {
    AddPage("homepage"s, []() { return std::make_unique<HomePage>(); });
+   AddPage("loading"s, []() { return std::make_unique<LoadingPage>(); });
    AddPage("settings/audio"s, []() { return std::make_unique<AudioSettingsPage>(); });
    AddPage("settings/cabinet"s, []() { return std::make_unique<CabinetSettingsPage>(); });
    AddPage("settings/display_profiles"s, []() { return std::make_unique<DisplayProfileSettingsPage>(); });
    AddPage("settings/displays"s, []() { return std::make_unique<DisplayHomePage>(); });
    AddPage("settings/graphics"s, []() { return std::make_unique<GraphicSettingsPage>(); });
    AddPage("settings/input"s, []() { return std::make_unique<InputSettingsPage>(); });
+   AddPage("settings/logging"s, []() { return std::make_unique<LoggingSettingsPage>(); });
    AddPage("settings/misc"s, []() { return std::make_unique<MiscSettingsPage>(); });
    AddPage("settings/nudge"s, []() { return std::make_unique<NudgeSettingsPage>(); });
    AddPage("settings/plunger"s, []() { return std::make_unique<PlungerSettingsPage>(); });
@@ -90,6 +94,10 @@ void InGameUI::NavigateBack()
    assert(IsOpened());
    assert(!m_navigationHistory.empty());
 
+   // The loading page is the navigation root while loading: it cannot be closed until the table is loaded
+   if (m_player->m_isLoading && m_navigationHistory.size() == 1)
+      return;
+
    m_navigationHistory.pop_back();
    if (m_navigationHistory.empty())
    {
@@ -112,6 +120,7 @@ void InGameUI::Open(const string& page)
 
 void InGameUI::Close()
 {
+   m_navigationHistory.clear();
    if (GetActivePage())
       GetActivePage()->Close(false);
    if (!m_player->IsPlaying(false))
@@ -268,7 +277,7 @@ void InGameUI::HandlePageInput()
       return;
 
    // If user has moved the mouse, disable flipper navigation
-   if (m_useFlipperNav)
+   if (m_useFlipperNav && !m_player->m_vrDevice)
    {
       ImVec2 delta = m_prevMousePos - ImGui::GetMousePos();
       m_useFlipperNav &= fabs(delta.x) <= 3.f && fabs(delta.y) <= 3.f;
@@ -306,7 +315,7 @@ void InGameUI::HandlePageInput()
 // FIXME Remove
 void InGameUI::HandleLegacyFlyOver()
 {
-   if (!m_player->m_ptable->m_settings.GetPlayer_EnableCameraModeFlyAround())
+   if (!g_settingsService.GetActiveSettings().GetPlayer_EnableCameraModeFlyAround())
       return;
 
    if (!ImGui::IsKeyDown(ImGuiKey_LeftAlt) && !ImGui::IsKeyDown(ImGuiKey_RightAlt))

@@ -20,8 +20,10 @@
 # Install with either:
 #   vcpkg install grpc:x64-windows-static-md protobuf:x64-windows-static-md
 #   vcpkg install grpc:x64-windows protobuf:x64-windows
+#   vcpkg install grpc:x64-windows-release protobuf:x64-windows-release --host-triplet=x64-windows-release
+#     (release only dynamic triplet, half the build time and disk space, used by CI)
 if(PLATFORM STREQUAL "windows" AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-   set(_VCPKG_TRIPLETS "x64-windows-static-md" "x64-windows")
+   set(_VCPKG_TRIPLETS "x64-windows-static-md" "x64-windows" "x64-windows-release")
 
    set(_VCPKG_ROOTS "")
    if(DEFINED ENV{VCPKG_ROOT} AND NOT "$ENV{VCPKG_ROOT}" STREQUAL "")
@@ -201,10 +203,12 @@ if(BUILD_SHARED)
       endif()
    endif()
 
+   set_target_properties(CadeBridgePlugin PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PLUGINS_DIR}/cade-bridge"
+   )
+
    add_custom_command(TARGET CadeBridgePlugin POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/cade-bridge/plugin.cfg" "${PLUGINS_DIR}/cade-bridge/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:CadeBridgePlugin>" "${PLUGINS_DIR}/cade-bridge"
-      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:CadeBridgePlugin>"
    )
 
    # Copy runtime DLLs (gRPC, protobuf, etc.) into the plugin directory so

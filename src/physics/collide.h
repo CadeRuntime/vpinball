@@ -37,6 +37,7 @@ extern float c_hardScatter;
 struct BallS;
 class HitBall;
 class HitObject;
+class PhysicsEngine;
 struct ImDrawList;
 class IEditable;
 
@@ -46,6 +47,8 @@ public:
    virtual bool AddToList() const = 0;
    virtual void UpdateDisplacements(const float dtime) = 0;
    virtual void UpdateVelocities() = 0;
+
+   PhysicsEngine* m_physics = nullptr;
 };
 
 // Ported at: VisualPinball.Engine/Math/Functions.cs
@@ -100,7 +103,7 @@ public:
    virtual float HitTest(const BallS& ball, const float dtime, CollisionEvent& coll) const { return -1.f; } //!! shouldn't need to do this, but for whatever reason there is a pure virtual function call triggered otherwise that refuses to be debugged (all derived classes DO implement this one!)
    virtual int GetType() const = 0;
    virtual void Collide(const CollisionEvent& coll) = 0;
-   virtual void Contact(CollisionEvent& coll, const float dtime); // apply contact forces for the given time interval. Ball, Spinner and Gate do nothing here, Flipper has a specialized handling
+   virtual void Contact(CollisionEvent& coll, const float dtime); // apply contact forces for the given time interval. Spinner and Gate do nothing here, Flipper has a specialized handling
    virtual void CalcHitBBox() = 0;
 
    virtual MoverObject *GetMoverObject() { return nullptr; }
@@ -113,6 +116,8 @@ public:
    // Editable that created this hitobject, used for by UI for selecting editables.
    // An hitobject is only valid if this part is not null (so a new HitObject is not valid at creation until this is set...)
    IEditable* m_editable = nullptr;
+
+   PhysicsEngine* m_physics = nullptr;
 
    // Collision events
    bool  m_fe = false;  // FireEvents for m_obj?

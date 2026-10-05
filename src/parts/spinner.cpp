@@ -4,6 +4,7 @@
 #include "spinner.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/spinnerBracketMesh.h"
 #include "meshes/spinnerPlateMesh.h"
 #include "parts/Collection.h"
@@ -12,8 +13,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 
@@ -26,14 +25,6 @@ Spinner *Spinner::CopyForPlay() const
 {
    STANDARD_EDITABLE_COPY_FOR_PLAY_IMPL(Spinner)
    return dst;
-}
-
-void Spinner::UpdateStatusBarInfo()
-{
-   if (!m_vpinball)
-      return;
-   const string tbuf = std::format("Length: {:.3f} | Height: {:.3f}", m_vpinball->ConvertToUnit(m_d.m_length), m_vpinball->ConvertToUnit(m_d.m_height));
-   m_vpinball->SetStatusBarUnitInfo(tbuf, true);
 }
 
 float Spinner::GetAngleMax() const { return m_phitspinner ? RADTOANG(m_phitspinner->m_spinnerMover.m_angleMax) : m_d.m_angleMax; }
@@ -100,7 +91,7 @@ HRESULT Spinner::Init(const float x, const float y, const bool fromMouseClick, c
 
 void Spinner::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsSpinner_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsSpinner_##prop(field, false)
    LinkProp(m_d.m_length, Length);
    LinkProp(m_d.m_rotation, Rotation);
    LinkProp(m_d.m_showBracket, ShowBracket);
@@ -118,7 +109,7 @@ void Spinner::WriteRegDefaults()
 #undef LinkProp
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsSpinner_##prop() : Settings::GetDefaultPropsSpinner_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsSpinner_##prop() : Settings::GetDefaultPropsSpinner_##prop##_Default()
 void Spinner::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_length, Length);
@@ -143,38 +134,6 @@ void Spinner::SetDefaultPhysics(const bool fromMouseClick)
 }
 #undef LinkProp
 
-void Spinner::UIRenderPass1(Sur * const psur)
-{
-}
-
-void Spinner::UIRenderPass2(Sur * const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetLineColor(RGB(0, 0, 0), false, 3);
-   psur->SetObject(this);
-
-   const float halflength = m_d.m_length * 0.5f;
-
-   const float radangle = ANGTORAD(m_d.m_rotation);
-   float sn = sinf(radangle);
-   float cs = cosf(radangle);
-
-   psur->Line(m_d.m_vCenter.x + cs*halflength, m_d.m_vCenter.y + sn*halflength,
-      m_d.m_vCenter.x - cs*halflength, m_d.m_vCenter.y - sn*halflength);
-
-   psur->SetLineColor(RGB(0, 0, 0), false, 1);
-   psur->SetObject(this);
-
-   psur->Line(m_d.m_vCenter.x + cs*halflength, m_d.m_vCenter.y + sn*halflength,
-      m_d.m_vCenter.x - cs*halflength, m_d.m_vCenter.y - sn*halflength);
-
-   if (sn == 0.0f) sn = 1.0f;
-   if (cs == 0.0f) cs = 1.0f;
-   psur->Rectangle(m_d.m_vCenter.x - cs * halflength * 0.65f, m_d.m_vCenter.y - sn * halflength * 0.65f,
-                   m_d.m_vCenter.x + cs * halflength * 0.65f, m_d.m_vCenter.y + sn * halflength * 0.65f);
-}
-
-
 #pragma region Physics
 
 // Ported at: VisualPinball.Engine/VPT/Spinner/SpinnerHitGenerator.cs
@@ -186,7 +145,23 @@ void Spinner::PhysicSetup(PhysicsEngine* physics, const bool isUI)
 
    if (isUI)
    {
-      // FIXME implement UI picking
+      // Editor picking proxy: the plate rotates around a horizontal axis, a thin line in top view, so use a flat quad
+      // covering the axis and the brackets at its ends, placed at the pivot height
+      const float height = m_ptable->GetSurfaceHeight(m_d.m_szSurface, m_d.m_vCenter.x, m_d.m_vCenter.y);
+      const float radangle = ANGTORAD(m_d.m_rotation);
+      const Vertex2D tangent(cosf(radangle), sinf(radangle));
+      const Vertex2D normal(-tangent.y, tangent.x);
+      const float halfLength = m_d.m_length * 0.75f; // extend over the axis ends to include the brackets
+      const float halfWidth = m_d.m_length * 0.1f;
+      Vertex3Ds *const rgv3D = new Vertex3Ds[4]; // CCW winding for upward facing normal
+      for (int i = 0; i < 4; i++)
+      {
+         const Vertex2D p = m_d.m_vCenter + tangent * ((i >= 2) ? halfLength : -halfLength) + normal * ((i == 1 || i == 2) ? halfWidth : -halfWidth);
+         rgv3D[i] = Vertex3Ds(p.x, p.y, height + m_d.m_height);
+      }
+      Hit3DPoly *const ph3dpoly = new Hit3DPoly(this, rgv3D, 4);
+      ph3dpoly->m_ObjType = eSpinner;
+      physics->AddCollider(ph3dpoly, isUI);
    }
    else
    {
@@ -234,7 +209,7 @@ void Spinner::PhysicRelease(PhysicsEngine* physics, const bool isUI)
 
 void Spinner::ExportMesh(ObjLoader& loader)
 {
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
    vector<Vertex3D_NoTex2> transformedVertices;
    vector<HitObject*> dummyHitObj;
 
@@ -388,7 +363,8 @@ void Spinner::Render(const unsigned int renderMask)
       m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, false, pos, 0.f, m_bracketMeshBuffer, RenderDevice::TRIANGLELIST, 0, spinnerBracketNumFaces);
    }
 
-   if (m_phitspinner->m_spinnerMover.m_visible && !isStaticOnly)
+   const bool plateVisible = m_phitspinner ? m_phitspinner->m_spinnerMover.m_visible : m_d.m_visible;
+   if (plateVisible && !isStaticOnly)
    {
       UpdatePlate(nullptr);
       Vertex3Ds pos(m_d.m_vCenter.x, m_d.m_vCenter.y, m_posZ);
@@ -399,13 +375,16 @@ void Spinner::Render(const unsigned int renderMask)
 
 void Spinner::UpdatePlate(Vertex3D_NoTex2 * const vertBuffer)
 {
+   const float angle = m_phitspinner ? m_phitspinner->m_spinnerMover.m_angle
+      : clamp(0.f, ANGTORAD(min(m_d.m_angleMin, m_d.m_angleMax)), ANGTORAD(max(m_d.m_angleMin, m_d.m_angleMax)));
+
    // early out in case still same rotation
-   if (m_phitspinner->m_spinnerMover.m_angle == m_vertexBuffer_spinneranimangle)
+   if (angle == m_vertexBuffer_spinneranimangle)
        return;
 
-   m_vertexBuffer_spinneranimangle = m_phitspinner->m_spinnerMover.m_angle;
+   m_vertexBuffer_spinneranimangle = angle;
 
-   const Matrix3D fullMatrix = Matrix3D::MatrixRotateX(-m_phitspinner->m_spinnerMover.m_angle)
+   const Matrix3D fullMatrix = Matrix3D::MatrixRotateX(-angle)
                              * Matrix3D::MatrixRotateZ(ANGTORAD(m_d.m_rotation));
 
    Vertex3D_NoTex2 *buf;
@@ -436,25 +415,15 @@ void Spinner::UpdatePlate(Vertex3D_NoTex2 * const vertBuffer)
 #pragma endregion
 
 
-void Spinner::SetObjectPos()
+void Spinner::Translate(const Vertex2D &offset)
 {
-   m_vpinball->SetObjectPosCur(m_d.m_vCenter.x, m_d.m_vCenter.y);
-}
-
-void Spinner::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_vCenter.x += dx;
-   m_d.m_vCenter.y += dy;
+   m_d.m_vCenter.x += offset.x;
+   m_d.m_vCenter.y += offset.y;
 }
 
 Vertex2D Spinner::GetCenter() const
 {
    return m_d.m_vCenter;
-}
-
-void Spinner::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_vCenter = pv;
 }
 
 void Spinner::Save(IObjectWriter& writer, const bool saveForUndo)
@@ -475,7 +444,7 @@ void Spinner::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteString(FID(MATR), m_d.m_szMaterial);
    writer.WriteString(FID(IMGF), m_d.m_szImage);
    writer.WriteString(FID(SURF), m_d.m_szSurface);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteBool(FID(REEN), m_d.m_reflectionEnabled);
 
    SaveSharedEditableFields(writer);
@@ -507,7 +476,7 @@ void Spinner::Load(IObjectReader& reader)
          case FID(SVIS): m_d.m_visible = reader.AsBool(); break;
          case FID(IMGF): m_d.m_szImage = reader.AsString(); break;
          case FID(SURF): m_d.m_szSurface = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(REEN): m_d.m_reflectionEnabled = reader.AsBool(); break;
          default: LoadSharedEditableField(tag, reader); break;
          }

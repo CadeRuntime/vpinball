@@ -15,20 +15,21 @@ public:
    ObjLoader() = default;
    ~ObjLoader()
    {
-      if (m_fHandle != nullptr) fclose(m_fHandle);
-      if (m_matFile != nullptr) fclose(m_matFile);
+      ExportEnd();
       m_verts.clear();
       m_indices.clear();
    }
 
-   bool Load(const string& filename, const bool flipTv, const bool convertToLeftHanded);
-   void Save(const string& filename, const string& description, const Mesh& mesh);
-   bool ExportStart(const string& filename);
+   bool Load(const std::filesystem::path& filename, const MeshUnits units);
+   bool Save(const std::filesystem::path& filename, const string& description, const Mesh& mesh, const MeshUnits units);
+   bool ExportStart(const std::filesystem::path& filename); // Opens the .obj and .mtl files, nothing may be written if it fails
    void ExportEnd()
    {
-      fclose(m_fHandle);
+      if (m_fHandle != nullptr)
+         fclose(m_fHandle);
       m_fHandle = nullptr;
-      fclose(m_matFile);
+      if (m_matFile != nullptr)
+         fclose(m_matFile);
       m_matFile = nullptr;
    }
    void UpdateFaceOffset(unsigned int numVertices)
@@ -39,7 +40,7 @@ public:
    {
       fprintf_s(m_fHandle, "o %s\n", objname.c_str());
    }
-   void WriteVertexInfo(const Vertex3D_NoTex2* verts, unsigned int numVerts);
+   void WriteVertexInfo(const Vertex3D_NoTex2* verts, unsigned int numVerts, const MeshUnits units = MeshUnits::VPUnits);
    void WriteFaceInfo(const vector<WORD>& faces);
    void WriteFaceInfoLong(const vector<unsigned int>& faces);
    void WriteFaceInfoList(const WORD* faces, const unsigned int numIndices);
@@ -47,7 +48,7 @@ public:
    {
       fprintf_s(m_fHandle, "usemtl %s\n", texelName.c_str());
    }
-   static bool LoadMaterial(const string& filename, Material* const mat);
+   static bool LoadMaterial(const std::filesystem::path& filename, Material* const mat);
    void WriteMaterial(string texelName, string texelFilename, const Material* const mat);
 
    const vector<Vertex3D_NoTex2>& GetVertices() const

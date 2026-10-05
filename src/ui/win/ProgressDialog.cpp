@@ -6,6 +6,8 @@
 #include "ui/win/resource.h"
 
 
+#define ID_SETTEXT 0x100
+
 ProgressDialog::ProgressDialog()
    : CDialog(IDD_PROGRESS)
 {
@@ -13,27 +15,31 @@ ProgressDialog::ProgressDialog()
 
 BOOL ProgressDialog::OnInitDialog()
 {
-#ifndef __STANDALONE__
    AttachItem(IDC_PROGRESS2, m_progressBar);
    AttachItem(IDC_STATUSNAME, m_progressName);
-#endif
    return TRUE;
 }
 
-void ProgressDialog::SetProgress(const string &text, const int value)
+BOOL ProgressDialog::OnCommand(WPARAM wparam, LPARAM lparam)
 {
-#ifndef __STANDALONE__
+   if (wparam == ID_SETTEXT)
+   {
+      std::unique_ptr<CString> wtext(reinterpret_cast<CString*>(lparam));
+      m_progressName.SetWindowText(*wtext);
+   }
+   return FALSE;
+}
+
+void ProgressDialog::SetProgress(const string &text, const float value)
+{
    if (IsWindow())
    {
-      m_progressName.SetWindowText(text.c_str());
-      if (value != -1)
-         m_progressBar.SetPos(value);
+      auto* wtext = new CString(text);
+      if (!PostMessage(WM_COMMAND, ID_SETTEXT, (LPARAM)wtext))
+         delete wtext;
+      if (value >= 0.f && m_progress != value)
+         PostMessage(m_progressBar.GetHwnd(), PBM_SETPOS, static_cast<WPARAM>((int)value), 0);
    }
-#else
-   if (value != -1 && m_progress != value)
-   {
-      PLOGI.printf("%s %d%%", text.c_str(), value);
+   if (value >= 0.f)
       m_progress = value;
-   }
-#endif
 }

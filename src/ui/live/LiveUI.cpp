@@ -9,6 +9,7 @@
 #include "fonts/DroidSansBold.h"
 #include "fonts/IconsForkAwesome.h"
 #include "fonts/ForkAwesome.h"
+#include "math/matrix.h"
 #include "plugins/VPXPlugin.h"
 #include "renderer/Renderer.h"
 #include "renderer/VRDevice.h"
@@ -81,7 +82,7 @@ LiveUI::LiveUI(RenderDevice *const rd)
 
    NewFrame();
 
-   m_showTouchOverlay = g_app->m_settings.GetPlayer_TouchOverlay();
+   m_showTouchOverlay = g_settingsService.GetAppSettings().GetPlayer_TouchOverlay();
 }
 
 LiveUI::~LiveUI()
@@ -105,6 +106,33 @@ LiveUI::~LiveUI()
 
       ImGui::DestroyContext();
    }
+}
+
+void LiveUI::Notify(const MsgSeverity severity, const string &title, const string &message)
+{
+   if (severity == MsgSeverity::Fatal)
+   {
+      // Fatal errors are reported through a blocking message box as the application is terminating
+      SDL_Window *const wnd = (m_player != nullptr && m_player->m_playfieldWnd != nullptr) ? m_player->m_playfieldWnd->GetCore() : nullptr;
+      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title.c_str(), message.c_str(), wnd);
+      return;
+   }
+   const int durationMs = severity == MsgSeverity::Error ? 10000 : severity == MsgSeverity::Warning ? 8000 : 5000;
+   PushNotification(message, durationMs);
+}
+
+bool LiveUI::Confirm(const string &title, const string &message, const bool fallback)
+{
+   SDL_Window *const wnd = (m_player != nullptr && m_player->m_playfieldWnd != nullptr) ? m_player->m_playfieldWnd->GetCore() : nullptr;
+   const SDL_MessageBoxButtonData buttons[] = {
+      { static_cast<Uint32>(fallback ? SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT : 0), 1, "Yes" },
+      { static_cast<Uint32>(SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT | (fallback ? 0 : SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT)), 0, "No" },
+   };
+   const SDL_MessageBoxData data = { SDL_MESSAGEBOX_WARNING, wnd, title.c_str(), message.c_str(), SDL_arraysize(buttons), buttons, nullptr };
+   int buttonId = fallback ? 1 : 0;
+   if (!SDL_ShowMessageBox(&data, &buttonId))
+      return fallback;
+   return buttonId == 1;
 }
 
 void LiveUI::MarkdownFormatCallback(const ImGui::MarkdownFormatInfo &markdownFormatInfo, bool start)
@@ -355,7 +383,7 @@ void LiveUI::RenderUI()
    // Tweak UI (aligned to playfield view, using custom flipper controls)
    m_inGameUI.Update();
 
-   if (!m_player->IsPlaying() && !m_editorUI.IsOpened())
+   if (!m_player->IsPlaying() && !m_player->m_isLoading && !m_editorUI.IsOpened())
    {
       ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 24 * m_uiScale, 4 * m_uiScale));
       ImGui::Begin("PauseOverlay", nullptr, ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus // Prevent focus issues
@@ -405,6 +433,7 @@ void LiveUI::RenderUI()
                tex->BackendUserData = new std::shared_ptr<BaseTexture>();
             auto texture = static_cast<std::shared_ptr<BaseTexture> *>(tex->BackendUserData);
             BaseTexture::Update(*texture, tex->Width, tex->Height, BaseTexture::RGBA, static_cast<const uint8_t *>(tex->GetPixels()));
+            (*texture)->SetName(std::format("ImGui.Tex{}", tex->UniqueID));
             tex->SetTexID(m_renderer->m_renderDevice->m_texMan.LoadTexture(texture->get(), false));
             tex->SetStatus(ImTextureStatus_OK);
          }
@@ -435,13 +464,19 @@ void LiveUI::RenderUI()
    matView[0] = matRotate * matTranslate * Matrix3D::MatrixOrthoOffCenterRH(0.f, right, bottom, 0.f, 0.f, 1.f);
    if (m_rd->m_nEyes == 2)
       matView[1] = matView[0];  
-   m_rd->m_uiShader->SetMatrix(SHADER_matWorldView, &matView[0], m_rd->m_nEyes);
-   m_rd->m_uiShader->SetVector(SHADER_staticColor_Alpha,
-      m_player->m_vrDevice ? ((float)m_player->m_vrDevice->GetEyeWidth() * 0.15f) : 0.f, // Stereo offset for VR (fake depth)
+   m_rd->m_uiShader->SetMatrix(ShaderUniform::matWorldView, &matView[0], m_rd->m_nEyes);
+   #ifdef ENABLE_XR
+   const bool onXrUILayer = m_player->m_vrDevice && m_rd->GetCurrentPass()->m_rt == m_player->m_vrDevice->GetUIRenderTarget();
+   #else
+   const bool onXrUILayer = false;
+   #endif
+   m_rd->m_uiShader->SetVector(ShaderUniform::staticColor_Alpha,
+      // Stereo offset for VR (fake depth), only when rendering per eye inside the stereo projection layer
+      (m_player->m_vrDevice && m_rd->GetCurrentPass()->m_rt->m_nLayers == 2) ? ((float)m_player->m_vrDevice->GetEyeWidth() * 0.15f) : 0.f,
       0.f, // Unused
       0.f, // Unused
-      // A value of 1.0 should be sdrWhite * 80, while in the WCG colorspace 80 nits is 0.5
-      m_player->m_playfieldWnd->IsWCGBackBuffer() ? (2.0f / m_player->m_playfieldWnd->GetSDRWhitePoint()) : 1.f); // SDR color scaling
+      // SDR white level to place UI white at, normalized to the 10000 nits PQ encodes (the white point counts in multiples of 80 nits). 0 = no conversion (sRGB backbuffer)
+      (!onXrUILayer && m_player->m_playfieldWnd->IsWCGBackBuffer()) ? (m_player->m_playfieldWnd->GetSDRWhitePoint() * (float)(80. / 10000.)) : 0.f);
    m_rd->ResetRenderState();
    m_rd->SetRenderState(RenderState::COLORWRITEENABLE, RenderState::RGBMASK_RGBA);
    m_rd->SetRenderState(RenderState::ALPHABLENDENABLE, RenderState::RS_TRUE);
@@ -451,15 +486,22 @@ void LiveUI::RenderUI()
    m_rd->SetRenderState(RenderState::CULLMODE, RenderState::CULL_NONE);
    m_rd->SetRenderState(RenderState::ZWRITEENABLE, RenderState::RS_FALSE);
    m_rd->SetRenderState(RenderState::ZENABLE, RenderState::RS_FALSE);
-   m_rd->m_uiShader->SetTechnique(SHADER_TECHNIQUE_LiveUI);
+   #ifdef ENABLE_BGFX
+   if (m_rd->GetCurrentPass()->m_rt->m_nLayers == 1)
+      m_rd->m_uiShader->SetTechnique(ShaderTechnique::LiveUI_mono);
+   else
+   #endif
+      m_rd->m_uiShader->SetTechnique(ShaderTechnique::LiveUI);
    if (static_cast<int>(m_meshBuffers.size()) < draw_data->CmdListsCount)
       m_meshBuffers.resize(draw_data->CmdListsCount);
    int depthSort = -10000;
+   bool hasContent = false;
    for (int n = 0; n < draw_data->CmdListsCount; n++)
    {
       const ImDrawList * const cmd_list = draw_data->CmdLists[n];
       const unsigned int numVertices = cmd_list->VtxBuffer.size();
       const unsigned int numIndices = cmd_list->IdxBuffer.size();
+      hasContent |= numIndices > 0;
 
       if ((numVertices != 0) && (numIndices != 0))
       {
@@ -496,13 +538,16 @@ void LiveUI::RenderUI()
       {
          if (cmd->ElemCount != 0)
          {
-            m_rd->m_uiShader->SetVector(SHADER_clip_plane, cmd->ClipRect.x, cmd->ClipRect.y, cmd->ClipRect.z, cmd->ClipRect.w);
-            m_rd->m_uiShader->SetTexture(SHADER_tex_base_color, cmd->GetTexID());
-            m_rd->DrawMesh(m_rd->m_uiShader, true, Vertex3Ds(), static_cast<float>(depthSort), m_meshBuffers[n], RenderDevice::TRIANGLELIST, cmd->IdxOffset, cmd->ElemCount);
+            m_rd->m_uiShader->SetVector(ShaderUniform::clip_plane, cmd->ClipRect.x, cmd->ClipRect.y, cmd->ClipRect.z, cmd->ClipRect.w);
+            m_rd->m_uiShader->SetTexture(ShaderUniform::tex_base_color, cmd->GetTexID());
+            m_rd->DrawMesh(m_rd->m_uiShader, true, Vertex3Ds(0.f, 0.f, 0.f), static_cast<float>(depthSort), m_meshBuffers[n], RenderDevice::TRIANGLELIST, cmd->IdxOffset, cmd->ElemCount);
             depthSort--;
          }
       }
    }
+
+   if (m_player->m_vrDevice)
+      m_player->m_vrDevice->SetShowUILayer(hasContent);
 
    NewFrame();
 }
@@ -562,8 +607,8 @@ void LiveUI::HideUI()
    if (m_inGameUI.IsOpened())
       m_inGameUI.Close();
    m_editorUI.Close();
-   m_player->m_ptable->m_settings.Save();
-   g_app->m_settings.Save();
+   g_settingsService.GetActiveSettings().Save();
+   g_settingsService.GetAppSettings().Save();
    m_player->SetPlayState(true);
 }
 
@@ -660,7 +705,7 @@ void LiveUI::SetupImGuiStyle(const bool isEditor) const
    style.Colors[ImGuiCol_Button] = ImVec4(0.2f, 0.2f, 0.216f, 1.0f);
    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.114f, 0.592f, 0.925f, 1.0f);
    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.114f, 0.592f, 0.925f, 1.0f);
-   style.Colors[ImGuiCol_Header] = isEditor ? ImColor(0xFF3d3d3d) : ImColor(0.2f, 0.2f, 0.216f, 1.0f);
+   style.Colors[ImGuiCol_Header] = isEditor ? ImColor(0xFF2B5A8C) : ImColor(0.2f, 0.2f, 0.216f, 1.0f);
    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.114f, 0.592f, 0.925f, 1.0f);
    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.0f, 0.467f, 0.784f, 1.0f);
    style.Colors[ImGuiCol_Separator] = ImVec4(0.306f, 0.306f, 0.306f, 1.0f);

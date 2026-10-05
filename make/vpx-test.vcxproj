@@ -29,16 +29,82 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug_BGFX|Win32'">
     <TargetName>VPXTest_BGFX</TargetName>
   </PropertyGroup>
+  <ItemDefinitionGroup>
+    <Manifest>
+      <!-- UTF-8 process code page (see the manifest file) -->
+      <AdditionalManifestFiles>$(MSBuildThisFileDirectory)..\..\src\ui\win\res\utf8.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
+    </Manifest>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="../gen/vpinball_i.c">
         <PrecompiledHeader>NotUsing</PrecompiledHeader>
         <GenerateXMLDocumentationFiles>false</GenerateXMLDocumentationFiles>
     </ClCompile>
+    <ClCompile Include="../../plugins/upscaledmd/xbrz/xbrz.cpp">
+        <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="../../tests/vpx-test.cpp" />
-    <ClCompile Include="../../tests/test-base-render.cpp" />
-    <ClCompile Include="../../tests/test-plugin-arrays.cpp" />
+    <ClCompile Include="../../tests/audio/test-audioplayer.cpp" />
+    <ClCompile Include="../../tests/core/test-def.cpp" />
+    <ClCompile Include="../../tests/core/test-editablereg.cpp" />
+    <ClCompile Include="../../tests/core/test-filelocator.cpp" />
+    <ClCompile Include="../../tests/core/test-layeredinipropertystore.cpp" />
+    <ClCompile Include="../../tests/core/test-pinundo.cpp" />
+    <ClCompile Include="../../tests/core/test-propertydef.cpp" />
+    <ClCompile Include="../../tests/core/test-propertyregistry.cpp" />
+    <ClCompile Include="../../tests/core/test-settings.cpp" />
+    <ClCompile Include="../../tests/core/test-tabledb.cpp" />
+    <ClCompile Include="../../tests/input/test-buttonmapping.cpp" />
+    <ClCompile Include="../../tests/input/test-plunger-kalman.cpp" />
+    <ClCompile Include="../../tests/input/test-scancodes.cpp" />
+    <ClCompile Include="../../tests/input/test-sensormapping.cpp" />
+    <ClCompile Include="../../tests/misc/test-collection.cpp" />
+    <ClCompile Include="../../tests/misc/test-material.cpp" />
+    <ClCompile Include="../../tests/misc/test-pinbinary.cpp" />
+    <ClCompile Include="../../tests/misc/test-pintable.cpp" />
+    <ClCompile Include="../../tests/misc/test-plugin-arrays.cpp" />
+    <ClCompile Include="../../tests/misc/test-sound.cpp" />
+    <ClCompile Include="../../tests/misc/test-table-io.cpp" />
+    <ClCompile Include="../../tests/parts/test-ball.cpp" />
+    <ClCompile Include="../../tests/parts/test-bumper.cpp" />
+    <ClCompile Include="../../tests/parts/test-decal.cpp" />
+    <ClCompile Include="../../tests/parts/test-dispreel.cpp" />
+    <ClCompile Include="../../tests/parts/test-dragpoint.cpp" />
+    <ClCompile Include="../../tests/parts/test-flasher.cpp" />
+    <ClCompile Include="../../tests/parts/test-flipper.cpp" />
+    <ClCompile Include="../../tests/parts/test-gate.cpp" />
+    <ClCompile Include="../../tests/parts/test-hittarget.cpp" />
+    <ClCompile Include="../../tests/parts/test-kicker.cpp" />
+    <ClCompile Include="../../tests/parts/test-light.cpp" />
+    <ClCompile Include="../../tests/parts/test-lightseq.cpp" />
+    <ClCompile Include="../../tests/parts/test-partgroup.cpp" />
+    <ClCompile Include="../../tests/parts/test-plunger.cpp" />
+    <ClCompile Include="../../tests/parts/test-primitive.cpp" />
+    <ClCompile Include="../../tests/parts/test-ramp.cpp" />
+    <ClCompile Include="../../tests/parts/test-rubber.cpp" />
+    <ClCompile Include="../../tests/parts/test-spinner.cpp" />
+    <ClCompile Include="../../tests/parts/test-surface.cpp" />
+    <ClCompile Include="../../tests/parts/test-textbox.cpp" />
+    <ClCompile Include="../../tests/parts/test-timer.cpp" />
+    <ClCompile Include="../../tests/parts/test-trigger.cpp" />
+    <ClCompile Include="../../tests/physics/physics-harness.cpp" />
+    <ClCompile Include="../../tests/physics/test-ball-spin.cpp" />
+    <ClCompile Include="../../tests/physics/test-cabinet.cpp" />
+    <ClCompile Include="../../tests/physics/test-collide.cpp" />
+    <ClCompile Include="../../tests/physics/test-hittimer.cpp" />
+    <ClCompile Include="../../tests/physics/test-motion-kalman.cpp" />
+    <ClCompile Include="../../tests/physics/test-physics-defects.cpp" />
+    <ClCompile Include="../../tests/physics/test-physics-engine.cpp" />
+    <ClCompile Include="../../tests/physics/test-quadtree.cpp" />
+    <ClCompile Include="../../tests/plugins/alphadmd/test-alphanumeric.cpp" />
+    <ClCompile Include="../../tests/plugins/plugins/test-colorspace.cpp" />
+    <ClCompile Include="../../tests/plugins/plugins/test-msgpluginmanager.cpp" />
+    <ClCompile Include="../../tests/plugins/plugins/test-resuriresolver.cpp" />
+    <ClCompile Include="../../tests/plugins/upscaledmd/test-upscalers.cpp" />
+    <ClCompile Include="../../tests/render/test-base-render.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="../../tests/physics/physics-harness.h" />
     <ClInclude Include="../../tests/vpx-test.h" />
   </ItemGroup>
   <ItemGroup>

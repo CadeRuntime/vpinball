@@ -60,8 +60,7 @@ class DeviceRegistry
 public:
    // Build manifest from all discovered sources
    cade::events::DeviceManifest BuildManifest(
-      const std::vector<InputSrcId>& inputs,
-      const std::vector<DevSrcId>& devices,
+      const std::vector<StateSrcId>& states,
       const MsgPluginAPI* msgApi,
       unsigned int endpointId,
       unsigned int getGameElementsMsgId);

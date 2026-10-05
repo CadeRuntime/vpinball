@@ -3,8 +3,14 @@
 #include "common.h"
 #include "SurfaceGraphics.h"
 #include "plugins/VPXPlugin.h"
+#include "plugins/ControllerPlugin.h"
 #include "resources/AssetManager.h"
 #include "actors/Group.h"
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 namespace Flex {
 
@@ -38,7 +44,7 @@ typedef enum
 class FlexDMD final
 {
 public:
-   FlexDMD(VPXPluginAPI* vpxApi);
+   FlexDMD(const MsgPluginAPI* msgApi, unsigned int endpointId, VPXPluginAPI* vpxApi);
    ~FlexDMD();
 
    PSC_IMPLEMENT_REFCOUNT()
@@ -51,27 +57,27 @@ public:
    void SetRun(bool run);
 
    bool GetShow() const { return m_show; }
-   void SetShow(bool v) { if (m_show != v) { m_show = v; if (m_run) OnDMDChanged(); } }
+   void SetShow(bool v);
 
    const string& GetGameName() const { return m_szGameName; }
    void SetGameName(const string& name) { m_szGameName = name; }
 
    const string& GetTableFile() const { return m_pAssetManager->GetTableFile(); }
-   void SetTableFile(const string& name) { m_pAssetManager->SetTableFile(name); }
+   void SetTableFile(const string& name) { std::lock_guard renderLock(m_renderMutex); m_pAssetManager->SetTableFile(name); }
 
    int GetWidth() const { return m_width; }
    int GetHeight() const { return m_height; }
-   void SetWidth(int w) { if (m_width == w) return; m_width = w; m_pStage->SetSize(m_width, m_height); DiscardFrames(); if (m_run && m_show) OnDMDChanged(); }
-   void SetHeight(int h) { if (m_height == h) return; m_height = h; m_pStage->SetSize(m_width, m_height); DiscardFrames(); if (m_run && m_show) OnDMDChanged(); }
+   void SetWidth(int w);
+   void SetHeight(int h);
 
    RenderMode GetRenderMode() const { return m_renderMode; }
-   void SetRenderMode(RenderMode renderMode) { m_renderMode = renderMode; DiscardFrames(); if (m_run && m_show) OnDMDChanged(); }
+   void SetRenderMode(RenderMode renderMode);
 
    const string& GetProjectFolder() const { return m_pAssetManager->GetBasePath(); }
-   void SetProjectFolder(const string& folder) { m_pAssetManager->SetBasePath(folder); }
+   void SetProjectFolder(const string& folder) { std::lock_guard renderLock(m_renderMutex); m_pAssetManager->SetBasePath(folder); }
 
    bool GetClear() const { return m_clear; }
-   void SetClear(bool v) { m_clear = v; }
+   void SetClear(bool v) { std::lock_guard renderLock(m_renderMutex); m_clear = v; }
 
    void Render();
    const std::vector<uint32_t>& GetDmdColoredPixels();
@@ -79,8 +85,9 @@ public:
 
    void SetSegments(const std::vector<uint16_t>& segments);
 
-   void LockRenderThread() { m_renderLockCount++; }
-   void UnlockRenderThread() { m_renderLockCount--; }
+   void LockRenderThread() { m_renderMutex.lock(); }
+   void UnlockRenderThread() { m_renderMutex.unlock(); }
+   std::recursive_mutex& GetRenderMutex() { return m_renderMutex; }
 
    Group* GetStage() const { m_pStage->AddRef(); return m_pStage; }
 
@@ -100,28 +107,40 @@ public:
    void SetId(uint32_t id) { m_id = id; }
    uint32_t GetId() const { return m_id; }
 
-   void SetOnDMDChangedHandler(void (*handler)(FlexDMD*)) { m_onDMDChangedHandler = handler; }
-   void SetOnDestroyHandler(void (*handler)(FlexDMD*)) { m_onDestroyHandler = handler; }
+   void SetOnDestroyHandler(const std::function<void(FlexDMD*)>& handler) { m_onDestroyHandler = handler; }
 
    SurfaceGraphics* GetGraphics() const { return m_pSurface; }
 
+private:
+   std::function<void(FlexDMD*)> m_onDestroyHandler;
+   PinballPlugin::Controller::CtrlItemProvider<DisplaySrcId> m_dmdProvider;
+   PinballPlugin::Controller::CtrlItemProvider<SegSrcId> m_segProvider;
+
+   void AdvertiseDisplay();
+   struct CallContext
+   {
+      CallContext(FlexDMD* me, unsigned int index, const void* renderFrame)
+         : me(me)
+         , index(index)
+         , renderFrame(renderFrame)
+      {
+      }
+      FlexDMD* me;
+      unsigned int index;
+      const void* renderFrame; // DMD frame backing store, owned by FlexDMD, valid while advertised
+      unsigned int segFrameId = 0; // SEG frame id matching segFrame content
+      float segFrame[CTLPI_SEG_MAX_DISP_ELEMENTS * 16] = { }; // SEG frame backing store
+   };
+   std::vector<CallContext> m_callContexts;
+   static SegDisplayFrame GetSegState(void* callContext);
+   static DisplayFrame GetRenderFrame(void* callContext);
    uint8_t* UpdateRGBFrame();
    uint8_t* UpdateLum8Frame();
    float* UpdateLumFP32Frame();
-   const uint16_t* GetSegFrame() const { return m_segData; }
-   unsigned int GetFrameId() const { return m_frameId; }
-
-private:
-   void (*m_onDMDChangedHandler)(FlexDMD*) = nullptr;
-   void (*m_onDestroyHandler)(FlexDMD*) = nullptr;
-   void OnDMDChanged()
-   {
-      if (m_onDMDChangedHandler != nullptr)
-         m_onDMDChangedHandler(this);
-   }
 
    void DiscardFrames()
    {
+      assert(m_dmdProvider.GetItems().empty());
       delete m_pSurface; m_pSurface = nullptr;
       delete[] m_rgbFrame; m_rgbFrame = nullptr;
       delete[] m_lum8Frame; m_lum8Frame = nullptr;
@@ -131,6 +150,7 @@ private:
    }
 
    VPXPluginAPI* m_vpxApi = nullptr;
+   const unsigned int m_endpointId;
 
    uint8_t* m_rgbFrame = nullptr;
    bool m_rgbFrameDirty = true;
@@ -151,10 +171,9 @@ private:
 
    string m_szGameName;
    uint64_t m_lastRenderTick = 0;
-   unsigned int m_frameId = 0;
+   std::atomic<unsigned int> m_frameId = 0;
    int32_t m_runtimeVersion = 1008;
    bool m_clear = false;
-   int m_renderLockCount = 0;
    uint16_t m_segData[128] = {};
    int m_width = 128;
    int m_height = 32;
@@ -167,8 +186,20 @@ private:
    uint32_t m_id = 0;
    SurfaceGraphics* m_pSurface = nullptr;
 
-   //std::thread* m_pThread;
-   //void RenderLoop();
+   // Rendering is performed on a dedicated thread, started when the display is advertised and
+   // stopped when it is unadvertised. It is triggered by display frame requests. All mutable
+   // state (scene graph, render surface, frame buffers) is guarded by m_renderMutex, which is
+   // held by the client thread between LockRenderThread/UnlockRenderThread calls, pausing the
+   // render thread meanwhile.
+   std::recursive_mutex m_renderMutex;
+   std::thread m_renderThread;
+   std::mutex m_requestMutex;
+   std::condition_variable m_requestCond;
+   bool m_renderThreadStop = false;
+   bool m_renderRequested = false;
+   void StartRenderThread();
+   void StopRenderThread();
+   void RenderLoop();
 };
 
 }

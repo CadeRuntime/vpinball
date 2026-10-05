@@ -21,6 +21,7 @@ echo "  LIBDOF_SHA: ${LIBDOF_SHA}"
 echo "  FFMPEG_SHA: ${FFMPEG_SHA}"
 echo "  LIBWINEVBS_SHA: ${LIBWINEVBS_SHA}"
 echo "  LIBZIP_SHA: ${LIBZIP_SHA}"
+echo "  LIBBACKTRACE_SHA: ${LIBBACKTRACE_SHA}"
 echo ""
 
 mkdir -p "external/windows-x64-mingw/${BUILD_TYPE}"
@@ -155,7 +156,6 @@ if [ "${BGFX_EXPECTED_SHA}" != "${BGFX_FOUND_SHA}" ]; then
    mv ../bgfx-${BGFX_PATCH_SHA} bgfx
    sed -i.bak 's/set_target_properties(bx PROPERTIES FOLDER "bgfx")/set_target_properties(bx PROPERTIES FOLDER "bgfx" OUTPUT_NAME "bx64")/g' cmake/bx/bx.cmake
    sed -i.bak 's/set_target_properties(bimg PROPERTIES FOLDER "bgfx")/set_target_properties(bimg PROPERTIES FOLDER "bgfx" OUTPUT_NAME "bimg64")/g' cmake/bimg/bimg.cmake
-   sed -i.bak 's/set_target_properties(bimg_decode PROPERTIES FOLDER "bgfx")/set_target_properties(bimg_decode PROPERTIES FOLDER "bgfx" OUTPUT_NAME "bimg_decode64")/g' cmake/bimg/bimg_decode.cmake
    sed -i.bak 's/set_target_properties(bimg_encode PROPERTIES FOLDER "bgfx")/set_target_properties(bimg_encode PROPERTIES FOLDER "bgfx" OUTPUT_NAME "bimg_encode64")/g' cmake/bimg/bimg_encode.cmake
    sed -i.bak 's/set_target_properties(bgfx PROPERTIES FOLDER "bgfx")/set_target_properties(bgfx PROPERTIES FOLDER "bgfx" OUTPUT_NAME "bgfx64")/g' cmake/bgfx/bgfx.cmake
    cmake -S. \
@@ -188,7 +188,7 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    mkdir pinmame
    cd pinmame
 
-   curl -sL https://github.com/vbousquet/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
+   curl -sL https://github.com/vpinball/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
@@ -230,7 +230,9 @@ if [ "${OPENXR_EXPECTED_SHA}" != "${OPENXR_FOUND_SHA}" ]; then
    sed -i.bak 's/set_target_properties(openxr_loader PROPERTIES FOLDER ${LOADER_FOLDER})/set_target_properties(openxr_loader PROPERTIES FOLDER ${LOADER_FOLDER} OUTPUT_NAME "openxr_loader64" PREFIX "")/g' src/loader/CMakeLists.txt
    sed -i.bak 's|\${CMAKE_CURRENT_BINARY_DIR}/$<CONFIGURATION>/openxr_loader|\${CMAKE_CURRENT_BINARY_DIR}/$<CONFIGURATION>/openxr_loader64|g' src/loader/CMakeLists.txt
    cmake \
+      -DBUILD_WITH_SYSTEM_JSONCPP=OFF \
       -DBUILD_TESTS=OFF \
+      -DBUILD_API_LAYERS=OFF \
       -DDYNAMIC_LOADER=ON \
       -DOPENXR_DEBUG_POSTFIX='' \
       -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
@@ -446,6 +448,36 @@ if [ "${LIBZIP_EXPECTED_SHA}" != "${LIBZIP_FOUND_SHA}" ]; then
 fi
 
 #
+# build libbacktrace
+#
+
+LIBBACKTRACE_EXPECTED_SHA="${LIBBACKTRACE_SHA}"
+LIBBACKTRACE_FOUND_SHA="$([ -f libbacktrace/cache.txt ] && cat libbacktrace/cache.txt || echo "")"
+
+if [ "${LIBBACKTRACE_EXPECTED_SHA}" != "${LIBBACKTRACE_FOUND_SHA}" ]; then
+   echo "Building libbacktrace. Expected: ${LIBBACKTRACE_EXPECTED_SHA}, Found: ${LIBBACKTRACE_FOUND_SHA}"
+
+   rm -rf libbacktrace
+   mkdir libbacktrace
+   cd libbacktrace
+
+   curl -sL https://github.com/ianlancetaylor/libbacktrace/archive/${LIBBACKTRACE_SHA}.tar.gz -o libbacktrace-${LIBBACKTRACE_SHA}.tar.gz
+   tar xzf libbacktrace-${LIBBACKTRACE_SHA}.tar.gz
+   mv libbacktrace-${LIBBACKTRACE_SHA} libbacktrace
+   cd libbacktrace
+   ./configure \
+      --enable-static \
+      --disable-shared \
+      CFLAGS="-g1 -O2"
+   make -j${NUM_PROCS}
+   cd ..
+
+   echo "$LIBBACKTRACE_EXPECTED_SHA" > cache.txt
+
+   cd ..
+fi
+
+#
 # copy libraries
 #
 
@@ -470,17 +502,19 @@ cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
 cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 cp bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx64.a ../../../third-party/build-libs/windows-mingw-x64
 cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg64.a ../../../third-party/build-libs/windows-mingw-x64
-cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_decode64.a ../../../third-party/build-libs/windows-mingw-x64
 cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode64.a ../../../third-party/build-libs/windows-mingw-x64
 cp bgfx/bgfx.cmake/build/cmake/bx/libbx64.a ../../../third-party/build-libs/windows-mingw-x64
 
 cp pinmame/pinmame/build/pinmame64.dll ../../../third-party/runtime-libs/windows-mingw-x64
 cp pinmame/pinmame/build/libpinmame64.dll.a ../../../third-party/build-libs/windows-mingw-x64
-cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include
+mkdir -p ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
 
 cp openxr/openxr/build/src/loader/openxr_loader64.dll ../../../third-party/runtime-libs/windows-mingw-x64
 cp openxr/openxr/build/src/loader/libopenxr_loader64.dll.a ../../../third-party/build-libs/windows-mingw-x64
-cp -r openxr/openxr/include/openxr ../../../third-party/include
+mkdir -p ../../../third-party/include/openxr
+cp openxr/openxr/build/include/openxr/*.h ../../../third-party/include/openxr
 
 cp libdmdutil/libdmdutil/build/dmdutil64.dll ../../../third-party/runtime-libs/windows-mingw-x64
 cp libdmdutil/libdmdutil/build/dmdutil64.dll.a ../../../third-party/build-libs/windows-mingw-x64
@@ -519,11 +553,9 @@ cp libwinevbs/libwinevbs/build/winevbs64.dll ../../../third-party/runtime-libs/w
 cp libwinevbs/libwinevbs/build/libwinevbs64.dll.a ../../../third-party/build-libs/windows-mingw-x64
 mkdir -p ../../../third-party/include/libwinevbs/wine/include
 mkdir -p ../../../third-party/include/libwinevbs/atl/include
-mkdir -p ../../../third-party/include/libwinevbs/atlmfc/include
 cp libwinevbs/libwinevbs/include/libwinevbs.h ../../../third-party/include/libwinevbs/
 cp -r libwinevbs/libwinevbs/wine/include/* ../../../third-party/include/libwinevbs/wine/include/
 cp -r libwinevbs/libwinevbs/atl/include/* ../../../third-party/include/libwinevbs/atl/include/
-cp -r libwinevbs/libwinevbs/atlmfc/include/* ../../../third-party/include/libwinevbs/atlmfc/include/
 
 for LIB in avcodec avdevice avfilter avformat avutil swresample swscale; do
    DIR="lib${LIB}"
@@ -547,3 +579,7 @@ cp libzip/libzip/build/lib/libzip64.dll ../../../third-party/runtime-libs/window
 cp libzip/libzip/build/lib/libzip64.dll.a ../../../third-party/build-libs/windows-mingw-x64
 cp libzip/libzip/build/zipconf.h ../../../third-party/include
 cp libzip/libzip/lib/zip.h ../../../third-party/include
+
+cp libbacktrace/libbacktrace/.libs/libbacktrace.a ../../../third-party/build-libs/windows-mingw-x64
+cp libbacktrace/libbacktrace/backtrace.h ../../../third-party/include
+cp libbacktrace/libbacktrace/backtrace-supported.h ../../../third-party/include

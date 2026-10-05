@@ -5,6 +5,7 @@
 
 #include "core/VPApp.h"
 #include "core/VPXPluginAPIImpl.h"
+#include "math/matrix.h"
 #include "parts/light.h"
 #include "plugins/MsgPluginManager.h"
 #include "renderer/Renderer.h"
@@ -12,8 +13,6 @@
 #include "renderer/RenderCommand.h"
 #include "renderer/Shader.h"
 #include "ui/live/LiveUI.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/color.h"
 
 
@@ -23,7 +22,7 @@ unsigned int Ball::GetNextBallID() { unsigned int id = Ball::m_nextBallID; Ball:
 
 Ball::Ball() : m_id(GetNextBallID())
 {
-   m_wzName = std::format(L"LiveBall{}", m_id); // Default name
+   m_name = std::format("LiveBall{}", m_id); // Default name
    m_hitBall.m_d.m_pos = Vertex3Ds(0.f, 0.f, DEFAULT_BALL_SIZE);
    m_hitBall.m_d.m_radius = DEFAULT_BALL_SIZE;
    m_hitBall.m_d.m_mass = 1.f;
@@ -59,15 +58,10 @@ HRESULT Ball::Init(const float x, const float y, const bool fromMouseClick, cons
    return S_OK;
 }
 
-void Ball::SetObjectPos()
+void Ball::Translate(const Vertex2D &offset)
 {
-    m_vpinball->SetObjectPosCur(m_hitBall.m_d.m_pos.x, m_hitBall.m_d.m_pos.y);
-}
-
-void Ball::MoveOffset(const float dx, const float dy)
-{
-   m_hitBall.m_d.m_pos.x += dx;
-   m_hitBall.m_d.m_pos.y += dy;
+   m_hitBall.m_d.m_pos.x += offset.x;
+   m_hitBall.m_d.m_pos.y += offset.y;
 }
 
 Vertex2D Ball::GetCenter() const
@@ -75,15 +69,9 @@ Vertex2D Ball::GetCenter() const
    return {m_hitBall.m_d.m_pos.x, m_hitBall.m_d.m_pos.y};
 }
 
-void Ball::PutCenter(const Vertex2D& pv)
-{
-   m_hitBall.m_d.m_pos.x = pv.x;
-   m_hitBall.m_d.m_pos.y = pv.y;
-}
-
 void Ball::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsBall_##prop() : Settings::GetDefaultPropsBall_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsBall_##prop() : Settings::GetDefaultPropsBall_##prop##_Default()
    LinkProp(m_hitBall.m_d.m_mass, Mass);
    LinkProp(m_hitBall.m_d.m_radius, Radius);
    LinkProp(m_d.m_forceReflection, ForceReflection);
@@ -102,7 +90,7 @@ void Ball::SetDefaults(const bool fromMouseClick)
 
 void Ball::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsBall_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsBall_##prop(field, false)
    LinkProp(m_hitBall.m_d.m_mass, Mass);
    LinkProp(m_hitBall.m_d.m_radius, Radius);
    LinkProp(m_d.m_forceReflection, ForceReflection);
@@ -135,7 +123,7 @@ void Ball::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteBool(FID(REEN), m_d.m_reflectionEnabled);
    writer.WriteBool(FID(TMON), m_timerEnabled);
    writer.WriteInt(FID(TMIN), m_timerInterval);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    SaveSharedEditableFields(writer);
    writer.EndObject();
 }
@@ -162,7 +150,8 @@ void Ball::Load(IObjectReader& reader)
          case FID(SPHR): m_d.m_pinballEnvSphericalMapping = reader.AsBool(); break;
          case FID(TMON): m_timerEnabled = reader.AsBool(); break;
          case FID(TMIN): m_timerInterval = reader.AsInt(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
+         case FID(REEN): m_d.m_reflectionEnabled = reader.AsBool(); break;
          default: LoadSharedEditableField(tag, reader); break;
          }
          return true;
@@ -170,27 +159,6 @@ void Ball::Load(IObjectReader& reader)
 }
 
 #pragma endregion
-
-
-void Ball::UIRenderPass1(Sur *const psur)
-{
-}
-
-void Ball::UIRenderPass2(Sur *const psur)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(-1);
-   psur->SetObject(this);
-   psur->Ellipse(m_hitBall.m_d.m_pos.x, m_hitBall.m_d.m_pos.y, m_hitBall.m_d.m_radius);
-}
-
-void Ball::RenderBlueprint(Sur *psur, const bool solid)
-{
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(solid ? BLUEPRINT_SOLID_COLOR : -1);
-   psur->SetObject(this);
-   psur->Ellipse(m_hitBall.m_d.m_pos.x, m_hitBall.m_d.m_pos.y, m_hitBall.m_d.m_radius);
-}
 
 
 #pragma region Physics
@@ -308,7 +276,7 @@ void Ball::Render(const unsigned int renderMask)
    // Set the render state to something that will always display for debug mode
    m_renderer->m_renderDevice->SetRenderState(RenderState::ZENABLE, g_pplayer->m_debugBalls ? RenderState::RS_FALSE : RenderState::RS_TRUE);
 
-   m_renderer->m_renderDevice->m_ballShader->SetVector(SHADER_invTableRes_reflection, 
+   m_renderer->m_renderDevice->m_ballShader->SetVector(ShaderUniform::invTableRes_reflection, 
       1.0f / (m_ptable->m_right - m_ptable->m_left),
       1.0f / (m_ptable->m_bottom - m_ptable->m_top), 
       saturate(m_ptable->m_ballPlayfieldReflectionStrength * m_d.m_playfieldReflectionStrength), 0.f);
@@ -381,10 +349,10 @@ void Ball::Render(const unsigned int renderMask)
       }
    }
    #if defined(ENABLE_OPENGL) || defined(ENABLE_BGFX)
-   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(SHADER_ballLightPos, (vec4 *)lightPos, MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES);
-   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(SHADER_ballLightEmission, (vec4 *)lightEmission, MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES);
+   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(ShaderUniform::ballLightPos, (vec4 *)lightPos, MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES);
+   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(ShaderUniform::ballLightEmission, (vec4 *)lightEmission, MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES);
    #elif defined(ENABLE_DX9)
-   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(SHADER_ballPackedLights, (vec4 *)l, sizeof(CLight) * (MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES) / (4 * sizeof(float)));
+   m_renderer->m_renderDevice->m_ballShader->SetFloat4v(ShaderUniform::ballPackedLights, (vec4 *)l, sizeof(CLight) * (MAX_LIGHT_SOURCES + MAX_BALL_LIGHT_SOURCES) / (4 * sizeof(float)));
    #endif
 
    // now for a weird hack: make material more rough, depending on how near the nearest lightsource is, to 'emulate' the area of the bulbs (as VP only features point lights so far)
@@ -395,7 +363,7 @@ void Ball::Render(const unsigned int renderMask)
        Roughness = min(max(dist*0.006f, 0.4f), Roughness);
    }
    const vec4 rwem(exp2f(10.0f * Roughness + 1.0f), 0.f, 1.f, 0.05f);
-   m_renderer->m_renderDevice->m_ballShader->SetVector(SHADER_Roughness_WrapL_Edge_Thickness, &rwem);
+   m_renderer->m_renderDevice->m_ballShader->SetVector(ShaderUniform::Roughness_WrapL_Edge_Thickness, &rwem);
 
    // ************************* draw the ball itself ****************************
    Vertex2D antiStretch(1.f, 1.f);
@@ -429,7 +397,7 @@ void Ball::Render(const unsigned int renderMask)
    }
 
    const vec4 diffuse = convertColor(m_d.m_color, 1.0f);
-   m_renderer->m_renderDevice->m_ballShader->SetVector(SHADER_cBase_Alpha, &diffuse);
+   m_renderer->m_renderDevice->m_ballShader->SetVector(ShaderUniform::cBase_Alpha, &diffuse);
    if (diffuse.w < 1.0f)
    {
       m_renderer->m_renderDevice->SetRenderState(RenderState::ALPHABLENDENABLE, RenderState::RS_TRUE);
@@ -449,26 +417,26 @@ void Ball::Render(const unsigned int renderMask)
    const Matrix3D scale = Matrix3D::MatrixScale(m_hitBall.m_d.m_radius * antiStretch.x, m_hitBall.m_d.m_radius * antiStretch.y, m_hitBall.m_d.m_radius * antiStretch.y);
    //const Matrix3D trans = Matrix3D::MatrixTranslate(m_hitBall.m_d.m_pos.x, m_hitBall.m_d.m_pos.y, zheight);
    //const Matrix3D m3D_full = rot * scale * trans;
-   //m_renderer->m_renderDevice->m_ballShader->SetMatrix(SHADER_orientation, &m3D_full);
+   //m_renderer->m_renderDevice->m_ballShader->SetMatrix(ShaderUniform::orientation, &m3D_full);
 
    m_renderer->m_renderDevice->SetRenderState(RenderState::ZWRITEENABLE, RenderState::RS_TRUE);
    bool sphericalMapping;
    if (!m_pinballEnv)
    {
       sphericalMapping = false; // Environment texture is an equirectangular map
-      m_renderer->m_renderDevice->m_ballShader->SetTexture(SHADER_tex_ball_color, m_renderer->GetBallEnvironment());
+      m_renderer->m_renderDevice->m_ballShader->SetTexture(ShaderUniform::tex_ball_color, m_renderer->GetBallEnvironment());
    }
    else
    {
       sphericalMapping = m_d.m_pinballEnvSphericalMapping;
-      m_renderer->m_renderDevice->m_ballShader->SetTexture(SHADER_tex_ball_color, m_pinballEnv);
+      m_renderer->m_renderDevice->m_ballShader->SetTexture(ShaderUniform::tex_ball_color, m_pinballEnv);
    }
    if (m_pinballDecal)
-      m_renderer->m_renderDevice->m_ballShader->SetTexture(SHADER_tex_ball_decal, m_pinballDecal);
+      m_renderer->m_renderDevice->m_ballShader->SetTexture(ShaderUniform::tex_ball_decal, m_pinballDecal);
    else
-      m_renderer->m_renderDevice->m_ballShader->SetTextureNull(SHADER_tex_ball_decal);
-   m_renderer->m_renderDevice->m_ballShader->SetTechnique(sphericalMapping ? m_d.m_decalMode ? SHADER_TECHNIQUE_RenderBall_SphericalMap_DecalMode : SHADER_TECHNIQUE_RenderBall_SphericalMap
-                                                     : m_d.m_decalMode ? SHADER_TECHNIQUE_RenderBall_DecalMode : SHADER_TECHNIQUE_RenderBall);
+      m_renderer->m_renderDevice->m_ballShader->SetTextureNull(ShaderUniform::tex_ball_decal);
+   m_renderer->m_renderDevice->m_ballShader->SetTechnique(sphericalMapping ? m_d.m_decalMode ? ShaderTechnique::RenderBall_SphericalMap_DecalMode : ShaderTechnique::RenderBall_SphericalMap
+                                                     : m_d.m_decalMode ? ShaderTechnique::RenderBall_DecalMode : ShaderTechnique::RenderBall);
    m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_ballShader, false, pos, 0.f, m_renderer->m_ballMeshBuffer, RenderDevice::TRIANGLELIST, 0, m_renderer->m_ballMeshBuffer->m_ib->m_count);
 
    // Update render command with the ball position at the render frame submission time
@@ -496,7 +464,7 @@ void Ball::Render(const unsigned int renderMask)
          if (m_hitBall.m_d.m_lockedInKicker)
             posl.z -= m_hitBall.m_d.m_radius;
          const Matrix3D m3D_fulll = rotScale * Matrix3D::MatrixTranslate(posl);
-         ss->SetMatrix(SHADER_orientation, &m3D_fulll.m[0][0]);
+         ss->SetMatrix(ShaderUniform::orientation, &m3D_fulll.m[0][0]);
          // Release on main thread as Ball methods are not multithreaded
          g_pplayer->m_pluginManager.GetMsgAPI().RunOnMainThread(g_pplayer->m_pluginAPI.GetVPXEndPointId(), 0.0, [](void *userData) { static_cast<Ball *>(userData)->Release(); }, this);
       });
@@ -518,7 +486,7 @@ void Ball::Render(const unsigned int renderMask)
       CHECKD3D(m_renderer->m_renderDevice->GetCoreDevice()->SetRenderState(D3DRS_POINTSIZE, float_as_uint(pointSize)));
       #endif
       m_renderer->m_renderDevice->ResetRenderState();
-      m_renderer->m_renderDevice->m_ballShader->SetTechnique(SHADER_TECHNIQUE_RenderBall_Debug);
+      m_renderer->m_renderDevice->m_ballShader->SetTechnique(ShaderTechnique::RenderBall_Debug);
       m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_ballShader, false, pos, 0.f, m_renderer->m_ballDebugPoints, RenderDevice::POINTLIST, 0, m_renderer->m_ballDebugPoints->m_vb->m_count);
    }
    #endif
@@ -611,7 +579,7 @@ void Ball::Render(const unsigned int renderMask)
          m_renderer->m_renderDevice->SetRenderState(RenderState::SRCBLEND, RenderState::SRC_ALPHA);
          m_renderer->m_renderDevice->SetRenderState(RenderState::DESTBLEND, RenderState::INVSRC_ALPHA);
          m_renderer->m_renderDevice->SetRenderState(RenderState::BLENDOP, RenderState::BLENDOP_ADD);
-         m_renderer->m_renderDevice->m_ballShader->SetTechnique(SHADER_TECHNIQUE_RenderBallTrail);
+         m_renderer->m_renderDevice->m_ballShader->SetTechnique(ShaderTechnique::RenderBallTrail);
          m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_ballShader, true, pos, 0.f, m_renderer->m_ballTrailMeshBuffer, RenderDevice::TRIANGLESTRIP, m_renderer->m_ballTrailMeshBufferPos, nVertices);
          m_renderer->m_ballTrailMeshBufferPos += nVertices;
       }

@@ -1,0 +1,26 @@
+#pragma once
+
+#include "ui/win/IWinUIPart.h"
+#include "ui/win/PinTableWnd.h"
+
+class Ball;
+
+class BallWinUIPart final : public IWinUIPart
+{
+public:
+   static inline constexpr int ToolID = ID_INSERT_BALL;
+   static inline constexpr int CursorID = IDC_BALL;
+   static inline constexpr IWinUIPart::AllowedViews AllowedViews = IWinUIPart::AllowedViews::Playfield;
+
+   explicit BallWinUIPart(PinTableWnd* editor, Ball* ball);
+
+   ItemTypeEnum GetItemType() const override { return eItemBall; }
+   
+   void UIRenderPass1(Sur* psur) override;
+   void UIRenderPass2(Sur* psur) override;
+   void RenderBlueprint(Sur* psur, bool solid) override;
+   void UpdateStatusBarObjectPos() override;
+
+private:
+   Ball* const m_ball;
+};

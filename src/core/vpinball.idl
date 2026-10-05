@@ -800,6 +800,8 @@ typedef [uuid(D09B9F0E-C1AE-40dd-84D6-B1F74053AA8E)]
                 [id(229), helpstring("method LoadTexture")] HRESULT LoadTexture([in] BSTR imageName, [in] BSTR fileName);
 
                 [id(265), helpstring("method CreatePluginObject") ] HRESULT CreatePluginObject([in] BSTR classId, [out, retval] IDispatch* *pVal);
+
+                [id(266), helpstring("method PushNotification")] HRESULT PushNotification([in] BSTR message, [defaultvalue(5000)] long durationMs, [defaultvalue(0)] long reuseId, [out, retval] long *pVal);
         }
 
         [
@@ -934,31 +936,6 @@ typedef [uuid(D09B9F0E-C1AE-40dd-84D6-B1F74053AA8E)]
                 [id(DISPID_SurfaceEvents_Slingshot)]  void Slingshot();
                 [id(DISPID_TimerEvents_Timer)]  void Timer();
         }
-
-        [
-                object,
-                uuid(353B4F85-BABC-4FEB-B664-91CE3DB3C0FA),
-                dual,
-                helpstring("IControlPoint Interface"),
-                pointer_default(unique)
-        ]
-        interface IControlPoint : IDispatch
-        {
-                [propget, id(1), helpstring("property X")] HRESULT X([out, retval] float *pVal);
-                [propput, id(1), helpstring("property X")] HRESULT X([in] float newVal);
-                [propget, id(2), helpstring("property Y")] HRESULT Y([out, retval] float *pVal);
-                [propput, id(2), helpstring("property Y")] HRESULT Y([in] float newVal);
-                [propget, id(6), helpstring("property Z")] HRESULT Z([out, retval] float *pVal);
-                [propput, id(6), helpstring("property Z")] HRESULT Z([in] float newVal);
-                [propget, id(377), helpstring("property calcHeight")] HRESULT CalcHeight([out, retval] float *pVal);
-                [propget, id(3), helpstring("property Smooth")] HRESULT Smooth([out, retval] VARIANT_BOOL *pVal);
-                [propput, id(3), helpstring("property Smooth")] HRESULT Smooth([in] VARIANT_BOOL newVal);
-                [propget, id(4), helpstring("property IsAutoTextureCoordinate")] HRESULT IsAutoTextureCoordinate([out, retval] VARIANT_BOOL *pVal);
-                [propput, id(4), helpstring("property IsAutoTextureCoordinate")] HRESULT IsAutoTextureCoordinate([in] VARIANT_BOOL newVal);
-                [propget, id(5), helpstring("property TextureCoordinateU")] HRESULT TextureCoordinateU([out, retval] float *pVal);
-                [propput, id(5), helpstring("property TextureCoordinateU")] HRESULT TextureCoordinateU([in] float newVal);
-        };
-
 
         //////////////////////////////
         ////// Flipper
@@ -2213,6 +2190,9 @@ typedef [uuid(D09B9F0E-C1AE-40dd-84D6-B1F74053AA8E)]
                 [propput, id(458), helpstring("property Visible")] HRESULT Visible([in] VARIANT_BOOL newVal);
                 [propget, id(556), helpstring("property AddBlend")] HRESULT AddBlend([out, retval] VARIANT_BOOL *pVal);
                 [propput, id(556), helpstring("property AddBlend")] HRESULT AddBlend([in] VARIANT_BOOL newVal);
+                // Superset of AddBlend (kept for backward compatibility): 0 = off, 1 = additive, 2 = additive; but absorbing the background instead of amplifying it
+                [propget, id(2148), helpstring("property AddBlendMode")] HRESULT AddBlendMode([out, retval] int *pVal);
+                [propput, id(2148), helpstring("property AddBlendMode")] HRESULT AddBlendMode([in] int newVal);
 
                 [propget, id(557), helpstring("property DMD")] HRESULT DMD([out, retval] VARIANT_BOOL *pVal);
                 [propput, id(557), helpstring("property DMD")] HRESULT DMD([in] VARIANT_BOOL newVal);
@@ -2595,15 +2575,6 @@ typedef [uuid(D09B9F0E-C1AE-40dd-84D6-B1F74053AA8E)]
         {
                 [default] interface IWall;
                 [default, source]  dispinterface IWallEvents;
-        };
-
-        [
-                uuid(83296774-CAA2-4A0D-B330-98DA6495DFE0),
-                helpstring("DragPoint Class")
-        ]
-        coclass DragPoint
-        {
-                [default] interface IControlPoint;
         };
 
         [

@@ -2,6 +2,11 @@
 
 #pragma once
 
+#include "pole/pole.h"
+
+
+class InMemStream;
+
 namespace VPX
 {
 
@@ -18,7 +23,7 @@ class Sound final
 {
 public:
    static Sound* CreateFromFile(const std::filesystem::path& filename);
-   static Sound* CreateFromStream(IStream* pstm, const int LoadFileVersion);
+   static Sound* CreateFromStream(POLE::Stream& stream, const int LoadFileVersion);
 
    Sound(string name, std::filesystem::path path, vector<uint8_t> data)
       : m_name(std::move(name))
@@ -35,7 +40,7 @@ public:
    void SetFromFileData(const std::filesystem::path& filename, vector<uint8_t> filedata);
 
    bool SaveToFile(const std::filesystem::path& filename) const;
-   void SaveToStream(IStream* pstm) const;
+   void SaveToStream(InMemStream* pstm) const;
 
    // What type of sound? table or backglass?  Used to route sound to the right device or channel. set by pintable
    SoundOutTypes GetOutputTarget() const { return m_outputTarget; }
@@ -58,7 +63,7 @@ public:
    void SetFrontRearFade(const int front_rear_fade) { m_frontRearFade = front_rear_fade; }
 
 private:
-   static bool isWav(const std::filesystem::path& path) { return lowerCase(path.extension().string()) == ".wav"; }
+   static bool isWav(const std::filesystem::path& path) { return lowerCase(PathToUTF8(path.extension())) == ".wav"; }
 
    string m_name;
    std::filesystem::path m_path; // Original file import path
@@ -66,7 +71,7 @@ private:
    int m_volume = 0;
    int m_pan = 0;
    int m_frontRearFade = 0;
-   SoundOutTypes m_outputTarget = SoundOutTypes::SNDOUT_BACKGLASS; //Is it table sound device or BG sound device.
+   SoundOutTypes m_outputTarget = SoundOutTypes::SNDOUT_TABLE;
 };
 
 }

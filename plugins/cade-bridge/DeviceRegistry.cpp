@@ -163,8 +163,7 @@ DeviceRegistry::DeviceMapping DeviceRegistry::DefaultMappingForCategory(cade::ev
 // Manifest building
 
 cade::events::DeviceManifest DeviceRegistry::BuildManifest(
-   const std::vector<InputSrcId>& inputs,
-   const std::vector<DevSrcId>& devices,
+   const std::vector<StateSrcId>& states,
    const MsgPluginAPI* msgApi,
    unsigned int endpointId,
    unsigned int getGameElementsMsgId)
@@ -172,57 +171,30 @@ cade::events::DeviceManifest DeviceRegistry::BuildManifest(
    using namespace std::string_literals;
    cade::events::DeviceManifest manifest;
 
-   // 1. Controller inputs (switches from controller/ROM layer)
-   for (const auto& src : inputs)
+   // 1. Controller states (switches, solenoids, lamps, ... from controller/ROM layer)
+   for (const auto& src : states)
    {
-      for (unsigned int i = 0; i < src.nInputs; i++)
+      for (unsigned int i = 0; i < src.nStates; i++)
       {
-         const DeviceDef& def = src.inputDefs[i];
+         const StateDef& def = src.stateDefs[i];
+         if (def.GetState == nullptr || def.dataFormat == CTLPI_STATE_FORMAT_STRING)
+            continue;
          auto* entry = manifest.add_devices();
-         entry->set_name(def.name ? SanitizeUTF8(def.name) : (std::to_string(def.id.groupId) + ":" + std::to_string(def.id.deviceId)));
-         entry->set_category(cade::events::DEVICE_CATEGORY_SWITCH);
+         entry->set_name(MakeDeviceKey(src, def));
+
+         const cade::events::DeviceCategory cat = ClassifyControllerState(src, def);
          entry->add_supported_events(cade::events::VPX_EVENT_ON);
          entry->add_supported_events(cade::events::VPX_EVENT_OFF);
-         entry->set_normality(cade::events::SWITCH_NORMALLY_OPEN);
-         (*entry->mutable_metadata())["source"] = "controller_input";
-         (*entry->mutable_metadata())["group_id"] = std::to_string(def.id.groupId);
-         (*entry->mutable_metadata())["device_id"] = std::to_string(def.id.deviceId);
-      }
-   }
-
-   // 2. Controller devices (coils, lights from controller/ROM layer)
-   for (const auto& src : devices)
-   {
-      for (unsigned int i = 0; i < src.nDevices; i++)
-      {
-         const DeviceDef& def = src.deviceDefs[i];
-         auto* entry = manifest.add_devices();
-         entry->set_name(def.name ? SanitizeUTF8(def.name) : (std::to_string(def.id.groupId) + ":" + std::to_string(def.id.deviceId)));
-
-         cade::events::DeviceCategory cat;
-         switch (def.id.groupId)
-         {
-         case 0:
-            cat = cade::events::DEVICE_CATEGORY_COIL;
-            entry->add_supported_events(cade::events::VPX_EVENT_ON);
-            entry->add_supported_events(cade::events::VPX_EVENT_OFF);
-            break;
-         case 1:
-            cat = cade::events::DEVICE_CATEGORY_LIGHT;
-            entry->add_supported_events(cade::events::VPX_EVENT_ON);
-            entry->add_supported_events(cade::events::VPX_EVENT_OFF);
+         if (cat == cade::events::DEVICE_CATEGORY_LIGHT)
             entry->add_supported_events(cade::events::VPX_EVENT_BRIGHTNESS_CHANGE);
-            break;
-         default:
-            cat = cade::events::DEVICE_CATEGORY_GENERAL;
-            entry->add_supported_events(cade::events::VPX_EVENT_ON);
-            entry->add_supported_events(cade::events::VPX_EVENT_OFF);
-            break;
-         }
+         if (cat == cade::events::DEVICE_CATEGORY_SWITCH)
+            entry->set_normality(cade::events::SWITCH_NORMALLY_OPEN);
          entry->set_category(cat);
-         (*entry->mutable_metadata())["source"] = "controller_device";
-         (*entry->mutable_metadata())["group_id"] = std::to_string(def.id.groupId);
-         (*entry->mutable_metadata())["device_id"] = std::to_string(def.id.deviceId);
+         (*entry->mutable_metadata())["source"] = cat == cade::events::DEVICE_CATEGORY_SWITCH ? "controller_input" : "controller_device";
+         if (src.name)
+            (*entry->mutable_metadata())["source_name"] = SanitizeUTF8(src.name);
+         (*entry->mutable_metadata())["group_id"] = std::to_string(src.id.resId);
+         (*entry->mutable_metadata())["device_id"] = std::to_string(def.mappingId);
       }
    }
 

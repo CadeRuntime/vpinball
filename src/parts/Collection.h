@@ -1,7 +1,6 @@
 #pragma once
 
 #include "utils/eventproxy.h"
-#include "utils/vector.h"
 
 class Collection :
    public IDispatchImpl<ICollection, &IID_ICollection, &LIBID_VPinballLib>,
@@ -13,7 +12,7 @@ class Collection :
    public IScriptable
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -45,14 +44,18 @@ public:
       CONNECTION_POINT_ENTRY(DIID_ICollectionEvents)
    END_CONNECTION_POINT_MAP()
 
-   VectorProtected<ISelect> m_visel;
+   const vector<IEditable *> &GetParts() const { return m_parts; }
+   void AddPart(IEditable *const part) { m_parts.push_back(part); }
+   void RemovePart(IEditable *const part) { std::erase(m_parts, part); }
+   void ClearParts() { m_parts.clear(); }
 
    bool m_fireEvents;
    bool m_stopSingleEvents;
    bool m_groupElements;
 
 private:
-   vector<wstring> m_tmp_isel_name;
+   vector<IEditable *> m_parts;
+   vector<string> m_tmp_isel_name;
 };
 
 

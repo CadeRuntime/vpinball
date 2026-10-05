@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" href="data:,">
+    <title>Inspector TreeView</title>
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #121212; color: #ffffff; padding: 20px; }
+        ul { list-style-type: none; padding-left: 18px; margin: 0; }
+        .tree-root { padding-left: 0; }
+        details > summary { cursor: pointer; padding: 4px; border-radius: 4px; transition: background 0.2s; }
+        details > summary:hover { background: #222222; }
+        .node-game { color: #4CAF50; font-weight: bold; }
+        .node-controller { color: #2196F3; }
+        .node-category { color: #FF9800; }
+        .node-item {
+            color: #E0E0E0;
+            font-size: 0.9em;
+            padding: 2px 0;
+            font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+        }
+        .node-item .node-mapping { flex: 0 0 5em; text-align: right; color: #B0BEC5; }
+        .node-item .node-state { flex: 0 0 6em; text-align: right; }
+        .node-item .node-name { color: #E0E0E0; }
+        .node-display { align-items: flex-start; }
+        .display-image {
+            max-width: 512px;
+            width: 100%;
+            height: auto;
+            image-rendering: pixelated;
+            background: #000000;
+            border: 1px solid #333;
+        }
+        h1 { font-weight: 300; border-bottom: 1px solid #333; padding-bottom: 10px; }
+
+        .matrix-content { margin: 8px 0 16px 20px; display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; margin-top: 8px; }
+        .matrix-table { border-collapse: collapse; font-family: 'Consolas', 'Menlo', 'Courier New', monospace; font-size: 0.82em; }
+        .matrix-table td { border: 1px solid #333; padding: 5px 7px; min-width: 30px; text-align: center; background: #181818; }
+        .matrix-table td.active { background: #14381f; color: #9BE79B; }
+        .matrix-table td.inactive { color: #BDBDBD; }
+        .matrix-state { display: block; font-weight: bold; }
+        .matrix-mapping { display: block; color: #B0BEC5; }
+        .matrix-list {
+             height: var(--matrix-height, auto);
+             max-height: var(--matrix-height, none);
+             column-gap: 24px;
+             column-fill: auto;
+             column-width: 140px;
+             overflow: visible;
+             width: max-content;
+             font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
+             font-size: 0.86em;
+        }
+        .matrix-list-item { break-inside: avoid; color: #E0E0E0; }
+        .matrix-list-mapping { color: #B0BEC5; }
+        .matrix-list-name { color: #FFFFFF; }
+
+        .matrix-table td.switch-cell {
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.15s, transform 0.05s, filter 0.15s;
+        }
+        .matrix-table td.switch-cell:hover {
+            outline: 1px solid #4CAF50;
+            filter: brightness(1.25);
+        }
+        .matrix-table td.switch-cell:active {
+            transform: scale(0.95);
+        }
+
+        .node-item.switch-node {
+            cursor: pointer;
+            user-select: none;
+            border-radius: 4px;
+            padding: 2px 4px;
+            transition: background 0.15s;
+        }
+        .node-item.switch-node:hover {
+            background: #222222;
+        }
+        .node-item.switch-node .node-state {
+            color: #9BE79B;
+        }
+        .node-item.switch-node:active {
+            opacity: 0.8;
+        }
+
+        .matrix-list-item.switch-list-item {
+            cursor: pointer;
+            user-select: none;
+            border-radius: 3px;
+            padding: 1px 4px;
+            transition: background 0.15s;
+        }
+        .matrix-list-item.switch-list-item:hover {
+            background: #222222;
+            color: #9BE79B;
+        }
+        .matrix-list-item.switch-list-item:active {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <h1>VPX Inspector</h1>
+    <div id="tree">Loading...</div>
+    <script src="/display-stream.js"></script>
+    <script>
+        const MATRIX_COLUMNS = 8;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+		async function fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+			try {
+				const res = await fetch(url, { ...options, signal: controller.signal });
+				return res;
+			} finally {
+				clearTimeout(timeoutId); // don't leave a dangling timer if the fetch resolves first
+			}
+		}
+
+		// Render state value
+
+        function formatBinaryState(state) {
+            return state ? '[X]' : '[ ]';
+        }
+
+        function formatFloatState(state) {
+            return state > 0.5 ? '[X]' : '[ ]';
+        }
+
+        function updateVisualState(el, format, type, state) {
+            const cell = el.closest('.matrix-cell');
+			if (type == 1) { // Switch
+				if (format == 'float') {
+					el.textContent = formatBinaryState(state > 0.);
+					if (cell) {
+						cell.classList.toggle('active', state > 0.);
+						cell.classList.toggle('inactive', state == 0.);
+					}
+					return;
+				}
+				else if (format == 'uint8') {
+					el.textContent = formatBinaryState(state != 0);
+					if (cell) {
+						cell.classList.toggle('active', state != 0);
+						cell.classList.toggle('inactive', state == 0);
+					}
+					return;
+				}
+			}
+			else if (type == 2) { // Relative brightness
+				if (format == 'float') {
+					
+					el.textContent = formatFloatState(state);
+					if (cell) {
+						cell.classList.toggle('active', state > 0.5);
+						cell.classList.toggle('inactive', state <= 0.5);
+					}
+					return;
+				}
+			}
+			el.textContent = state;
+        }
+
+        function updateState(item) {
+            document.querySelectorAll(`[data-state-id="${item.id}"]`).forEach(el => updateVisualState(el, item.format, item.type, item.state));
+        }
+
+		let displayStreams = [];
+		function attachDisplayStreams() {
+			for (const stream of displayStreams)
+				stream.close();
+			displayStreams = [];
+			document.querySelectorAll('.display-image').forEach(cv => {
+				// Rows only appear once their source delivers a first frame, so windows that
+				// nothing renders into (e.g. an enabled but unused scoreview) stay hidden
+				const row = cv.closest('.node-item');
+				row.style.display = 'none';
+				displayStreams.push(streamDisplay(cv.dataset.mapping, cv, {
+					onFrame() {
+						if (row.style.display)
+							row.style.display = '';
+					}
+				}));
+			});
+		}
+
+		let currentTreeId = -1;
+		let currentDelay = 30;
+        function fetchStates() {
+            fetchWithTimeout('/api/states', {}, 500)
+                .then(res => {
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					return res.json();
+				})
+                .then(data => {
+					if (data.treeId != currentTreeId)
+						currentTreeId = -1;
+					else {
+						data.states.forEach(updateState);
+					}
+					currentDelay = 30;
+				})
+                .catch(err => {
+					console.error('States error', err);
+					currentDelay = Math.min(currentDelay * 2, 1000);
+				})
+				.finally(() => {
+					if (currentTreeId == -1 || currentDelay == 1000)
+						fetchTree();
+					else
+						setTimeout(fetchStates, currentDelay);
+				});
+        }
+
+		// Generate main layout
+		
+        function updateMatrixListHeights() {
+            document.querySelectorAll('.matrix-content').forEach(content => {
+                const table = content.querySelector('.matrix-table');
+                const list = content.querySelector('.matrix-list');
+                if (!table || !list)
+                    return;
+                const height = table.getBoundingClientRect().height;
+                list.style.setProperty('--matrix-height', `${height}px`);
+            });
+        }
+
+        function itemDataAttributes(node) {
+            return `data-state-id="${node.id}" data-state-name="${escapeHtml(node.name)}"`;
+        }
+
+        function isMatrixGroup(children) {
+            if (!Array.isArray(children) || children.length < 64 || children.length % MATRIX_COLUMNS !== 0) {
+                return false;
+            }
+
+            return children.every(child => child && (child.type === 'state'));
+        }
+
+        function buildStateSpan(node) {
+            return `<span class="state-value" ${itemDataAttributes(node)}></span>`;
+        }
+
+		function buildLeafNode(node) {
+			const isSwitch = (node.outputType === 1);
+			const titleAttr = node.desc ? ` title="${escapeHtml(node.desc)}"` : '';
+			return `<div class="node-item ${isSwitch ? 'switch-node' : ''}" ${isSwitch ? `switch-state-id="${node.id}"` : ''}>
+				<span class="node-mapping">${node.mapping}</span>
+				<span class="node-state">${buildStateSpan(node)}</span>
+				<span class="node-name"${titleAttr}>${escapeHtml(node.name)}</span>
+				</div>`;
+		}
+		
+		function buildDisplayNode(node) {
+			return `<div class="node-item node-display">
+				<span class="node-mapping">${node.mapping}</span>
+				<span class="node-name">${escapeHtml(node.name)}</span>
+				<canvas class="display-image" width="128" height="32" data-mapping="${node.id}" title="${escapeHtml(node.name)}"></canvas>
+			</div>`;
+		}
+
+        function buildMatrixGroup(node) {
+            const children = node.children;
+            const rows = children.length / MATRIX_COLUMNS;
+            let table = '<table class="matrix-table"><tbody>';
+
+            for (let row = 0; row < rows; ++row) {
+                table += '<tr>';
+                for (let col = 0; col < MATRIX_COLUMNS; ++col) {
+                    const child = children[row * MATRIX_COLUMNS + col];
+                    const isSwitch = (child.outputType === 1);
+                    const activeClass = 'inactive';
+                    table += `<td class="matrix-cell ${activeClass} ${isSwitch ? 'switch-cell' : ''}" ${isSwitch ? `switch-state-id="${child.id}"` : ''} title="${escapeHtml(child.name)}">
+                        <span class="matrix-state">${buildStateSpan(child)}</span>
+                        <span class="matrix-mapping">${child.mapping}</span>
+                    </td>`;
+                }
+                table += '</tr>';
+            }
+            table += '</tbody></table>';
+
+            let list = '<div class="matrix-list">';
+            for (const child of children) {
+                const isSwitch = (child.outputType === 1);
+                list += `<div class="matrix-list-item ${isSwitch ? 'switch-list-item' : ''}" ${isSwitch ? `switch-state-id="${child.id}"` : ''}><span class="matrix-list-mapping">${child.mapping}</span> - <span class="matrix-list-name">${escapeHtml(child.name)}</span></div>`;
+            }
+            list += '</div>';
+
+            return `<details ${node.type === "stategroup" ? "" : "open"}>
+                <summary class="node-${escapeHtml(node.type)}">${escapeHtml(node.name)} (${children.length} items, ${rows}x${MATRIX_COLUMNS})</summary>
+                <div class="matrix-content">${table}${list}</div>
+            </details>`;
+        }
+
+        function buildListGroup(node) {
+			let html = `<details ${node.type === "stategroup" ? "" : "open"}>`;
+			if (node.children) {
+				html += `<summary class="node-${escapeHtml(node.type)}">${escapeHtml(node.name)} (${node.children.length} items)</summary>`;
+			}
+			else {
+				html += `<summary class="node-${escapeHtml(node.type)}">${escapeHtml(node.name)} (no items)</summary>`;
+			}
+			html += `<ul>`;
+			if (node.type === 'controller') {
+				html += `<li class="node-game">Game: '${escapeHtml(node.game)}'</li>`;
+			}			
+			if (node.children) {
+				for (let child of node.children) {
+					html += `<li>${buildNode(child)}</li>`;
+				}
+			}
+			html += `</ul>`;
+			html += `</details>`;
+            return html;
+		}
+
+        function buildNode(node) {
+            if (!node || Object.keys(node).length === 0) {
+				return '<em>No active controllers</em>';
+			} 
+			
+			if (Array.isArray(node) && node.length === 0) {
+				return '<em>No active controllers</em>';
+			}
+
+			if (Array.isArray(node)) {
+                let html = '';
+                for (let child of node) {
+                    html += `<li>${buildNode(child)}</li>`;
+                }
+                return html;
+            } 
+			
+			if (node.type === 'state') {
+                return buildLeafNode(node);
+            }
+			
+			if (node.type === 'display') {
+                return buildDisplayNode(node);
+            }
+			
+			if (node.type === 'seg_display') {
+                return `<div class="node-item">${escapeHtml(node.name)}</div>`;
+            }
+			
+			if (node.children && isMatrixGroup(node.children)) {
+				return buildMatrixGroup(node);
+			}
+			
+			return buildListGroup(node);
+        }
+
+        function fetchTree() {
+            fetchWithTimeout('/api/tree', {}, 1000)
+                .then(res => res.json())
+                .then(data => {
+					currentTreeId = data.treeId;
+					if (data.tree) {
+						document.getElementById('tree').innerHTML = `<ul class="tree-root">${buildNode(data.tree)}</ul>`;
+						updateMatrixListHeights();
+						attachDisplayStreams();
+						fetchStates();
+					}
+				})
+                .catch(err => {
+					if (err.name === 'AbortError') {
+						document.getElementById('tree').innerHTML = `Failed to connect to VPX. Retrying...`;
+					}
+					else {
+						document.getElementById('tree').innerHTML = `Error loading tree: ${err}`;
+					}
+					setTimeout(fetchTree, 1000);
+                });
+        }
+
+        async function toggleSwitchState(stateId) {
+            try {
+                const res = await fetchWithTimeout(`/api/state/toggle?id=${encodeURIComponent(stateId)}`, {
+                    method: 'POST'
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && typeof data.state === 'boolean') {
+                        document.querySelectorAll(`[data-state-id="${stateId}"]`).forEach(el => {
+                            updateVisualState(el, 'uint8', 1, data.state ? 1 : 0);
+                        });
+                    }
+                } else {
+                    console.error('Failed to toggle switch', stateId, res.status);
+                }
+            } catch (err) {
+                console.error('Error toggling switch', stateId, err);
+            }
+        }
+
+        document.getElementById('tree').addEventListener('click', (e) => {
+            if (e.target.closest('summary')) {
+                return;
+            }
+
+            const target = e.target.closest('.switch-cell, .switch-node, .switch-list-item');
+            if (!target) {
+                return;
+            }
+
+            const stateId = target.getAttribute('switch-state-id') || target.querySelector('[switch-state-id]')?.getAttribute('switch-state-id');
+            if (stateId) {
+                toggleSwitchState(stateId);
+            }
+        });
+
+        // Initial load
+        fetchTree();
+
+        // Keep matrix legends constrained to matrix height when the layout changes
+        window.addEventListener('resize', updateMatrixListHeights);
+    </script>
+</body>
+</html>

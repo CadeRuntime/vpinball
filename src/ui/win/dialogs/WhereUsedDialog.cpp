@@ -5,6 +5,7 @@
 
 #include "core/VPApp.h"
 #include "parts/pintable.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
@@ -60,7 +61,7 @@ INT_PTR WhereUsedDialog::DialogProc(UINT uMsg, WPARAM wParam, LPARAM lParam)
          0, TOOLTIPS_CLASS, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_BALLOON, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, GetHwnd(), nullptr, g_app->GetInstanceHandle(), nullptr);
 
       //Get active pinball table (one currently selected...you can edit more than one at a time)
-      CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+      CCO(PinTable) *const pt = m_tableEditor->m_table;
       if (pt)
       {
          vector<WhereUsedInfo> vWhereUsed; //vector storing a list of the names of objects using this image.
@@ -271,10 +272,10 @@ void WhereUsedDialog::OnCancel() { }
 
 void WhereUsedDialog::LoadPosition()
 {
-   const int x = g_app->m_settings.GetEditor_WhereUsedPosX();
-   const int y = g_app->m_settings.GetEditor_WhereUsedPosY();
-   const int w = g_app->m_settings.GetEditor_WhereUsedWidth();
-   const int h = g_app->m_settings.GetEditor_WhereUsedHeight();
+   const int x = g_settingsService.GetAppSettings().GetEditor_WhereUsedPosX();
+   const int y = g_settingsService.GetAppSettings().GetEditor_WhereUsedPosY();
+   const int w = g_settingsService.GetAppSettings().GetEditor_WhereUsedWidth();
+   const int h = g_settingsService.GetAppSettings().GetEditor_WhereUsedHeight();
    POINT p { x, y };
    if (MonitorFromPoint(p, MONITOR_DEFAULTTONULL) != NULL) // Do not apply if point is offscreen
       SetWindowPos(nullptr, x, y, w, h, SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -283,17 +284,17 @@ void WhereUsedDialog::LoadPosition()
 void WhereUsedDialog::SavePosition()
 {
    const CRect rect = GetWindowRect();
-   g_app->m_settings.SetEditor_WhereUsedPosX((int)rect.left, false);
-   g_app->m_settings.SetEditor_WhereUsedPosY((int)rect.top, false);
-   g_app->m_settings.SetEditor_WhereUsedWidth(rect.right - rect.left, false);
-   g_app->m_settings.SetEditor_WhereUsedHeight(rect.bottom - rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_WhereUsedPosX((int)rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_WhereUsedPosY((int)rect.top, false);
+   g_settingsService.GetAppSettings().SetEditor_WhereUsedWidth(rect.right - rect.left, false);
+   g_settingsService.GetAppSettings().SetEditor_WhereUsedHeight(rect.bottom - rect.top, false);
 }
 
 void WhereUsedDialog::RefreshList()
 {
    //This method is very similar to the WhereUsedDialog WM_INITDIALOG code.  We don't need to build the dialog from scratch through.  Just need to delete existing items and re-add them.
    //Get active pinball table (one currently selected...you can edit more than one at a time)
-   CCO(PinTable) *const pt = g_pvp->GetActiveTable();
+   CCO(PinTable) *const pt = m_tableEditor->m_table;
    if (pt)
    {
       vector<WhereUsedInfo> vWhereUsed; //vector storing a list of the names of objects using this image.
@@ -376,15 +377,14 @@ void WhereUsedDialog::EditObject(HWND hWhereListView)
       }
       else
       {
-         IEditable *const pedit = g_pvp->GetActiveTable()->GetElementByName(controlName);
+         IEditable *const pedit = m_tableEditor->m_table->GetElementByName(controlName);
          if (pedit != nullptr)
          {
-            ISelect *const psel = pedit->GetISelect();
-            if (psel != nullptr)
+            CCO(PinTable) *const pt = m_tableEditor->m_table;
+            if (IWinUIPart *const psel = pt->m_tableEditor->GetUIPart(pedit); psel != nullptr)
             {
-               CCO(PinTable) *const pt = g_pvp->GetActiveTable();
-               pt->AddMultiSel(psel, false, false, false);
-               pt->RefreshProperties();
+               pt->m_tableEditor->AddMultiSel(psel, false, false, false);
+               pt->m_tableEditor->RefreshProperties();
             }
          }
       }

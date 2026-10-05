@@ -11,7 +11,9 @@
 #include "ui/win/WinEditor.h"
 
 
-EditorOptionsDialog::EditorOptionsDialog() : CDialog(IDD_EDITOR_OPTIONS)
+EditorOptionsDialog::EditorOptionsDialog(WinEditor *vpxEditor)
+   : CDialog(IDD_EDITOR_OPTIONS)
+   , m_vpxEditor(vpxEditor)
 {
     m_toolTip = nullptr;
 }
@@ -44,63 +46,63 @@ BOOL EditorOptionsDialog::OnInitDialog()
     AttachItem(IDC_COLOR_BUTTON4, m_colorButton4);
     AttachItem(IDC_COLOR_BUTTON5, m_colorButton5);
     AttachItem(IDC_COLOR_BUTTON6, m_colorButton6);
-    m_defaultMaterialColor = g_app->m_settings.GetEditor_DefaultMaterialColor(); 
+    m_defaultMaterialColor = g_settingsService.GetAppSettings().GetEditor_DefaultMaterialColor(); 
     m_colorButton2.SetColor(m_defaultMaterialColor);
-    m_colorButton3.SetColor(g_pvp->m_elemSelectColor);
-    m_colorButton4.SetColor(g_pvp->m_elemSelectLockedColor);
-    m_colorButton5.SetColor(g_pvp->m_fillColor);
-    m_colorButton6.SetColor(g_pvp->m_backgroundColor);
+    m_colorButton3.SetColor(m_vpxEditor->m_elemSelectColor);
+    m_colorButton4.SetColor(m_vpxEditor->m_elemSelectLockedColor);
+    m_colorButton5.SetColor(m_vpxEditor->m_fillColor);
+    m_colorButton6.SetColor(m_vpxEditor->m_backgroundColor);
 
     // drag points
-    const bool fdrawpoints = g_app->m_settings.GetEditor_ShowDragPoints();
+    const bool fdrawpoints = g_settingsService.GetAppSettings().GetEditor_ShowDragPoints();
     SendDlgItemMessage(IDC_DRAW_DRAGPOINTS, BM_SETCHECK, fdrawpoints ? BST_CHECKED : BST_UNCHECKED, 0);
 
     // light centers
-    const bool fdrawcenters = g_app->m_settings.GetEditor_DrawLightCenters();
+    const bool fdrawcenters = g_settingsService.GetAppSettings().GetEditor_DrawLightCenters();
     SendDlgItemMessage(IDC_DRAW_LIGHTCENTERS, BM_SETCHECK, fdrawcenters ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool fautosave = g_app->m_settings.GetEditor_AutoSaveOn();
+    const bool fautosave = g_settingsService.GetAppSettings().GetEditor_AutoSaveOn();
     SendDlgItemMessage(IDC_AUTOSAVE, BM_SETCHECK, fautosave ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const int fautosavetime = g_app->m_settings.GetEditor_AutoSaveTime();
+    const int fautosavetime = g_settingsService.GetAppSettings().GetEditor_AutoSaveTime();
     SetDlgItemInt(IDC_AUTOSAVE_MINUTES, fautosavetime, FALSE);
 
-    const int gridsize = g_app->m_settings.GetEditor_GridSize();
+    const int gridsize = g_settingsService.GetAppSettings().GetEditor_GridSize();
     SetDlgItemInt(IDC_GRID_SIZE, gridsize, FALSE);
 
-    const bool throwBallsAlwaysOn = g_app->m_settings.GetEditor_ThrowBallsAlwaysOn();
+    const bool throwBallsAlwaysOn = g_settingsService.GetAppSettings().GetEditor_ThrowBallsAlwaysOn();
     SendDlgItemMessage(IDC_THROW_BALLS_ALWAYS_ON_CHECK, BM_SETCHECK, throwBallsAlwaysOn ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool ballControlAlwaysOn = g_app->m_settings.GetEditor_BallControlAlwaysOn();
+    const bool ballControlAlwaysOn = g_settingsService.GetAppSettings().GetEditor_BallControlAlwaysOn();
     SendDlgItemMessage(IDC_BALL_CONTROL_ALWAYS_ON_CHECK, BM_SETCHECK, ballControlAlwaysOn ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool groupElementsCollection = g_app->m_settings.GetEditor_GroupElementsInCollection();
+    const bool groupElementsCollection = g_settingsService.GetAppSettings().GetEditor_GroupElementsInCollection();
     SendDlgItemMessage(IDC_DEFAULT_GROUP_COLLECTION_CHECK, BM_SETCHECK, groupElementsCollection ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool alwaysViewScript = g_app->m_settings.GetEditor_AlwaysViewScript();
+    const bool alwaysViewScript = g_settingsService.GetAppSettings().GetEditor_AlwaysViewScript();
     SendDlgItemMessage(IDC_ALWAYSVIEWSCRIPT, BM_SETCHECK, alwaysViewScript ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const int throwBallSize = g_app->m_settings.GetEditor_ThrowBallSize();
+    const int throwBallSize = g_settingsService.GetAppSettings().GetEditor_ThrowBallSize();
     SetDlgItemInt( IDC_THROW_BALLS_SIZE_EDIT, throwBallSize, FALSE);
 
-    const bool startVPfileDialog = g_app->m_settings.GetEditor_SelectTableOnStart();
+    const bool startVPfileDialog = g_settingsService.GetAppSettings().GetEditor_SelectTableOnStart();
     SendDlgItemMessage(IDC_START_VP_FILE_DIALOG, BM_SETCHECK, startVPfileDialog ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool startVPfileDialogPlayerClose = g_app->m_settings.GetEditor_SelectTableOnPlayerClose();
+    const bool startVPfileDialogPlayerClose = g_settingsService.GetAppSettings().GetEditor_SelectTableOnPlayerClose();
     SendDlgItemMessage(IDC_START_VP_FILE_DIALOG2, BM_SETCHECK, startVPfileDialogPlayerClose ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const float throwBallMass = g_app->m_settings.GetEditor_ThrowBallMass();
+    const float throwBallMass = g_settingsService.GetAppSettings().GetEditor_ThrowBallMass();
     SetDlgItemText(IDC_THROW_BALLS_MASS_EDIT, f2sz(throwBallMass).c_str());
 
-    const bool enableLog = g_app->m_settings.GetEditor_EnableLog();
+    const bool enableLog = g_settingsService.GetAppSettings().GetGlobal_EnableLog();
     SendDlgItemMessage(IDC_ENABLE_LOGGING, BM_SETCHECK, enableLog ? BST_CHECKED : BST_UNCHECKED, 0);
 
-    const bool logScript = g_app->m_settings.GetEditor_LogScriptOutput();
+    const bool logScript = g_settingsService.GetAppSettings().GetGlobal_LogScriptOutput();
     SendDlgItemMessage(IDC_ENABLE_SCRIPT_LOGGING, BM_SETCHECK, logScript ? BST_CHECKED : BST_UNCHECKED, 0);
 
     const std::filesystem::path appPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Root) / "VPinballX.ini"sv;
     const std::filesystem::path prefPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences) / "VPinballX.ini"sv;
-    const std::filesystem::path iniPath = g_app->m_settings.GetIniPath();
+    const std::filesystem::path iniPath = g_settingsService.GetAppSettings().GetIniPath();
     if (iniPath == appPath)
        SendDlgItemMessage(IDC_STORE_INI_LOCATION, BM_SETCHECK, BST_CHECKED, 0);
     else if (iniPath == prefPath)
@@ -108,7 +110,7 @@ BOOL EditorOptionsDialog::OnInitDialog()
     else // Running using a custom ini defined on the commandline => disable
        SendDlgItemMessage(IDC_STORE_INI_LOCATION, WM_ENABLE, (WPARAM)FALSE, 0);
 
-    const int units = g_app->m_settings.GetEditor_Units();
+    const int units = g_settingsService.GetAppSettings().GetEditor_Units();
     const HWND hwnd = GetDlgItem(IDC_UNIT_LIST_COMBO).GetHwnd();
     ::SendMessage(hwnd, CB_ADDSTRING, 0, (LPARAM)"Inches");
     ::SendMessage(hwnd, CB_ADDSTRING, 0, (LPARAM)"Millimeters");
@@ -142,11 +144,11 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
            CHOOSECOLOR cc = m_colorDialog.GetParameters();
            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
            m_colorDialog.SetParameters(cc);
-           m_colorDialog.SetColor(g_pvp->m_elemSelectColor);
+           m_colorDialog.SetColor(m_vpxEditor->m_elemSelectColor);
            if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
            {
-               g_pvp->m_elemSelectColor = m_colorDialog.GetColor();
-               m_colorButton3.SetColor(g_pvp->m_elemSelectColor);
+              m_vpxEditor->m_elemSelectColor = m_colorDialog.GetColor();
+              m_colorButton3.SetColor(m_vpxEditor->m_elemSelectColor);
            }
            break;
        }
@@ -155,11 +157,11 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
            CHOOSECOLOR cc = m_colorDialog.GetParameters();
            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
            m_colorDialog.SetParameters(cc);
-           m_colorDialog.SetColor(g_pvp->m_elemSelectLockedColor);
+           m_colorDialog.SetColor(m_vpxEditor->m_elemSelectLockedColor);
            if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
            {
-               g_pvp->m_elemSelectLockedColor = m_colorDialog.GetColor();
-               m_colorButton4.SetColor(g_pvp->m_elemSelectLockedColor);
+              m_vpxEditor->m_elemSelectLockedColor = m_colorDialog.GetColor();
+              m_colorButton4.SetColor(m_vpxEditor->m_elemSelectLockedColor);
            }
            break;
        }
@@ -168,11 +170,11 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
            CHOOSECOLOR cc = m_colorDialog.GetParameters();
            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
            m_colorDialog.SetParameters(cc);
-           m_colorDialog.SetColor(g_pvp->m_fillColor);
+           m_colorDialog.SetColor(m_vpxEditor->m_fillColor);
            if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
            {
-               g_pvp->m_fillColor = m_colorDialog.GetColor();
-               m_colorButton5.SetColor(g_pvp->m_fillColor);
+              m_vpxEditor->m_fillColor = m_colorDialog.GetColor();
+              m_colorButton5.SetColor(m_vpxEditor->m_fillColor);
            }
            break;
        }
@@ -181,11 +183,11 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
            CHOOSECOLOR cc = m_colorDialog.GetParameters();
            cc.Flags = CC_FULLOPEN | CC_RGBINIT;
            m_colorDialog.SetParameters(cc);
-           m_colorDialog.SetColor(g_pvp->m_backgroundColor);
+           m_colorDialog.SetColor(m_vpxEditor->m_backgroundColor);
            if (m_colorDialog.DoModal(GetHwnd()) == IDOK)
            {
-               g_pvp->m_backgroundColor = m_colorDialog.GetColor();
-               m_colorButton6.SetColor(g_pvp->m_backgroundColor);
+              m_vpxEditor->m_backgroundColor = m_colorDialog.GetColor();
+              m_colorButton6.SetColor(m_vpxEditor->m_backgroundColor);
            }
            break;
        }
@@ -194,17 +196,17 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
           m_defaultMaterialColor = 0xB469FF;
           m_colorButton2.SetColor(m_defaultMaterialColor);
 
-          g_pvp->m_elemSelectColor = 0x00FF0000;
-          m_colorButton3.SetColor(g_pvp->m_elemSelectColor);
+          m_vpxEditor->m_elemSelectColor = 0x00FF0000;
+          m_colorButton3.SetColor(m_vpxEditor->m_elemSelectColor);
 
-          g_pvp->m_elemSelectLockedColor = 0x00A7726D;
-          m_colorButton4.SetColor(g_pvp->m_elemSelectLockedColor);
+          m_vpxEditor->m_elemSelectLockedColor = 0x00A7726D;
+          m_colorButton4.SetColor(m_vpxEditor->m_elemSelectLockedColor);
 
-          g_pvp->m_fillColor = 0x00B1CFB3;
-          m_colorButton5.SetColor(g_pvp->m_fillColor);
+          m_vpxEditor->m_fillColor = 0x00B1CFB3;
+          m_colorButton5.SetColor(m_vpxEditor->m_fillColor);
 
-          g_pvp->m_backgroundColor = 0x008D8D8D;
-          m_colorButton6.SetColor(g_pvp->m_backgroundColor);
+          m_vpxEditor->m_backgroundColor = 0x008D8D8D;
+          m_colorButton6.SetColor(m_vpxEditor->m_backgroundColor);
           return TRUE;
        }
        case IDC_SET_DEFAULTS_BUTTON:
@@ -228,18 +230,18 @@ BOOL EditorOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
           SendDlgItemMessage(IDC_STORE_INI_LOCATION, BM_SETCHECK, BST_UNCHECKED, 0);
           constexpr int x = 0;
           constexpr int y = 0;
-          g_app->m_settings.SetEditor_CodeViewPosX(x, false);
-          g_app->m_settings.SetEditor_CodeViewPosY(y, false);
+          g_settingsService.GetAppSettings().SetEditor_CodeViewPosX(x, false);
+          g_settingsService.GetAppSettings().SetEditor_CodeViewPosY(y, false);
           constexpr int width = 640;
           constexpr int height = 490;
-          g_app->m_settings.SetEditor_CodeViewPosWidth(width, false);
-          g_app->m_settings.SetEditor_CodeViewPosHeight(height, false);
+          g_settingsService.GetAppSettings().SetEditor_CodeViewPosWidth(width, false);
+          g_settingsService.GetAppSettings().SetEditor_CodeViewPosHeight(height, false);
 
           return TRUE;
        }
        case IDC_RESET_WINDOW_POS:
        {
-          g_pvp->ResetAllDockers();
+          m_vpxEditor->ResetAllDockers();
           return TRUE;
        }
     }
@@ -289,51 +291,51 @@ void EditorOptionsDialog::OnOK()
 
     // drag points
     checked = (IsDlgButtonChecked(IDC_DRAW_DRAGPOINTS) == BST_CHECKED);
-    g_app->m_settings.SetEditor_ShowDragPoints(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_ShowDragPoints(checked, false);
 
     // light centers
     checked = (IsDlgButtonChecked(IDC_DRAW_LIGHTCENTERS) == BST_CHECKED);
-    g_app->m_settings.SetEditor_DrawLightCenters(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_DrawLightCenters(checked, false);
 
     // auto save
     const bool autosave = (IsDlgButtonChecked(IDC_AUTOSAVE) == BST_CHECKED);
-    g_app->m_settings.SetEditor_AutoSaveOn(autosave, false);
+    g_settingsService.GetAppSettings().SetEditor_AutoSaveOn(autosave, false);
 
     const int autosavetime = GetDlgItemInt(IDC_AUTOSAVE_MINUTES, nothing, FALSE);
-    g_app->m_settings.SetEditor_AutoSaveTime(autosavetime, false);
+    g_settingsService.GetAppSettings().SetEditor_AutoSaveTime(autosavetime, false);
 
     const int gridsize = GetDlgItemInt(IDC_GRID_SIZE, nothing, FALSE);
-    g_app->m_settings.SetEditor_GridSize(gridsize, false);
+    g_settingsService.GetAppSettings().SetEditor_GridSize(gridsize, false);
 
     checked = (IsDlgButtonChecked(IDC_THROW_BALLS_ALWAYS_ON_CHECK) == BST_CHECKED);
-    g_app->m_settings.SetEditor_ThrowBallsAlwaysOn(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_ThrowBallsAlwaysOn(checked, false);
 
     checked = (IsDlgButtonChecked(IDC_BALL_CONTROL_ALWAYS_ON_CHECK) == BST_CHECKED);
-    g_app->m_settings.SetEditor_BallControlAlwaysOn(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_BallControlAlwaysOn(checked, false);
 
     const int ballSize = GetDlgItemInt(IDC_THROW_BALLS_SIZE_EDIT, nothing, FALSE);
-    g_app->m_settings.SetEditor_ThrowBallSize(ballSize, false);
+    g_settingsService.GetAppSettings().SetEditor_ThrowBallSize(ballSize, false);
 
     const float fv = sz2f(GetDlgItemText(IDC_THROW_BALLS_MASS_EDIT).GetString());
-    g_app->m_settings.SetEditor_ThrowBallMass(fv, false);
+    g_settingsService.GetAppSettings().SetEditor_ThrowBallMass(fv, false);
 
     checked = (IsDlgButtonChecked(IDC_DEFAULT_GROUP_COLLECTION_CHECK) == BST_CHECKED);
-    g_app->m_settings.SetEditor_GroupElementsInCollection(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_GroupElementsInCollection(checked, false);
 
     checked = (IsDlgButtonChecked(IDC_ALWAYSVIEWSCRIPT) == BST_CHECKED);
-    g_app->m_settings.SetEditor_AlwaysViewScript(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_AlwaysViewScript(checked, false);
 
     checked = (IsDlgButtonChecked(IDC_ENABLE_LOGGING) == BST_CHECKED);
-    g_app->m_settings.SetEditor_EnableLog(checked, false);
+    g_settingsService.GetAppSettings().SetGlobal_EnableLog(checked, false);
     Logger::GetInstance()->SetupLogger(checked);
 
     checked = (IsDlgButtonChecked(IDC_ENABLE_SCRIPT_LOGGING) == BST_CHECKED);
-    g_app->m_settings.SetEditor_LogScriptOutput(checked, false);
+    g_settingsService.GetAppSettings().SetGlobal_LogScriptOutput(checked, false);
 
     checked = (IsDlgButtonChecked(IDC_STORE_INI_LOCATION) == BST_CHECKED);
     const std::filesystem::path prefPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Preferences) / "VPinballX.ini"sv;
     const std::filesystem::path appPath = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Root) / "VPinballX.ini"sv;
-    const std::filesystem::path iniPath = g_app->m_settings.GetIniPath();
+    const std::filesystem::path iniPath = g_settingsService.GetAppSettings().GetIniPath();
     if (iniPath == prefPath || iniPath == appPath) // Not available when running from a custom ini specified on the commandline
     {
        // if needed, copy ini from one default location to the other, as this is the location of the ini file that defines the app behavior
@@ -341,34 +343,34 @@ void EditorOptionsDialog::OnOK()
           std::filesystem::rename(prefPath, appPath);
        else if (!checked && FileExists(appPath)) // moving to preferences folder
           std::filesystem::rename(appPath, prefPath);
-       g_app->m_settings.SetIniPath(checked ? appPath : prefPath);
+       g_settingsService.GetAppSettings().SetIniPath(checked ? appPath : prefPath);
     }
 
     // Go through and reset the autosave time on all the tables
     if (autosave)
-        g_pvp->SetAutoSaveMinutes(autosavetime);
+       m_vpxEditor->SetAutoSaveMinutes(autosavetime);
     else
-        g_pvp->m_autosaveTime = -1;
+       m_vpxEditor->m_autosaveTime = -1;
 
-    for (size_t i = 0; i < g_pvp->m_vtable.size(); i++)
-        g_pvp->m_vtable[i]->BeginAutoSaveCounter();
+    for (size_t i = 0; i < m_vpxEditor->m_vtable.size(); i++)
+       m_vpxEditor->m_vtable[i]->BeginAutoSaveCounter();
 
-    g_app->m_settings.SetEditor_DefaultMaterialColor(m_defaultMaterialColor, false);
-    g_app->m_settings.SetEditor_ElementSelectColor((int)g_pvp->m_elemSelectColor, false);
-    g_app->m_settings.SetEditor_ElementSelectLockedColor((int)g_pvp->m_elemSelectLockedColor, false);
-    g_app->m_settings.SetEditor_BackGroundColor((int)g_pvp->m_backgroundColor, false);
-    g_app->m_settings.SetEditor_FillColor((int)g_pvp->m_fillColor, false);
+    g_settingsService.GetAppSettings().SetEditor_DefaultMaterialColor(m_defaultMaterialColor, false);
+    g_settingsService.GetAppSettings().SetEditor_ElementSelectColor((int)m_vpxEditor->m_elemSelectColor, false);
+    g_settingsService.GetAppSettings().SetEditor_ElementSelectLockedColor((int)m_vpxEditor->m_elemSelectLockedColor, false);
+    g_settingsService.GetAppSettings().SetEditor_BackGroundColor((int)m_vpxEditor->m_backgroundColor, false);
+    g_settingsService.GetAppSettings().SetEditor_FillColor((int)m_vpxEditor->m_fillColor, false);
 
     checked = (IsDlgButtonChecked(IDC_START_VP_FILE_DIALOG) == BST_CHECKED);
-    g_app->m_settings.SetEditor_SelectTableOnStart(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_SelectTableOnStart(checked, false);
 
     checked = (IsDlgButtonChecked(IDC_START_VP_FILE_DIALOG2) == BST_CHECKED);
-    g_app->m_settings.SetEditor_SelectTableOnPlayerClose(checked, false);
+    g_settingsService.GetAppSettings().SetEditor_SelectTableOnPlayerClose(checked, false);
 
     LRESULT units = SendDlgItemMessage(IDC_UNIT_LIST_COMBO, CB_GETCURSEL, 0, 0);
     if (units == LB_ERR)
         units = 0;
-    g_app->m_settings.SetEditor_Units((int)units, false);
+    g_settingsService.GetAppSettings().SetEditor_Units((int)units, false);
 
     CDialog::OnOK();
 }

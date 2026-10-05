@@ -2,11 +2,11 @@
 
 #pragma once
 
+#include "core/resourceid.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/MeshBuffer.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 
@@ -35,7 +35,6 @@ class Gate :
    public EventProxy<Gate, &DIID_IGateEvents>,
    public IConnectionPointContainerImpl<Gate>,
    public IProvideClassInfo2Impl<&CLSID_Gate, &DIID_IGateEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -44,7 +43,7 @@ class Gate :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -72,7 +71,7 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IGateEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Gate, eItemGate, GATE, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Gate, eItemGate, GATE)
 
    //DECLARE_NOT_AGGREGATABLE(Gate)
    // Remove the comment from the line above if you don't want your object to
@@ -82,18 +81,12 @@ public:
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
    void SetDefaultPhysics(const bool fromMouseClick) final;
 
-   void RenderBlueprint(Sur *psur, const bool solid) final;
    void ExportMesh(ObjLoader &loader) final;
-
-   ItemTypeEnum HitableGetItemType() const final { return eItemGate; }
-   void UpdateStatusBarInfo() final;
 
    void WriteRegDefaults() final;
 

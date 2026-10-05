@@ -8,8 +8,11 @@
 #include "ui/win/WinEditor.h"
 
 
-BackglassCameraProperty::BackglassCameraProperty(const VectorProtected<ISelect> *pvsel) : BasePropertyDialog(IDD_PROPBACKGLASS_CAMERA, pvsel)
+BackglassCameraProperty::BackglassCameraProperty(const vector<IWinUIPart *> *pvsel)
+   : BasePropertyDialog(IDD_PROPBACKGLASS_CAMERA, pvsel)
 {
+   assert(pvsel->size() == 1);
+   assert((*pvsel)[0]->GetItemType() == eItemTable);
     m_viewList.push_back("Desktop (DT)"s);
     m_viewList.push_back("Fullscreen (FS)"s);
     m_viewList.push_back("Full Single Screen (FSS)"s);
@@ -39,10 +42,10 @@ BackglassCameraProperty::BackglassCameraProperty(const VectorProtected<ISelect> 
 
 void BackglassCameraProperty::UpdateVisuals(const int dispid/*=-1*/)
 {
-   PinTableWnd * const tableEditor = g_pvp->GetActiveTableEditor();
-   if (tableEditor == nullptr)
+   PinTable *const table = (PinTable *)SelAt(0)->GetEditable();
+   PinTableWnd *const tableEditor = GetTableEditor();
+   if (tableEditor == nullptr || tableEditor->m_table != table)
       return;
-   CComObject<PinTable> *const table = tableEditor->m_table;
 
    const ViewSetup &viewSetup = table->mViewSetups[tableEditor->m_currentBackglassMode];
    if (dispid == IDC_BG_FSS || dispid == -1)
@@ -107,10 +110,10 @@ void BackglassCameraProperty::UpdateVisuals(const int dispid/*=-1*/)
 
 void BackglassCameraProperty::UpdateProperties(const int dispid)
 {
-   PinTableWnd *const tableEditor = g_pvp->GetActiveTableEditor();
-   if (tableEditor == nullptr)
+   PinTable *const table = (PinTable *)SelAt(0)->GetEditable();
+   PinTableWnd *const tableEditor = GetTableEditor();
+   if (tableEditor == nullptr || tableEditor->m_table != table)
       return;
-   CComObject<PinTable> *const table = tableEditor->m_table;
 
    ViewSetup &viewSetup = table->mViewSetups[tableEditor->m_currentBackglassMode];
    switch (dispid)

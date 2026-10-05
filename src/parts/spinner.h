@@ -4,10 +4,11 @@
 
 #pragma once
 
+#include "core/resourceid.h"
+#include "math/matrix.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 class MeshBuffer;
@@ -36,7 +37,6 @@ class Spinner :
    public EventProxy<Spinner, &DIID_ISpinnerEvents>,
    public IConnectionPointContainerImpl<Spinner>,
    public IProvideClassInfo2Impl<&CLSID_Spinner, &DIID_ISpinnerEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -45,7 +45,7 @@ class Spinner :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -71,24 +71,20 @@ public:
       CONNECTION_POINT_ENTRY(DIID_ISpinnerEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Spinner, eItemSpinner, SPINNER, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Spinner, eItemSpinner, SPINNER)
 
    DECLARE_REGISTRY_RESOURCEID(IDR_SPINNER)
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D& pv) final;
    void SetDefaultPhysics(const bool fromMouseClick) final;
 
-   ItemTypeEnum HitableGetItemType() const final { return eItemSpinner; }
    void ExportMesh(ObjLoader& loader) final;
 
    void WriteRegDefaults() final;
-   void UpdateStatusBarInfo() final;
 
    float GetAngleMax() const;
    void  SetAngleMax(const float angle);

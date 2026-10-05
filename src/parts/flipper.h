@@ -2,11 +2,11 @@
 
 #pragma once
 
+#include "core/resourceid.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "physics/hitflipper.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 
@@ -66,7 +66,6 @@ class Flipper :
    public IConnectionPointContainerImpl<Flipper>,
    public IProvideClassInfo2Impl<&CLSID_Flipper, &DIID_IFlipperEvents, &LIBID_VPinballLib>,
    public EventProxy<Flipper, &DIID_IFlipperEvents>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -75,7 +74,7 @@ class Flipper :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -84,7 +83,7 @@ public:
    Flipper() { }
    virtual ~Flipper();
 
-   STANDARD_EDITABLE_DECLARES(Flipper, eItemFlipper, FLIPPER, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Flipper, eItemFlipper, FLIPPER)
 
    BEGIN_COM_MAP(Flipper)
       COM_INTERFACE_ENTRY(IFlipper)
@@ -99,15 +98,12 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IFlipperEvents)
    END_CONNECTION_POINT_MAP()
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader &loader) final;
 
-   ItemTypeEnum HitableGetItemType() const final { return eItemFlipper; }
    void WriteRegDefaults() final;
 
    //DECLARE_NOT_AGGREGATABLE(Flipper)
@@ -166,6 +162,9 @@ public:
 
    FlipperData m_d;
 
+   // Computes the 4 tangent vertices and end center of the flipper shape (pure geometry helper)
+   void GetVertices(const float basex, const float basey, const float angle, const float baseradius, const float endradius, Vertex2D &vEndCenter, Vertex2D (&rgvTangents)[4]) const;
+
 private:
    Renderer *m_renderer = nullptr;
    std::shared_ptr<MeshBuffer> m_meshBuffer;
@@ -173,8 +172,6 @@ private:
    std::shared_ptr<MeshBuffer> m_meshEdgeRubberBuffer;
    Vertex3Ds m_boundingSphereCenter;
    //float m_boundingSphereRadius = -1.f;
-
-   void SetVertices(const float basex, const float basey, const float angle, Vertex2D * const pvEndCenter, Vertex2D * const rgvTangents, const float baseradius, const float endradius) const;
 
    void GenerateBaseMesh(Vertex3D_NoTex2 *buf);
 

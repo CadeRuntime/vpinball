@@ -198,7 +198,7 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    mkdir pinmame
    cd pinmame
 
-   curl -sL https://github.com/vbousquet/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
+   curl -sL https://github.com/vpinball/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
@@ -491,17 +491,19 @@ cp freeimage/freeimage/Source/FreeImage.h ../../../third-party/include
 cp bgfx/bgfx.cmake/build/cmake/bgfx/libbgfx.a ../../../third-party/build-libs/android-arm64-v8a
 cp -r bgfx/bgfx.cmake/bgfx/include/bgfx ../../../third-party/include/
 cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg.a ../../../third-party/build-libs/android-arm64-v8a
-cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_decode.a ../../../third-party/build-libs/android-arm64-v8a
 cp bgfx/bgfx.cmake/build/cmake/bimg/libbimg_encode.a ../../../third-party/build-libs/android-arm64-v8a
 cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
 cp bgfx/bgfx.cmake/build/cmake/bx/libbx.a ../../../third-party/build-libs/android-arm64-v8a
 cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 
 cp pinmame/pinmame/build/libpinmame.so ../../../third-party/runtime-libs/android-arm64-v8a
-cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include
+mkdir -p ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
 
 cp openxr/openxr/build/src/loader/libopenxr_loader.so ../../../third-party/runtime-libs/android-arm64-v8a
-cp -r openxr/openxr/include/openxr ../../../third-party/include
+mkdir -p ../../../third-party/include/openxr
+cp openxr/openxr/build/include/openxr/*.h ../../../third-party/include/openxr
 
 cp libdmdutil/libdmdutil/build/libdmdutil.so ../../../third-party/runtime-libs/android-arm64-v8a
 cp -r libdmdutil/libdmdutil/include/DMDUtil ../../../third-party/include/
@@ -525,11 +527,9 @@ cp -r libdof/libdof/include/DOF ../../../third-party/include/
 cp libwinevbs/libwinevbs/build/libwinevbs.so ../../../third-party/runtime-libs/android-arm64-v8a
 mkdir -p ../../../third-party/include/libwinevbs/wine/include
 mkdir -p ../../../third-party/include/libwinevbs/atl/include
-mkdir -p ../../../third-party/include/libwinevbs/atlmfc/include
 cp libwinevbs/libwinevbs/include/libwinevbs.h ../../../third-party/include/libwinevbs/
 cp -r libwinevbs/libwinevbs/wine/include/* ../../../third-party/include/libwinevbs/wine/include/
 cp -r libwinevbs/libwinevbs/atl/include/* ../../../third-party/include/libwinevbs/atl/include/
-cp -r libwinevbs/libwinevbs/atlmfc/include/* ../../../third-party/include/libwinevbs/atlmfc/include/
 
 for LIB in libavcodec libavdevice libavfilter libavformat libavutil libswresample libswscale; do
    cp ffmpeg/ffmpeg/${LIB}/${LIB}.so ../../../third-party/runtime-libs/android-arm64-v8a

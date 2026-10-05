@@ -1,0 +1,167 @@
+// license:GPLv3+
+
+#include "core/stdafx.h"
+
+#include "parts/flasher.h"
+#include "ui/win/DragPointDialogs.h"
+#include "ui/win/sur.h"
+#include "ui/win/WinEditor.h"
+#include "ui/win/parts/FlasherWinUIPart.h"
+
+FlasherWinUIPart::FlasherWinUIPart(PinTableWnd* editor, Flasher* flasher)
+   : IWinUIPart(editor, flasher)
+   , m_flasher(flasher)
+   , m_pointParts(editor, &flasher->m_curve)
+{
+}
+
+void FlasherWinUIPart::UpdateStatusBarObjectPos()
+{
+   SetStatusBarObjectPos(0.f, 0.f);
+}
+
+void FlasherWinUIPart::UIRenderPass1(Sur * const psur)
+{
+   if (m_flasher->m_curve.GetPoints().empty())
+      return;
+
+   psur->SetFillColor(m_flasher->m_ptable->RenderSolid() ? m_editor->m_vpxEditor->m_fillColor : -1);
+   psur->SetObject(this);
+   // Don't want border color to be over-ridden when selected - that will be drawn later
+   psur->SetBorderColor(-1, false, 0);
+
+   vector<RenderVertex> vvertex;
+   m_flasher->m_curve.GetRgVertex(vvertex);
+   if (!m_flasher->m_ptable->RenderSolid() || !m_flasher->m_d.m_displayTexture)
+   {
+      psur->Polygon(vvertex);
+   }
+   else if (const Texture *const ppi = m_flasher->m_ptable->GetImage(m_flasher->m_d.m_szImageA); ppi && ppi->GetGDIBitmap())
+   {
+      if (m_flasher->m_d.m_imagealignment == ImageModeWrap)
+      {
+         float _minx = FLT_MAX;
+         float _miny = FLT_MAX;
+         float _maxx = -FLT_MAX;
+         float _maxy = -FLT_MAX;
+         for (const auto& v : vvertex)
+         {
+            if (v.x < _minx) _minx = v.x;
+            if (v.x > _maxx) _maxx = v.x;
+            if (v.y < _miny) _miny = v.y;
+            if (v.y > _maxy) _maxy = v.y;
+         }
+
+         psur->PolygonImage(vvertex, ppi->GetGDIBitmap(), _minx, _miny, _minx + (_maxx - _minx), _miny + (_maxy - _miny), ppi->m_width, ppi->m_height);
+      }
+      else
+      {
+         psur->PolygonImage(vvertex, ppi->GetGDIBitmap(), m_flasher->m_ptable->m_left, m_flasher->m_ptable->m_top, m_flasher->m_ptable->m_right, m_flasher->m_ptable->m_bottom, ppi->m_width, ppi->m_height);
+      }
+   }
+   else
+   {
+      psur->Polygon(vvertex);
+   }
+}
+
+void FlasherWinUIPart::UIRenderPass2(Sur * const psur)
+{
+   psur->SetFillColor(-1);
+   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
+   psur->SetObject(this); // For selected formatting
+   psur->SetObject(nullptr);
+
+   vector<RenderVertex> vvertex; //!! check/reuse from UIRenderPass1
+   m_flasher->m_curve.GetRgVertex(vvertex);
+   psur->Polygon(vvertex);
+
+   // Except for flasher mode, shape is simplified before rendering into its bounding rectangle
+   if (m_flasher->m_d.m_renderMode != FlasherData::RenderMode::FLASHER)
+   {
+      float _minx = FLT_MAX;
+      float _miny = FLT_MAX;
+      float _maxx = -FLT_MAX;
+      float _maxy = -FLT_MAX;
+      for (const auto& v : vvertex)
+      {
+         if (v.x < _minx) _minx = v.x;
+         if (v.x > _maxx) _maxx = v.x;
+         if (v.y < _miny) _miny = v.y;
+         if (v.y > _maxy) _maxy = v.y;
+      }
+      psur->Rectangle(_minx, _miny, _maxx, _maxy);
+   }
+
+   // if the item is selected then draw the dragpoints (or if we are always to draw dragpoints)
+   bool drawDragpoints = ((m_selectstate != SelectState::NotSelected) || m_editor->m_vpxEditor->m_alwaysDrawDragPoints);
+   if (!drawDragpoints)
+   {
+      // if any of the dragpoints of this object are selected then draw all the dragpoints
+      for (const auto& pdp : m_flasher->m_curve.GetPoints())
+      {
+         if (m_pointParts.IsSelected(pdp.get()))
+         {
+            drawDragpoints = true;
+            break;
+         }
+      }
+   }
+
+   if (drawDragpoints)
+   {
+      psur->SetFillColor(-1);
+      for (const auto &pdp : m_flasher->m_curve.GetPoints())
+      {
+         psur->SetBorderColor(m_pointParts.IsDragging(pdp.get()) ? RGB(0, 255, 0) : RGB(255, 0, 0), false, 0);
+         psur->SetObject(m_pointParts.Get(pdp.get()));
+         psur->Ellipse2(pdp->GetX(), pdp->GetY(), 8);
+      }
+   }
+
+   // Little cross at the object center
+   const Vertex2D center = m_flasher->GetCenter();
+   psur->Line(center.x - 10.0f, center.y, center.x + 10.0f, center.y);
+   psur->Line(center.x, center.y - 10.0f, center.x, center.y + 10.0f);
+}
+
+void FlasherWinUIPart::DoCommand(int icmd, int x, int y)
+{
+   IWinUIPart::DoCommand(icmd, x, y);
+
+   switch (icmd)
+   {
+   case ID_WALLMENU_FLIP:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_flasher);
+      m_flasher->FlipY(m_flasher->GetCenter());
+      m_editor->EndUndo();
+      if (m_flasher->GetPTable())
+         m_flasher->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_MIRROR:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_flasher);
+      m_flasher->FlipX(m_flasher->GetCenter());
+      m_editor->EndUndo();
+      if (m_flasher->GetPTable())
+         m_flasher->GetPTable()->SetDirtyDraw();
+      break;
+
+   case ID_WALLMENU_ROTATE: (void)VPX::WinUI::RotatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_SCALE: (void)VPX::WinUI::ScalePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_TRANSLATE: (void)VPX::WinUI::TranslatePointsDialog(m_editor); break;
+
+   case ID_WALLMENU_ADDPOINT:
+      m_editor->BeginUndo();
+      m_editor->MarkForUndo(m_flasher);
+      m_flasher->AddPoint(m_editor->TransformPoint(x, y), false);
+      m_editor->EndUndo();
+      if (m_flasher->GetPTable())
+         m_flasher->GetPTable()->SetDirtyDraw();
+      break;
+   }
+}

@@ -17,7 +17,7 @@ CabinetNudgeSensor::CabinetNudgeSensor(InputManager* inputManager)
    , m_yAccSensor(inputManager, "Front nudge acceleration sensor", SensorMapping::Type::Acceleration)
    , m_kalmanX(MotionKalmanAxis::Config())
    , m_kalmanY(MotionKalmanAxis::Config())
-   , m_emaX(0.004f) // Time constant adjusted for default USB acquisition period at 8.125ms and limited latency
+   , m_emaX(0.004f) // Time constant adjusted for default USB acquisition period of 125Hz and limited latency
    , m_emaY(0.004f)
 {
    m_cabinetAcceleration.SetZero();
@@ -136,7 +136,7 @@ void CabinetNudgeSensor::UpdateAxisSensor(SyncedSensor& sensor, MotionKalmanAxis
       return;
    }
 
-   const float restThresold = (sensor.m_sensor.GetType() == SensorMapping::Type::Acceleration) ? 0.020f : 0.002f;
+   const float restThresold = (sensor.m_sensor.GetType() == SensorMapping::Type::Acceleration) ? 0.1000f : 0.0010f;
    if (abs(sensor.m_sensor.GetValue()) < restThresold)
    {
       sensor.m_restCount++;
@@ -154,22 +154,27 @@ void CabinetNudgeSensor::UpdateAxisSensor(SyncedSensor& sensor, MotionKalmanAxis
    if (timestampNS == 0 || timestampNS == sensor.m_lastTimestampNs)
       return;
    sensor.m_lastTimestampNs = timestampNS;
-   const uint64_t timestampUS = timestampNS / 1000;
-   uint64_t alignedTimestampUS = timestampUS + sensor.m_clockDeltaUs;
-   if (alignedTimestampUS > m_timeUs)
+
+   uint64_t alignedTimestampNS = timestampNS + sensor.m_clockDeltaNs;
+   if (alignedTimestampNS > m_timeNs)
    {
       // Acquisition is evaluated to be in the future of the Kalman filter master clock, so we realign the sensor clock to the Kalman filter clock
-      sensor.m_clockDeltaUs = static_cast<int64_t>(m_timeUs) - static_cast<int64_t>(timestampUS);
-      alignedTimestampUS = m_timeUs;
+      sensor.m_clockDeltaNs = static_cast<int64_t>(m_timeNs) - static_cast<int64_t>(timestampNS);
+      alignedTimestampNS = m_timeNs;
    }
+
+   // An event-driven sensor sends nothing while at rest, so its first sample is motion, not bias.
+   // Seed with zero bias in that case rather than let it be taken for the sensor's zero offset.
+   if (!axis.IsInitialized() && fabsf(sensor.m_sensor.GetValue()) >= restThresold)
+      axis.Reset(alignedTimestampNS);
 
    if (sensor.m_sensor.GetType() == SensorMapping::Type::Velocity)
    {
-      axis.UpdateVelocity(alignedTimestampUS, axisGain * sensor.m_sensor.GetValue());
+      axis.UpdateVelocity(alignedTimestampNS, axisGain * sensor.m_sensor.GetValue());
    }
    else if (sensor.m_sensor.GetType() == SensorMapping::Type::Acceleration)
    {
-      axis.UpdateAcceleration(alignedTimestampUS, axisGain * sensor.m_sensor.GetValue());
+      axis.UpdateAcceleration(alignedTimestampNS, axisGain * sensor.m_sensor.GetValue());
    }
 }
 
@@ -214,7 +219,7 @@ void CabinetNudgeSensor::UpdateAxis(SyncedSensor& velSensor, SyncedSensor& accSe
    {
       velSensor.m_forceRest = true;
       accSensor.m_forceRest = true;
-      kalmanFilter.UpdateRestConstraints(m_timeUs);
+      kalmanFilter.UpdateRestConstraints(m_timeNs);
    }
    accSensor.m_lastValue = accSensor.m_sensor.GetValue();
    velSensor.m_lastValue = velSensor.m_sensor.GetValue();
@@ -225,8 +230,8 @@ void CabinetNudgeSensor::UpdateAxis(SyncedSensor& velSensor, SyncedSensor& accSe
       if (!isRest)
       {
          if (!gainCalibrator.IsSegmentActive())
-            gainCalibrator.StartSegment(m_timeUs);
-         gainCalibrator.AddSample(m_timeUs, velSensor.m_sensor.GetValue(), accSensor.m_sensor.GetValue());
+            gainCalibrator.StartSegment(m_timeNs);
+         gainCalibrator.AddSample(m_timeNs, velSensor.m_sensor.GetValue(), accSensor.m_sensor.GetValue());
       }
       else if (gainCalibrator.IsSegmentActive())
       {
@@ -237,18 +242,24 @@ void CabinetNudgeSensor::UpdateAxis(SyncedSensor& velSensor, SyncedSensor& accSe
             PLOGI << std::format(
                "Velocity/Acceleration initial gain calibrated to {:5.3f} (confidence: {:5.3f}), dual sensor activated", gainCalibrator.GetGain(), gainCalibrator.GetGlobalConfidence());
          }
+         else if (false)
+         {
+            // For debugging purpose
+            PLOGI << std::format("Velocity/Acceleration initial gain calibrated to {:5.3f} (confidence: {:5.3f} / {} / {})", gainCalibrator.GetGain(), gainCalibrator.GetGlobalConfidence(),
+               gainCalibrator.GetAcceptedSegmentCount(), gainCalibrator.GetRejectedSegmentCount());
+         }
       }
    }
 
-   kalmanFilter.PredictTo(m_timeUs);
+   kalmanFilter.PredictTo(m_timeNs);
 }
 
 void CabinetNudgeSensor::StepOneMillisecond()
 {
+   m_timeNs += 1000'000ull;
+
    if (m_deactivationDelay > 0)
       m_deactivationDelay--;
-
-   m_timeUs += 1000;
 
    // Apply Kalman filter and rest detection for bias & gain calibration
    UpdateAxis(m_xVelSensor, m_xAccSensor, m_kalmanX, m_xGainCalibrator);
@@ -259,18 +270,21 @@ void CabinetNudgeSensor::StepOneMillisecond()
    if (m_nudgeIntentHandler)
    {
       // Hacky empirical balancing of front vs side energy, needs some more physics study to validate this
-      m_nudgeIntentHandler->StepOneMillisecond(Vertex2D(m_kalmanX.GetAcceleration() * (float)(4. / 3.), m_kalmanY.GetAcceleration()));
+      m_nudgeIntentHandler->StepOneMillisecond(Vertex2D(m_kalmanX.GetAcceleration() * m_nudgeStrengthScale * (float)(4. / 3.), m_kalmanY.GetAcceleration() * m_nudgeStrengthScale));
 
       if (m_nudgeIntentHandler->IsImpulseInProgress())
-         m_cabinetModel.StepOneMillisecond(m_cabinetModel.GetMass() * m_nudgeIntentHandler->GetImpulseAceleration());
+         m_cabinetModel.StepOneMillisecond(m_cabinetModel.GetMass() * m_nudgeIntentHandler->GetImpulseAcceleration());
       else
          m_cabinetModel.StepOneMillisecond({ 0.f, 0.f });
 
       m_cabinetAcceleration = m_cabinetModel.GetCabinetAcceleration();
 
-      // Log for debugging purposes as CSV: Time;Sensor acceleration;Kalman acceleration;Intent nudge;Cab acceleration;Cab position
-      PLOGD_IF(false) << std::format(";{:6d};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f}", m_timeUs / 1000, m_yAccSensor.m_sensor.GetValue(), m_kalmanY.GetAcceleration(),
-         m_nudgeIntentHandler->GetImpulseAceleration().y, m_cabinetAcceleration.y, m_cabinetModel.GetCabinetOffset().y);
+      // Log for debugging purposes as CSV
+      PLOGD_IF(false) << std::format(";{:6d};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f}", //
+         m_timeNs / 1000000, // Time (ms)
+         m_yAccSensor.m_sensor.GetValue(), m_kalmanY.GetAcceleration(), m_nudgeIntentHandler->GetImpulseAcceleration().y, m_cabinetAcceleration.y, // Accelerations
+         m_cabinetModel.GetCabinetOffset().y, // Offset
+         m_yVelSensor.m_sensor.GetValue(), m_yGainCalibrator.GetGain()); // Velocity
    }
    else
    {
@@ -282,15 +296,18 @@ void CabinetNudgeSensor::StepOneMillisecond()
 
       // The acquired acceleration correspond to a force F = a.m where m is the real world cabinet mass. The acceleration computed here is the
       // one of the **virtual** cabinet which has a different mass corresponding to the simulated table.
-      m_cabinetAcceleration *= m_nudgeStrengthScale * m_cabinetMass / m_cabinetModel.GetMass();
+      m_cabinetAcceleration *= m_cabinetMass / m_cabinetModel.GetMass();
 
       // Since the position state in the Kalman filter is not good enough (double integration resulting in drift + snap when enforcing rest conditions),
       // we use the cabinet model directly driven by Kalman acceleration for visual feedback
       m_cabinetModel.StepOneMillisecond(m_cabinetModel.GetMass() * m_cabinetAcceleration);
 
-      // Log for debugging purposes as CSV: Time;Sensor acceleration;Kalman acceleration;Cab acceleration;Cab position
-      PLOGD_IF(false) << std::format(";{:6d};{:8.5f};{:8.5f};{:8.5f};{:8.5f}", m_timeUs / 1000, m_yAccSensor.m_sensor.GetValue(), m_kalmanY.GetAcceleration(), m_cabinetAcceleration.y,
-         m_cabinetModel.GetCabinetOffset().y);
+      // Log for debugging purposes as CSV
+      PLOGD_IF(false) << std::format(";{:6d};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f};{:8.5f}", //
+         m_timeNs / 1000000, // Time (ms)
+         m_xAccSensor.m_sensor.GetValue(), m_kalmanX.GetAcceleration(), m_cabinetAcceleration.x, // Acceleration
+         m_cabinetModel.GetCabinetOffset().x, // Offset
+         m_xVelSensor.m_sensor.GetValue(), m_xGainCalibrator.GetGain()); // Velocity
    }
 }
 

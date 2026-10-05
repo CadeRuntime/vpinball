@@ -2,16 +2,13 @@
 
 #pragma once
 
-#ifndef __STANDALONE__
 #include <wxx_stdcontrols.h> // Add CButton, CEdit, CListBox
 #include <wxx_commondlg.h> // Add CCommonDialog, CColorDialog, CFileDialog, CFindReplace, CFontDialog
-#endif
 
 class DebuggerDialog final : public CDialog
 {
 public:
     DebuggerDialog();
-    BOOL IsSubDialogMessage(MSG& msg) const;
 
 protected:
     BOOL OnInitDialog() override;
@@ -28,8 +25,6 @@ private:
     CButton m_pauseButton;
     CButton m_stepButton;
     CEdit   m_stepAmountEdit;
-    CButton m_dbgLightsButton;
-    CButton m_dbgMaterialsButton;
     CEdit   m_ballSizeEdit;
     CEdit   m_ballMassEdit;
     CResizer m_resizer;

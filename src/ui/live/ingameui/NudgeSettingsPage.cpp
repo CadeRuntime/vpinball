@@ -81,10 +81,10 @@ void NudgeSettingsPage::BuildPage()
    // TODO this property is directly persisted. It does not follow the overall UI design: App/Table/Live state => Implement live state (will also enable table override)
    AddItem(std::make_unique<InGameUIItem>( //
       Settings::m_propPlayer_NudgeStrength, 100.f, "%4.1f %%"s, //
-      [this]() { return m_player->m_ptable->m_settings.GetPlayer_NudgeStrength(); }, //
+      [this]() { return g_settingsService.GetActiveSettings().GetPlayer_NudgeStrength(); }, //
       [this](float, float v)
       {
-         m_player->m_ptable->m_settings.SetPlayer_NudgeStrength(v, false);
+         g_settingsService.GetActiveSettings().SetPlayer_NudgeStrength(v, false);
          m_notificationId = m_player->m_liveUI->PushNotification("This change will be applied after restarting the player."s, 3000, m_notificationId);
       }));
 
@@ -132,9 +132,12 @@ void NudgeSettingsPage::Close(bool isBackwardAnimation)
 void NudgeSettingsPage::AppendPlot()
 {
    const float t = static_cast<float>((double)msec() / 1000.);
+   constexpr float g = 9.80665f;
+
    Vertex2D nudge = m_player->m_pininput.m_nudgeHandler->GetCabinetAcceleration();
-   m_nudgeXPlot.AddPoint(t, nudge.x);
-   m_nudgeYPlot.AddPoint(t, nudge.y);
+   m_nudgeXPlot.AddPoint(t, nudge.x / g);
+   m_nudgeYPlot.AddPoint(t, nudge.y / g);
+
    Vertex2D pos = m_player->m_pininput.m_nudgeHandler->GetCabinetOffset();
    m_cabXPlot.AddPoint(t, pos.x * 1000.f);
    m_cabYPlot.AddPoint(t, pos.y * 1000.f);
@@ -163,16 +166,16 @@ void NudgeSettingsPage::Render(float elapsed)
    if (ImPlot::BeginPlot("##NudgeX", ImVec2(plotWidth, plotHeight), ImPlotFlags_None))
    {
       ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
-      ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_None);
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_Opposite);
+      ImPlot::SetupAxis(ImAxis_Y1, "Acceleration (g)", ImPlotAxisFlags_None);
+      ImPlot::SetupAxis(ImAxis_Y2, "Position (mm)", ImPlotAxisFlags_Opposite);
       ImPlot::SetupAxisLimits(ImAxis_X1, 0, m_nudgeXPlot.m_timeSpan, ImGuiCond_Always);
-      ImPlot::SetupAxisLimits(ImAxis_Y1, -5.f, 5.f, ImGuiCond_Always);
-      ImPlot::SetupAxisLimits(ImAxis_Y2, -5.f, 5.f, ImGuiCond_Always);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, -1.2f, 1.2f, ImGuiCond_Always); // g
+      ImPlot::SetupAxisLimits(ImAxis_Y2, -5.f, 5.f, ImGuiCond_Always); // mm
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-      ImPlot::PlotLine("X Position (mm)", &m_cabXPlot.m_data[0].x, &m_cabXPlot.m_data[0].y, m_cabXPlot.m_data.size(),
+      ImPlot::PlotLine("X Position", &m_cabXPlot.m_data[0].x, &m_cabXPlot.m_data[0].y, m_cabXPlot.m_data.size(),
          { ImPlotProp_FillColor, ImVec4(1, 0, 0.25f, 0), ImPlotProp_Offset, m_cabXPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-      ImPlot::PlotLine("X Acceleration (m/s^2)", &m_nudgeXPlot.m_data[0].x, &m_nudgeXPlot.m_data[0].y, m_nudgeXPlot.m_data.size(),
+      ImPlot::PlotLine("X Acceleration", &m_nudgeXPlot.m_data[0].x, &m_nudgeXPlot.m_data[0].y, m_nudgeXPlot.m_data.size(),
          { ImPlotProp_FillColor, ImVec4(1, 0, 0, 0.25f), ImPlotProp_Offset, m_nudgeXPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       ImPlot::EndPlot();
    }
@@ -180,16 +183,16 @@ void NudgeSettingsPage::Render(float elapsed)
    if (ImPlot::BeginPlot("##NudgeY", ImVec2(plotWidth, plotHeight), ImPlotFlags_None))
    {
       ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
-      ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_None);
-      ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_Opposite);
+      ImPlot::SetupAxis(ImAxis_Y1, "Acceleration (g)", ImPlotAxisFlags_None);
+      ImPlot::SetupAxis(ImAxis_Y2, "Position (mm)", ImPlotAxisFlags_Opposite);
       ImPlot::SetupAxisLimits(ImAxis_X1, 0, m_nudgeYPlot.m_timeSpan, ImGuiCond_Always);
-      ImPlot::SetupAxisLimits(ImAxis_Y1, -5.f, 5.f, ImGuiCond_Always);
-      ImPlot::SetupAxisLimits(ImAxis_Y2, -5.f, 5.f, ImGuiCond_Always);
+      ImPlot::SetupAxisLimits(ImAxis_Y1, -1.2f, 1.2f, ImGuiCond_Always); // g
+      ImPlot::SetupAxisLimits(ImAxis_Y2, -5.f, 5.f, ImGuiCond_Always); // mm
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
-      ImPlot::PlotLine("Y Position (mm)", &m_cabYPlot.m_data[0].x, &m_cabYPlot.m_data[0].y, m_cabYPlot.m_data.size(),
+      ImPlot::PlotLine("Y Position", &m_cabYPlot.m_data[0].x, &m_cabYPlot.m_data[0].y, m_cabYPlot.m_data.size(),
          { ImPlotProp_FillColor, ImVec4(1, 0, 0.25f, 0), ImPlotProp_Offset, m_cabYPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-      ImPlot::PlotLine("Y Acceleration (m/s^2)", &m_nudgeYPlot.m_data[0].x, &m_nudgeYPlot.m_data[0].y, m_nudgeYPlot.m_data.size(),
+      ImPlot::PlotLine("Y Acceleration", &m_nudgeYPlot.m_data[0].x, &m_nudgeYPlot.m_data[0].y, m_nudgeYPlot.m_data.size(),
          { ImPlotProp_FillColor, ImVec4(1, 0, 0, 0.25f), ImPlotProp_Offset, m_nudgeYPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       ImPlot::EndPlot();
    }

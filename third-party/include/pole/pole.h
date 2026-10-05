@@ -16,12 +16,19 @@
    More datatype changes to allow for 32 and 64 bit code, some fixes involving incremental updates, flushing
    Copyright 2013 <srbaum@gmail.com>
 
-   Corrected some of the artificial (=failing on 32bit systems) handling of 64bit sizes/indices, leading to a lot of warnings
-   Note that things can still fail on 32bit systems for large files, but it should at least assert now
-   Also some minor optimizations
+   - Corrected some of the artificial (=failing on 32bit systems) handling of 64bit sizes/indices, leading to a lot of warnings
+   - Note that things can still fail on 32bit systems for large files, but it should at least assert now
+   - Allow multithreaded reading of multiple streams from a single storage (synchronized read access)
+   - Also some minor optimizations
+   - Fixed OLE FAT entries sector indices wrongly considered as 64bit, causing over allocation
+   - Fixed DirTree::flush partial last directory block
+   - Fixed StorageIO::flush not padding file to sector boundary
+   - Fixed StorageIO::flush writing uninitialized data in the last DIFAT sector
+   - Balance directory sibling trees on flush (deep chains break recursive readers)
+   - Added creation of version 4 files with 4K sectors (Storage::open bLargeSectors)
    2026 VPX team
 
-   Version: 0.5.3 VPX
+   Version: 0.5.5 VPX
 
    Redistribution and use in source and binary forms, with or without 
    modification, are permitted provided that the following conditions 
@@ -64,6 +71,7 @@ wide string into utf8 char*:
 #define POLE_H
 
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <list>
 
@@ -91,6 +99,17 @@ std::string UTF16toUTF8(const std::wstring &utf16);
 std::wstring UTF8toUTF16(const std::string &utf8);
 #endif //POLE_USE_UTF16_FILENAMES
 
+// Filename for Storage: UTF-8 with POLE_USE_UTF16_FILENAMES (path::string() gives the ANSI code page), native otherwise
+inline std::string PathToFilename(const std::filesystem::path &path)
+{
+#ifdef POLE_USE_UTF16_FILENAMES
+  const std::u8string utf8 = path.u8string();
+  return std::string(utf8.begin(), utf8.end());
+#else
+  return path.string();
+#endif
+}
+
 class StorageIO;
 class Stream;
 class StreamIO;
@@ -114,27 +133,32 @@ public:
    * Destroys the storage.
    **/
   ~Storage();
-  
+
   /**
    * Opens the storage. Returns true if no error occurs.
    **/
-  bool open(bool bWriteAccess = false, bool bCreate = false);
+  bool open(bool bWriteAccess = false, bool bCreate = false, bool bLargeSectors = false);
 
   /**
    * Closes the storage.
    **/
   void close();
-  
+
   /**
    * Returns the error code of last operation.
    **/
   int result() const;
 
   /**
+   * Returns true if any write failed since opening (disk full,...), including on close().
+   **/
+  bool hasWriteError() const;
+
+  /**
    * Finds all stream and directories in given path.
    **/
   std::list<std::string> entries( const std::string& path = "/" );
-  
+
   /**
    * Returns true if specified entry name is a directory.
    */
@@ -149,6 +173,13 @@ public:
    * Returns true if storage can be modified.
    */
   bool isWriteable() const;
+  /**
+   * Returns the absolute byte offset of the first byte of a stream, or 0 if the stream
+   * does not exist. Offsets are comparable across every stream in the container,
+   * including those small enough to live inside the mini-stream container, so they can be
+   * used to visit streams in the order they are physically laid out.
+   **/
+  uint64 streamOffset( const std::string& name );
 
   /**
    * Deletes a specified stream or directory. If directory, it will

@@ -5,7 +5,8 @@
 
 // Ported at: VisualPinball.Engine/Physics/HitKd.cs
 
-HitKD::HitKD()
+HitKD::HitKD(PhysicsEngine* physics)
+   : m_physics(physics)
 {
 }
 
@@ -396,9 +397,9 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
 
    for (unsigned i=m_start; i<m_start+org_items; i++)
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->c_tested++;
-      #endif
+#ifdef DEBUGPHYSICS
+      hitoct->m_physics->c_tested++;
+#endif
       HitObject * const pho = hitoct->GetItemAt(i);
       if ((pball != pho) // ball can not hit itself
 		  /*&& fRectIntersect3D(pball->m_hitBBox, pho->m_hitBBox)*/ //!! do bbox test before to save alu-instructions? or not to save registers? -> currently not, as just sphere vs sphere
@@ -410,9 +411,9 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
 
    if (m_children) // not a leaf
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->m_physics->c_traversed++;
-      #endif
+#ifdef DEBUGPHYSICS
+      hitoct->m_physics->c_traversed++;
+#endif
       if (axis == 0)
       {
          const float vcenter = (m_rectbounds.left+m_rectbounds.right)*0.5f;
@@ -421,7 +422,7 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
          if (pball->m_hitBBox.right >= vcenter)
             m_children[1].HitTestBall(hitoct, pball, coll);
       }
-      else f (axis == 1)
+      else if (axis == 1)
       {
          const float vcenter = (m_rectbounds.top+m_rectbounds.bottom)*0.5f;
          if (pball->m_hitBBox.top <= vcenter)
@@ -486,9 +487,9 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
       const unsigned int end = traversal_order ? size : (current->m_start / 4 - 1);
       for (unsigned int i = start; i != end; i += dt)
       {
-         #ifdef DEBUGPHYSICS
-            g_pplayer->m_physics->c_tested++; //!! +=4? or is this more fair?
-         #endif
+#ifdef DEBUGPHYSICS
+         hitoct->m_physics->c_tested++; //!! +=4? or is this more fair?
+#endif
          // comparisons set bits if bounds miss. if all bits are set, there is no collision. otherwise continue comparisons
          // bits set, there is a bounding box collision
          /*__m128 cmp = _mm_cmpge_ps(bright, pL[i]);
@@ -525,7 +526,16 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
          ez = _mm_mul_ps(ez, ez);
          const __m128 d = _mm_add_ps(_mm_add_ps(ex, ey), ez);
          const __m128 cmp2 = _mm_cmple_ps(d, rsqr);
-         const int mask2 = _mm_movemask_ps(cmp2);
+         int mask2 = _mm_movemask_ps(cmp2);
+
+         // The 4 lanes of a group are not aligned with this node's item range: only the lanes inside
+         // [m_start, m_start+org_items) belong to this node, the others belong to the previous/next
+         // node and would be hit-tested again when that node is traversed (leading to duplicated contacts)
+         const unsigned int itemsEnd = current->m_start + org_items;
+         if (i * 4 < current->m_start)
+            mask2 &= 0xF << (current->m_start - i * 4); // clear the lanes below m_start
+         if (i * 4 + 4 > itemsEnd)
+            mask2 &= (1 << (itemsEnd - i * 4)) - 1; // clear the lanes at/past itemsEnd
          if (mask2 == 0) continue;
 
          // now there is at least one bbox collision
@@ -561,9 +571,9 @@ void HitKDNode::HitTestBall(const HitKD* hitoct, const HitBall* const pball, Col
 
       if (current->m_children) // not a leaf
       {
-         #ifdef DEBUGPHYSICS
-            g_pplayer->m_physics->c_traversed++;
-         #endif
+#ifdef DEBUGPHYSICS
+         hitoct->m_physics->c_traversed++;
+#endif
          if (axis == 0)
          {
             const float vcenter = (current->m_rectbounds.left + current->m_rectbounds.right)*0.5f;
@@ -602,17 +612,17 @@ void HitKDNode::HitTestXRay(const HitKD* hitoct, const HitBall* const pball, vec
 
    for (unsigned i = m_start; i < m_start + org_items; i++)
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->m_physics->c_tested++;
-      #endif
+#ifdef DEBUGPHYSICS
+      hitoct->m_physics->c_tested++;
+#endif
       HitObject * const pho = hitoct->GetItemAt(i);
       if ((pball != pho) && // ball cannot hit itself
          /*fRectIntersect3D(pball->m_hitBBox, pho->m_hitBBox) &&*/ //!! do bbox test before to save alu-instructions? or not to save registers? -> currently not, as just sphere vs sphere
          fRectIntersect3D(pball->m_d.m_pos, rcHitRadiusSqr, pho->m_hitBBox))
       {
-         #ifdef DEBUGPHYSICS
-            g_pplayer->m_physics->c_deepTested++;
-         #endif
+#ifdef DEBUGPHYSICS
+         hitoct->m_physics->c_deepTested++;
+#endif
          const float newtime = pho->HitTest(pball->m_d, coll.m_hittime, coll);
          if (newtime >= 0.f)
          {
@@ -624,9 +634,9 @@ void HitKDNode::HitTestXRay(const HitKD* hitoct, const HitBall* const pball, vec
 
    if (m_children) // not a leaf
    {
-      #ifdef DEBUGPHYSICS
-         g_pplayer->m_physics->c_traversed++;
-      #endif
+#ifdef DEBUGPHYSICS
+      hitoct->m_physics->c_traversed++;
+#endif
       if (axis == 0)
       {
          const float vcenter = (m_rectbounds.left + m_rectbounds.right)*0.5f;

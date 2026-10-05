@@ -210,7 +210,7 @@ bool InGameUIItem::IsSameValue(float a, float b) const
 
 bool InGameUIItem::IsModified() const
 {
-   const Settings& settings = g_pplayer ? g_pplayer->m_ptable->m_settings : g_app->m_settings;
+   const Settings& settings = g_settingsService.GetActiveSettings();
    switch (m_type)
    {
    case Type::Property:
@@ -225,6 +225,26 @@ bool InGameUIItem::IsModified() const
       }
    case Type::ActionInputMapping: return m_inputAction->GetMappingString() != m_initialMappingString; break;
    default: return false;
+   }
+}
+
+bool InGameUIItem::IsOverriden(Settings& appSettings, Settings& tableSettings) const
+{
+   switch (m_type)
+   {
+   case Type::Property:
+      if (auto id = Settings::GetRegistry().GetPropertyId(m_property->m_groupId, m_property->m_propId); id.has_value())
+      {
+         switch (Settings::GetRegistry().GetStoreType(m_property->m_type))
+         {
+         case PropertyRegistry::StoreType::Int: return appSettings.GetInt(id.value()) != tableSettings.GetInt(id.value());
+         case PropertyRegistry::StoreType::Float: return appSettings.GetFloat(id.value()) != tableSettings.GetFloat(id.value());
+         case PropertyRegistry::StoreType::String: return appSettings.GetString(id.value()) != tableSettings.GetString(id.value());
+         default: assert(false); return false;
+         }
+      }
+      return false;
+   default: assert(false); return true;
    }
 }
 
@@ -249,7 +269,7 @@ bool InGameUIItem::IsDefaultValue() const
 
 void InGameUIItem::ResetToStoredValue()
 {
-   Settings& settings = g_pplayer ? g_pplayer->m_ptable->m_settings : g_app->m_settings;
+   Settings& settings = g_settingsService.GetActiveSettings();
    switch (m_type)
    {
    case Type::Property:

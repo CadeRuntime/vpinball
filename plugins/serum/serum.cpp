@@ -1,387 +1,706 @@
 // license:GPLv3+
 
-#include <cassert>
-#include <cstdlib>
-#include <chrono>
-#include <cstring>
-#include <mutex>
-#include <thread>
-#include <random>
-
 #include "plugins/MsgPlugin.h"
 #include "plugins/VPXPlugin.h"
 #include "plugins/ControllerPlugin.h"
+#include "plugins/LoggingPlugin.h"
+#include "pinmame/PinMAMEPlugin.h"
 #include "common.h"
 #include "serum-decode.h"
 
+#include <cassert>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <random>
+#include <algorithm>
+#include <thread>
+#include <vector>
 
-#include "plugins/LoggingPlugin.h"
-
-using namespace std::string_literals;
-using namespace std::string_view_literals;
-
-namespace Serum {
-
-LPI_IMPLEMENT_CPP // Implement shared log support
+#include "plugins/PluginStrings.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // Serum Colorization plugin
 //
-// This plugin only rely on the generic message plugin API, the generic controller
-// plugin API and the following messages:
-// - PinMAME/OnGameStart: msgData is PinMAME game identifier (rom name)
-// - PinMAME/OnGameEnd
+// This plugin rely on the generic message plugin API and the generic controller
+// plugin API, but also on VPX API to locate serum file
+
+namespace Serum
+{
+
+using namespace std::string_literals;
+using namespace std::string_view_literals;
+using namespace PinballPlugin::Controller;
+
+LPI_IMPLEMENT_CPP // Implement shared log support
 
 static const MsgPluginAPI* msgApi = nullptr;
-static VPXPluginAPI* vpxApi = nullptr;
-
 static uint32_t endpointId;
-static unsigned int onControllerGameStartId, onControllerGameEndId;
-static unsigned int onDmdSrcChangedId, getDmdSrcId, onDmdTrigger;
 
-static bool isRunning = false;
-static std::mutex sourceMutex;
-static std::mutex stateMutex;
-static std::thread colorizeThread;
-static DisplaySrcId dmdId = {};
-
-static Serum_Frame_Struc* pSerum = nullptr;
-static unsigned int lastRawFrameId = 0;
-
+static unsigned int onDmdTrigger;
+static unsigned int onTriggerScene;
 static std::minstd_rand std_rand;
 
+static std::unique_ptr<CtrlItemConsumer<ControllerDef>> controllers;
+static std::unique_ptr<class SerumColorizer> colorizer;
+
 MSGPI_STRING_VAL_SETTING(serumPathProp, "SerumPath", "Serum Path", "Folder that cotains Serum colorization files (cROMc, cRZ)", true, "", 1024);
+// Serum skips frames it cannot identify. How long to keep showing the last
+// known-good colorized frame before giving up on the unknown run, and how many
+// unknown frames to skip within it, are colorization- and ROM-dependent, so
+// they have to be tunable by the host. libserum defaults to 0/0, which means
+// "no timeout, skip nothing".
+MSGPI_INT_VAL_SETTING(serumIgnoreUnknownFramesTimeoutProp, "IgnoreUnknownFramesTimeout", "Ignore unknown frames timeout",
+   "Milliseconds to keep the last colorized frame while frames cannot be identified (0 disables)", true, 0, 65535, 0);
+MSGPI_INT_VAL_SETTING(serumMaxUnknownFramesToSkipProp, "MaximumUnknownFramesToSkip", "Maximum unknown frames to skip",
+   "How many consecutive unidentified frames may be skipped (0 disables)", true, 0, 255, 0);
+// A Serum v2 colorization can carry a 32 row and a 64 row output, and by
+// default both are requested and both are published. Two things go wrong with
+// that in a host driving one fixed panel:
+//
+// - Nothing downstream can say which one it wants. The two published sources
+//   share an overrideId, and consumers disagree about how to break the tie --
+//   DMDUtilPlugin takes the largest colour depth, ResURIResolver breaks on the
+//   first match -- so a 128x32 panel can end up downscaling a colorization that
+//   was upscaled to 256x64.
+// - libserum computes and holds both outputs. That is work and memory spent on
+//   an output nothing will display, and the memory is the larger half of it: a
+//   recent cineastic colorization wants hundreds of megabytes for the SD plane
+//   alone, which a Raspberry Pi or an Android device does not have twice.
+//
+// Disabling a size is therefore a performance option for a host that knows its
+// panel, and it costs the ability to drive a display of the other size. Nothing
+// is disabled unless asked.
+const char* serumDisabledSizeLiterals[] = { "None", "32px height", "64px height" };
+MSGPI_ENUM_VAL_SETTING(serumDisabledSizeProp, "DisabledSize", "Disabled size",
+   "Colorization output size to skip entirely, saving the memory and the work of producing it. For hosts driving one fixed panel.", true, 0, 3,
+   serumDisabledSizeLiterals, 0);
+// A colorization can carry PUP triggers of its own, which this plugin forwards
+// on "Serum"/"OnDmdTrigger:1" for PUP and DOF to act on. Whether that is wanted
+// depends on the setup rather than on the colorization: a pack author may be
+// driving PUP from a .pup.csv instead and want the colorization's own triggers
+// out of the way, and a host with no PUP at all has no use for them.
+//
+// libserum reports them unless told otherwise (keepTriggersInternal defaults to
+// false), so the default here keeps what the plugin has always done. Note that
+// libserum's own switch is global rather than per-instance, which is why this
+// is applied on every load rather than once.
+MSGPI_BOOL_VAL_SETTING(serumPupTriggersProp, "PupTriggers", "Report colorization PUP triggers",
+   "Forward PUP triggers embedded in the colorization onto the bus", true, true);
 
-class ColorizationState final
+// DMD event source: this plugin advertises that it identifies DMD frames for
+// a controller and broadcasts the corresponding triggers on an event message.
+// Advertised like the other controller resources (GetSrc/OnSrcChanged messages
+// resolved in the CTLPI_NAMESPACE namespace by the CtrlItem helpers).
+//
+// Consumers carry their own copy of this contract -- see B2SPluginEventStream.h.
+// It is part of the wire contract, so it changes in both places or neither.
+static constexpr const char* dmdEventSrcGetMsgName = "GetDmdEventSrc:1";
+static constexpr const char* dmdEventSrcOnChangeMsgName = "OnDmdEventSrcChanged:1";
+
+struct DMDEventSrcId
 {
-public:
-   ColorizationState(unsigned int width, unsigned int height)
-      : m_colorFrame(pSerum->SerumVersion == SERUM_V1 ? new uint8_t[width * height * 3] : nullptr)
-      , m_width(width)
-      , m_height(height)
-      , m_colorizedFrameFormat(pSerum->SerumVersion == SERUM_V1 ? CTLPI_DISPLAY_FORMAT_SRGB888 : CTLPI_DISPLAY_FORMAT_SRGB565)
-      , m_colorizedframeId(std_rand())
-   {
-      assert(m_width > 0);
-      assert(m_height > 0);
-   }
-
-   ~ColorizationState()
-   {
-      delete[] m_colorFrame;
-   }
-
-   void UpdateFrameV1()
-   {
-      assert(pSerum && (pSerum->SerumVersion == SERUM_V1));
-      for (unsigned int i = 0; i < m_width * m_height; i++)
-         memcpy(&(m_colorFrame[i * 3]), &pSerum->palette[pSerum->frame[i] * 3], 3);
-      m_colorizedframeId++;
-   }
-   
-   void UpdateFrame32V2()
-   {
-      assert(pSerum && (pSerum->SerumVersion == SERUM_V2));
-      if (pSerum->width32 > 0)
-      {
-         m_width32 = pSerum->width32;
-         m_colorFrame32 = reinterpret_cast<uint8_t*>(pSerum->frame32);
-         m_colorizedframeId++;
-      }
-   }
-   
-   void UpdateFrame64V2()
-   {
-      assert(pSerum && (pSerum->SerumVersion == SERUM_V2));
-      if (pSerum->width64 > 0)
-      {
-         m_width64 = pSerum->width64;
-         m_colorFrame64 = reinterpret_cast<uint8_t*>(pSerum->frame64);
-         m_colorizedframeId++;
-      }
-   }
-
-   // Serum v1
-   uint8_t* const m_colorFrame;
-
-   // Serum v2
-   unsigned int m_width32 = 0;
-   uint8_t* m_colorFrame32 = nullptr;
-   unsigned int m_width64 = 0;
-   uint8_t* m_colorFrame64 = nullptr;
-
-   // Common state information
-   const unsigned int m_width, m_height; // Size of identify frame (which can differ from the size of the colorized frame)
-   const unsigned int m_colorizedFrameFormat;
-   unsigned int m_colorizedframeId = 0;
-   bool m_hasAnimation = false;
-   std::chrono::high_resolution_clock::time_point m_animationTick;
-   std::chrono::high_resolution_clock::time_point m_animationNextTick;
+   ControllerDef covered; // Controller whose DMD frames this source identifies
+   const char* triggerEventName; // Trigger event message name, in the "Serum" message namespace, carrying a pointer to an unsigned int (trigger id) as message data
 };
 
-static ColorizationState* state = nullptr;
-
-static void ColorizeThread()
+inline bool operator==(const DMDEventSrcId& a, const DMDEventSrcId& b)
 {
-   SetThreadName("Serum.ColorizeThread"s);
-   unsigned int lastFrameId = 0;
-   while (isRunning)
+   return a.covered == b.covered //
+      && a.triggerEventName == b.triggerEventName; // pointer identity, not string content
+}
+
+// Claims the game whose DMD frames this plugin identifies. Held here rather
+// than by the colorizer because it is published before the colorization is
+// loaded -- see OnControllerChanged.
+static std::unique_ptr<CtrlItemProvider<DMDEventSrcId>> dmdEventSrc;
+static std::string dmdEventSrcGameId;
+
+// The setting names the size to skip, so every size it does not name is
+// produced. A value outside the enum degrades to "skip nothing" rather than to
+// no output at all.
+static bool IsResolutionRequested(int rows)
+{
+   switch (serumDisabledSizeProp_Get())
    {
-      // Original PinMAME code would evaluate DMD frames at a fixed 60 FPS and color rotation are also based on a 60FPS rate. So update at this pace.
-      std::this_thread::sleep_for(std::chrono::microseconds(16666));
+   case 1: return rows != 32;
+   case 2: return rows != 64;
+   default: return true;
+   }
+}
 
-      std::lock_guard<std::mutex> lock1(sourceMutex);
-      if (dmdId.id.id == 0)
-         continue;
+static unsigned int SerumRequestFlags()
+{
+   unsigned int flags = 0;
+   if (IsResolutionRequested(32))
+      flags |= FLAG_REQUEST_32P_FRAMES;
+   if (IsResolutionRequested(64))
+      flags |= FLAG_REQUEST_64P_FRAMES;
+   return flags;
+}
 
-      const DisplayFrame frame = dmdId.GetIdentifyFrame(dmdId.id);
-      if (frame.frame == nullptr)
-         break;
+// Routes libserum's own diagnostics into the plugin log.
+//
+// Without this they are discarded: libserum only logs through a callback, and
+// nothing installed one. A failed load therefore reported "Failed to load
+// colorization data" and nothing else, while libserum had already said exactly
+// what was wrong - wrong header, version too old, size mismatch - into a
+// callback that was never set.
+static void SERUM_CALLBACK OnSerumLog(const char* format, va_list args, const void* /*userData*/)
+{
+   if (format == nullptr)
+      return;
+   char buffer[1024];
+   vsnprintf(buffer, sizeof(buffer), format, args);
+   LOGI(buffer);
+}
 
-      if (frame.frameId != lastFrameId)
+class SerumColorizer
+{
+public:
+   SerumColorizer(const std::filesystem::path& serumPath, const std::string_view& currentGameId, uint32_t controllerEndpointId)
+      : m_pSerum(Serum_Load(PluginStrings::PathToNative(serumPath).c_str(), string(currentGameId).c_str(), SerumRequestFlags()))
+      , m_controllerEndpointId(controllerEndpointId)
+      , m_colorizedDmd(msgApi, endpointId, CTLPI_DISPLAY_GET_SRC_MSG, CTLPI_DISPLAY_ON_SRC_CHG_MSG)
+      , m_colorizedframeId(std_rand())
+      , m_dmdSource(
+           msgApi, endpointId, CTLPI_DISPLAY_GET_SRC_MSG, CTLPI_DISPLAY_ON_SRC_CHG_MSG, [this](std::vector<DisplaySrcId>& items) { FilterDmdSource(items); },
+           [this]() { StopColorizeThread(); }, [this]() { StartColorizeThread(); })
+   {
+      if (m_pSerum)
       {
-         // We received a new identify frame to match & colorize
-         lastFrameId = frame.frameId;
-         const uint32_t firstrot = Serum_Colorize(const_cast<uint8_t*>(static_cast<const uint8_t*>(frame.frame)));
-         if (firstrot != IDENTIFY_NO_FRAME)
-         {
-            // New frame, eventually starting a new animation
-            std::lock_guard<std::mutex> lock2(stateMutex);
-            bool newState = false;
-            if (state == nullptr)
-            {
-               state = new ColorizationState(dmdId.width, dmdId.height);
-               newState = true;
-            }
-            else if (state->m_width != dmdId.width || state->m_height != dmdId.height)
-            {
-               delete state;
-               state = new ColorizationState(dmdId.width, dmdId.height);
-               newState = true;
-            }
-            
-            state->m_hasAnimation = firstrot != 0;
-            if (state->m_hasAnimation)
-            {
-               state->m_animationTick = std::chrono::high_resolution_clock::now();
-               state->m_animationNextTick = state->m_animationTick + std::chrono::milliseconds(firstrot);
-            }
-            if (pSerum->SerumVersion == SERUM_V1)
-               state->UpdateFrameV1();
-            else if (pSerum->SerumVersion == SERUM_V2)
-            {
-               if (pSerum->flags & FLAG_RETURNED_32P_FRAME_OK)
-                  state->UpdateFrame32V2();
-               if (pSerum->flags & FLAG_RETURNED_64P_FRAME_OK)
-                  state->UpdateFrame64V2();
-            }
-            
-            // This assumes that we won't decode another frame with a pup trigger before the message will be processed on main thread (should be ok)
-            if (pSerum->triggerID != 0xffffffff)
-               msgApi->RunOnMainThread(endpointId, 0, [](void* userData) { msgApi->BroadcastMsg(endpointId, onDmdTrigger, &pSerum->triggerID); }, nullptr);
+         if (serumPupTriggersProp_Get())
+            Serum_EnablePupTrigers();
+         else
+            Serum_DisablePupTriggers();
+         Serum_SetIgnoreUnknownFramesTimeout(static_cast<uint16_t>(serumIgnoreUnknownFramesTimeoutProp_Get()));
+         Serum_SetMaximumUnknownFramesToSkip(static_cast<uint8_t>(serumMaxUnknownFramesToSkipProp_Get()));
 
-            if (newState)
-               msgApi->RunOnMainThread(endpointId, 0, [](void* userData) { msgApi->BroadcastMsg(endpointId, onDmdSrcChangedId, nullptr); }, nullptr);
-         }
+         // Only when a size was actually disabled. The sizes finally published
+         // are reported later, once a frame has been colorized and their widths
+         // are known -- which is too late, and conditional on frames matching,
+         // for someone checking that the setting they just changed took effect.
+         if (!IsResolutionRequested(32) || !IsResolutionRequested(64))
+            LOGI(std::format("Colorization limited to {}px height by the DisabledSize setting", IsResolutionRequested(32) ? 32 : 64));
+
+         m_dmdSource.Subscribe();
       }
-      else if (state && state->m_hasAnimation)
+      else
       {
+         LOGE("Failed to load colorization data");
+      }
+   }
+
+   // Whether this colorization will report DMD triggers, which is what the
+   // claim published on our behalf actually promises.
+   //
+   // Both conditions are load-bearing, and neither covers the other. ntriggers
+   // already counts only the triggers that will be reported: libserum applies
+   // PUP_TRIGGER_MAX_THRESHOLD (50000) both when it counts them and when it
+   // reports one, so ids at or above that -- its internal ones, including the
+   // scene ids arriving on TriggerScene:1 -- are excluded from the count and
+   // never emitted. Zero therefore means a colorization that identifies nothing
+   // for anybody.
+   //
+   // The setting is the other half, because libserum's own switch for it
+   // (keepTriggersInternal) suppresses reporting without changing ntriggers. A
+   // colorization with triggers and reporting turned off would otherwise keep
+   // the claim while emitting nothing, and a consumer that stood down for it
+   // would go silent for good.
+   [[nodiscard]] bool ProvidesDmdTriggers() const { return m_pSerum != nullptr && m_pSerum->ntriggers > 0 && serumPupTriggersProp_Get(); }
+   [[nodiscard]] uint32_t TriggerCount() const { return m_pSerum != nullptr ? m_pSerum->ntriggers : 0; }
+
+   ~SerumColorizer()
+   {
+      StopColorizeThread();
+      if (m_pSerum)
+      {
+         m_dmdSource.Unsubscribe();
+         Serum_Dispose();
+      }
+   }
+
+private:
+   void FilterDmdSource(std::vector<DisplaySrcId>& items)
+   {
+      // Only keep dmd corresponding to selected controller (or overriden from selected controller to support alphanumeric rendered DMD for example)
+      const std::function<bool(const DisplaySrcId&, unsigned int)> isFromController = [&](const DisplaySrcId& src, unsigned int depth)
+      {
+         if (src.id.endpointId == m_controllerEndpointId)
+            return true;
+         if (src.overrideId.id != 0)
+         {
+            if (src.overrideId.endpointId == m_controllerEndpointId)
+               return true;
+            if (depth == 0)
+               return false;
+            for (const DisplaySrcId& item : items)
+               if (item.id == src.overrideId)
+                  return isFromController(item, depth - 1);
+         }
+         return false;
+      };
+
+      DisplaySrcId selected { };
+      for (const DisplaySrcId& item : items)
+         if (isFromController(item, 8)) // We have the colorization data for this DMD source
+            if (item.GetIdentifyFrame != nullptr && item.width >= 128) // The DMD source is supported
+               selected = item;
+
+      items.clear();
+      if (selected.id.id != 0)
+         items.push_back(selected);
+   }
+
+public:
+   // A scene to play, queued for the colorize thread. See OnTriggerScene for
+   // where these come from and why they are Serum's own message rather than a
+   // shared event letter.
+   void QueueSceneTrigger(uint16_t event)
+   {
+      std::lock_guard targetLock(m_stateMutex);
+      if (std::find(m_pendingScenes.begin(), m_pendingScenes.end(), event) == m_pendingScenes.end())
+         m_pendingScenes.push_back(event);
+   }
+
+private:
+   void StartColorizeThread()
+   {
+      m_dmdSource.With(
+         [this](const std::vector<DisplaySrcId>& items)
+         {
+            if (items.empty())
+            {
+               LOGI("Serum DMD colorizer stopped");
+            }
+            else
+            {
+               const DisplaySrcId& dmdSrc = items.front();
+               LOGI(std::format("Serum colorizer source selected [endpointId={}.{}, {}x{} fmt={}]", dmdSrc.id.endpointId, dmdSrc.id.resId, dmdSrc.width, dmdSrc.height, dmdSrc.frameFormat));
+               m_isRunning = true;
+               m_colorizeThread = std::thread(&SerumColorizer::ColorizeThread, this, dmdSrc);
+            }
+         });
+   }
+
+   void StopColorizeThread()
+   {
+      m_isRunning = false;
+      if (m_colorizeThread.joinable())
+         m_colorizeThread.join();
+      m_colorizedDmd.ClearItems();
+      m_advertisedWidth32 = 0;
+      m_advertisedWidth64 = 0;
+      m_colorFrameV1.clear();
+   }
+
+   // Advertisement request, run on the main thread while the colorize thread blocks. It carries the source the thread was started for, as the source list may have been cleared meanwhile
+   struct AdvertiseContext
+   {
+      SerumColorizer* colorizer;
+      DisplaySrcId dmdId;
+   };
+
+   void ColorizeThread(DisplaySrcId dmdId)
+   {
+      SetThreadName("Serum.ColorizeThread"s);
+      constexpr uint32_t SERUM_MAX_ROTATION_DELAY_MS = 2048;
+      unsigned int lastFrameId = 0;
+      bool hasAnimation = false;
+      std::chrono::steady_clock::time_point animationTick;
+      std::chrono::steady_clock::time_point animationNextTick;
+      while (m_isRunning)
+      {
+         // Original PinMAME code would evaluate DMD frames at a fixed 60 FPS and color rotation are also based on a 60FPS rate. So update at this pace.
+         std::this_thread::sleep_for(std::chrono::microseconds(16666));
+
+         // Lock stateMutex as we directly returns internal Serum colorized frames (which may be modified by the calls here after)
+         std::unique_lock targetLock(m_stateMutex);
+
+         bool updated = false;
+
+         // Process incoming frames from DMD source
+         m_dmdSource.With(
+            [&](const std::vector<DisplaySrcId>& items)
+            {
+               const DisplayFrame frame = dmdId.GetIdentifyFrame(dmdId.callContext);
+               if (frame.frame == nullptr)
+               {
+                  m_isRunning = false;
+                  return;
+               }
+
+               if (frame.frameId == lastFrameId)
+                  return;
+               lastFrameId = frame.frameId;
+
+               const uint32_t firstrot = Serum_Colorize(const_cast<uint8_t*>(static_cast<const uint8_t*>(frame.frame)));
+               if (firstrot == IDENTIFY_NO_FRAME || firstrot == IDENTIFY_SAME_FRAME)
+                  return;
+
+               const uint32_t firstDelayMs = firstrot & 0x0000ffff;
+               hasAnimation = (firstDelayMs != 0) && (firstDelayMs < SERUM_MAX_ROTATION_DELAY_MS);
+               if (hasAnimation)
+               {
+                  animationTick = std::chrono::steady_clock::now();
+                  animationNextTick = animationTick + std::chrono::milliseconds(firstDelayMs);
+               }
+
+               // Deliberately redundant. Disabling the setting sets
+               // keepTriggersInternal, which makes libserum write 0xffffffff
+               // into triggerID at every site that would otherwise report one,
+               // and that alone is enough: with this check removed, a
+               // colorization whose attract mode fires triggers emitted none.
+               // It stays because relying on it means trusting a global in
+               // another library to keep zeroing a sentinel, and because the
+               // setting says "do not put these on the bus" -- which is worth
+               // saying where the bus message is sent.
+               if (serumPupTriggersProp_Get() && m_pSerum->triggerID != 0xffffffff)
+                  // The id is passed by value, as the colorizer may be gone (or triggerID overwritten) when this runs
+                  msgApi->RunOnMainThread(endpointId, 0,
+                     [](void* userData)
+                     {
+                        uint32_t triggerID = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(userData));
+                        msgApi->BroadcastMsg(endpointId, onDmdTrigger, &triggerID);
+                     },
+                     reinterpret_cast<void*>(static_cast<uintptr_t>(m_pSerum->triggerID)));
+
+               updated = true;
+            });
+
+         // Apply any scene triggers before the animation catch-up below, so a
+         // scene that starts a rotation gets its timer set in this same pass.
+         if (!m_pendingScenes.empty())
+         {
+            std::vector<uint16_t> scenes;
+            scenes.swap(m_pendingScenes);
+            for (const uint16_t scene : scenes)
+            {
+               const uint32_t result = Serum_Scene_Trigger(scene);
+               // Worth a line each: scene triggers are sparse, and a pack author
+               // wiring one up needs to tell "the trigger never arrived" apart
+               // from "it arrived and this colorization has no scene for it".
+               if (result == IDENTIFY_NO_FRAME || result == IDENTIFY_SAME_FRAME)
+               {
+                  LOGI(std::format("Scene trigger {} matched no scene", scene));
+                  continue;
+               }
+               LOGI(std::format("Scene trigger {} started", scene));
+               updated = true;
+               const uint32_t delayMs = result & 0x0000ffff;
+               hasAnimation = (delayMs != 0) && (delayMs < SERUM_MAX_ROTATION_DELAY_MS);
+               if (hasAnimation)
+               {
+                  animationTick = std::chrono::steady_clock::now();
+                  animationNextTick = animationTick + std::chrono::milliseconds(delayMs);
+               }
+            }
+         }
+
          // Perform current animation (catching up to the current time point)
-         const auto now = std::chrono::high_resolution_clock::now();
-         while (state->m_animationNextTick < now)
+         if (hasAnimation)
          {
-            const uint32_t nextrot = Serum_Rotate();
-            const uint32_t delayMs = nextrot & 0x0000ffff;
-            if (delayMs == 0)
+            const auto now = std::chrono::steady_clock::now();
+            while (animationNextTick < now)
             {
-               state->m_hasAnimation = false;
-               break;
+               const uint32_t nextrot = Serum_Rotate();
+               updated |= (nextrot & (FLAG_RETURNED_V1_ROTATED | FLAG_RETURNED_V2_ROTATED32 | FLAG_RETURNED_V2_ROTATED64 | FLAG_RETURNED_V2_SCENE)) != 0;
+               const uint32_t delayMs = nextrot & 0x0000ffff;
+               if (delayMs == 0 || delayMs >= SERUM_MAX_ROTATION_DELAY_MS)
+               {
+                  hasAnimation = false;
+                  break;
+               }
+               animationTick = animationNextTick;
+               animationNextTick = animationNextTick + std::chrono::milliseconds(delayMs);
             }
-            state->m_animationTick = state->m_animationNextTick;
-            state->m_animationNextTick = state->m_animationNextTick + std::chrono::milliseconds(delayMs);
-            if ((pSerum->SerumVersion == SERUM_V1) && (nextrot & FLAG_RETURNED_V1_ROTATED))
-               state->UpdateFrameV1();
-            if ((pSerum->SerumVersion == SERUM_V2) && (nextrot & FLAG_RETURNED_V2_ROTATED32))
-               state->UpdateFrame32V2();
-            if ((pSerum->SerumVersion == SERUM_V2) && (nextrot & FLAG_RETURNED_V2_ROTATED64))
-               state->UpdateFrame64V2();
          }
+
+         if (!updated)
+            continue;
+
+         if (m_pSerum->SerumVersion == SERUM_V1)
+         {
+            const unsigned int size = dmdId.width * dmdId.height;
+            if (m_colorFrameV1.size() != size * 3)
+            {
+               // Blocks on the main thread, which may be waiting for m_stateMutex in GetRenderFrame
+               targetLock.unlock();
+               AdvertiseContext context { this, dmdId };
+               msgApi->RunOnMainThread(
+                  endpointId, -1,
+                  [](void* userData)
+                  {
+                     SerumColorizer* colorizer = static_cast<AdvertiseContext*>(userData)->colorizer;
+                     const DisplaySrcId& dmdId = static_cast<AdvertiseContext*>(userData)->dmdId;
+                     const unsigned int size = dmdId.width * dmdId.height;
+                     colorizer->m_colorizedDmd.ClearItems();
+                     // FIXME if a concurrent GetRenderFrame has been done returning the previous backing buffer, this will discard it and lead to an invalid mem access
+                     colorizer->m_colorFrameV1.resize(size * 3);
+                     colorizer->m_colorizedDmd.AddItem({
+                        .id = { { endpointId, 0 } }, //
+                        .overrideId = dmdId.id, //
+                        .width = dmdId.width, //
+                        .height = dmdId.height, //
+                        .hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED, //
+                        .callContext = colorizer, //
+                        .frameFormat = CTLPI_DISPLAY_FORMAT_SRGB888, //
+                        .GetRenderFrame = &Trampoline<&SerumColorizer::GetRenderFrameSerumV1>::Call //
+                     });
+                  },
+                  &context);
+               targetLock.lock();
+            }
+            for (unsigned int i = 0; i < size; i++)
+               memcpy(&(m_colorFrameV1[i * 3]), &m_pSerum->palette[m_pSerum->frame[i] * 3], 3);
+         }
+         // Widths are per frame (0 when a size is missing), so advertise each size once and keep it
+         else if ((m_pSerum->width32 != 0 && m_advertisedWidth32 != m_pSerum->width32) || (m_pSerum->width64 != 0 && m_advertisedWidth64 != m_pSerum->width64))
+         {
+            // Blocks on the main thread, which may be waiting for m_stateMutex in GetRenderFrame
+            targetLock.unlock();
+            AdvertiseContext context { this, dmdId };
+            msgApi->RunOnMainThread(
+               endpointId, -1,
+               [](void* userData)
+               {
+                  SerumColorizer* colorizer = static_cast<AdvertiseContext*>(userData)->colorizer;
+                  const DisplaySrcId& dmdId = static_cast<AdvertiseContext*>(userData)->dmdId;
+                  colorizer->m_colorizedDmd.ClearItems();
+                  if (colorizer->m_pSerum->width32 != 0)
+                     colorizer->m_advertisedWidth32 = colorizer->m_pSerum->width32;
+                  if (colorizer->m_pSerum->width64 != 0)
+                     colorizer->m_advertisedWidth64 = colorizer->m_pSerum->width64;
+                  LOGI(std::format("Publishing colorized output: {}{}",
+                     (colorizer->m_advertisedWidth32 > 0 && IsResolutionRequested(32)) ? std::format("{}x32 ", colorizer->m_advertisedWidth32) : ""s,
+                     (colorizer->m_advertisedWidth64 > 0 && IsResolutionRequested(64)) ? std::format("{}x64", colorizer->m_advertisedWidth64) : ""s));
+                  if (colorizer->m_advertisedWidth32 > 0 && IsResolutionRequested(32))
+                  {
+                     colorizer->m_colorizedDmd.AddItem({
+                        .id = { { endpointId, 1 } }, //
+                        .overrideId = dmdId.id, //
+                        .width = colorizer->m_advertisedWidth32, //
+                        .height = 32, //
+                        .hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED, //
+                        .callContext = colorizer, //
+                        .frameFormat = CTLPI_DISPLAY_FORMAT_SRGB565, //
+                        .GetRenderFrame = &Trampoline<&SerumColorizer::GetRenderFrameSerumV2_32>::Call //
+                     });
+                  }
+                  if (colorizer->m_advertisedWidth64 > 0 && IsResolutionRequested(64))
+                  {
+                     colorizer->m_colorizedDmd.AddItem({
+                        .id = { { endpointId, 2 } }, //
+                        .overrideId = dmdId.id, //
+                        .width = colorizer->m_advertisedWidth64, //
+                        .height = 64, //
+                        .hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED, //
+                        .callContext = colorizer, //
+                        .frameFormat = CTLPI_DISPLAY_FORMAT_SRGB565, //
+                        .GetRenderFrame = &Trampoline<&SerumColorizer::GetRenderFrameSerumV2_64>::Call //
+                     });
+                  }
+               },
+               &context);
+            targetLock.lock();
+         }
+         m_colorizedframeId++;
+      }
+      m_isRunning = false;
+   }
+
+   // Note that to be fully clean we should do a copy of the render (since the direct data is updated asynchronously, so eventually while it is read by consumer)
+   DisplayFrame GetRenderFrameSerumV1()
+   {
+      std::lock_guard targetLock(m_stateMutex);
+      return { m_colorizedframeId, m_colorFrameV1.data() };
+   }
+   DisplayFrame GetRenderFrameSerumV2_32()
+   {
+      std::lock_guard targetLock(m_stateMutex);
+      return { m_colorizedframeId, reinterpret_cast<uint8_t*>(m_pSerum->frame32) };
+   }
+   DisplayFrame GetRenderFrameSerumV2_64()
+   {
+      std::lock_guard targetLock(m_stateMutex);
+      return { m_colorizedframeId, reinterpret_cast<uint8_t*>(m_pSerum->frame64) };
+   }
+
+   Serum_Frame_Struc* const m_pSerum;
+   const uint32_t m_controllerEndpointId;
+
+   CtrlItemProvider<DisplaySrcId> m_colorizedDmd;
+
+   bool m_isRunning = false;
+   std::thread m_colorizeThread;
+
+   std::mutex m_stateMutex;
+   // Scene triggers waiting to be applied, guarded by m_stateMutex.
+   // Serum_Scene_Trigger mutates libserum's own animation state, so it has to
+   // run where Serum_Colorize and Serum_Rotate run -- on the colorize thread,
+   // under the same lock -- rather than on whichever thread delivered the event.
+   std::vector<uint16_t> m_pendingScenes;
+   std::vector<uint8_t> m_colorFrameV1;
+   unsigned int m_advertisedWidth32 = 0;
+   unsigned int m_advertisedWidth64 = 0;
+
+   unsigned int m_colorizedframeId = 0;
+
+   CtrlItemConsumer<DisplaySrcId> m_dmdSource;
+};
+
+// Locate a colorization for a controller game id (format: ns::rom). Each base
+// folder is searched under an optional intermediate namespace folder first --
+// base/ns/rom/rom.cromc -- then directly -- base/rom/rom.cromc -- so legacy
+// layouts keep working. pinmame/altcolor is a legacy base only defined for
+// pinmame controllers, so it is searched for them alone, directly (the
+// pinmame folder already carries the namespace). Returns the directory under
+// which rom/ sits.
+static std::filesystem::path GetColorization(const std::string_view& gameNs, const std::string_view& gameId)
+{
+   const std::filesystem::path cromc = PluginStrings::PathFromUTF8(std::format("{}{}", gameId, ".cROMc"));
+   const std::filesystem::path crz = PluginStrings::PathFromUTF8(std::format("{}{}", gameId, ".cRZ"));
+   const std::filesystem::path gameNsPath = PluginStrings::PathFromUTF8(gameNs);
+   const std::filesystem::path gameIdPath = PluginStrings::PathFromUTF8(gameId);
+
+   VPXPluginAPI* vpxApi = nullptr;
+   unsigned int getVpxApiId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API);
+   msgApi->BroadcastMsg(endpointId, getVpxApiId, &vpxApi);
+   msgApi->ReleaseMsgID(getVpxApiId);
+   // Priorities 1 and 2 are relative to the table, so they only apply in a
+   // host that has tables. Other hosts -- PPUC drives real pinball hardware,
+   // and there are headless colorization tools -- have no VPX API at all and
+   // must still reach the global setting below.
+   VPXTableInfo tableInfo {};
+   if (vpxApi != nullptr)
+      vpxApi->GetTableInfo(&tableInfo);
+   if (const std::filesystem::path tablePath = PluginStrings::PathFromNative(tableInfo.path); !tablePath.empty())
+   {
+      const std::filesystem::path serumBase = tablePath.parent_path() / "serum"sv;
+
+      std::vector<std::filesystem::path> bases = { serumBase / gameNsPath, serumBase };
+      if (gameNs == "pinmame"sv)
+         bases.push_back(tablePath.parent_path() / "pinmame"sv / "altcolor"sv);
+      for (const std::filesystem::path& base : bases)
+      {
+         if (auto path = find_case_insensitive_file_path(base / gameIdPath / cromc); !path.empty())
+            return path.parent_path().parent_path();
+         else if (path = find_case_insensitive_file_path(base / gameIdPath / crz); !path.empty())
+            return path.parent_path().parent_path();
       }
    }
-   isRunning = false;
+
+   // Priority 3: global setting path
+   if (std::filesystem::path serumPath = PluginStrings::PathFromUTF8OrNative(serumPathProp_Get()); !serumPath.empty())
+      for (const std::filesystem::path& base : { serumPath / gameNsPath, serumPath })
+         if (!find_case_insensitive_file_path(base / gameIdPath / cromc).empty() || !find_case_insensitive_file_path(base / gameIdPath / crz).empty())
+            return base;
+
+   return std::filesystem::path();
 }
 
-static DisplayFrame GetRenderFrame(const CtlResId id) 
+// Select the first controller exposing a game for which we have the
+// corresponding assets, a pinmame:: one winning over other namespaces when
+// several match the same game key (selection order is otherwise undefined).
+static void SelectController(std::vector<ControllerDef>& items)
 {
-   // TODO To be fully clean we should do a copy of the render (since the direct data is updated asynchronously, so eventually while it is read by consumer)
-   std::lock_guard<std::mutex> lock(stateMutex);
-   if (state == nullptr)
-      return { 0, nullptr };
-   else if (id.resId == 1) // Serum V2 Height 64
-      return { state->m_colorizedframeId, state->m_colorFrame64 };
-   else if (state->m_colorFrame32) // Serum V2 Height 32
-      return { state->m_colorizedframeId, state->m_colorFrame32 };
-   else // Serum V1
-      return { state->m_colorizedframeId, state->m_colorFrame };
-}
-
-static void OnGetRenderDMDSrc(const unsigned int eventId, void* userData, void* msgData)
-{
-   if (pSerum == nullptr || state == nullptr || dmdId.id.id == 0)
-      return;
-   GetDisplaySrcMsg& msg = *static_cast<GetDisplaySrcMsg*>(msgData);
-   if (state->m_colorFrame32 && state->m_width32)
+   const ControllerDef* selected = nullptr;
+   for (const ControllerDef& controller : items)
    {
-      if (msg.count < msg.maxEntryCount)
+      const std::string_view gameId = PinballPlugin::Controller::CtrlGetGameKey(controller.gameId);
+      if (gameId.empty() || GetColorization(PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId), gameId).empty())
+         continue;
+      if (PinballPlugin::Controller::CtrlGetGameNamespace(controller.gameId) == "pinmame"sv)
       {
-         msg.entries[msg.count] = {};
-         msg.entries[msg.count].id = { { endpointId, 0 } };
-         msg.entries[msg.count].overrideId = dmdId.id;
-         msg.entries[msg.count].width = state->m_width32;
-         msg.entries[msg.count].height = 32;
-         msg.entries[msg.count].hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED;
-         msg.entries[msg.count].frameFormat = CTLPI_DISPLAY_FORMAT_SRGB565;
-         msg.entries[msg.count].GetRenderFrame = &GetRenderFrame;
-      }
-      msg.count++;
-   }
-   else if (state->m_colorFrame && state->m_width && state->m_height)
-   {
-      if (msg.count < msg.maxEntryCount)
-      {
-         msg.entries[msg.count] = {};
-         msg.entries[msg.count].id = { { endpointId, 0 } };
-         msg.entries[msg.count].overrideId = dmdId.id;
-         msg.entries[msg.count].width = state->m_width;
-         msg.entries[msg.count].height = state->m_height;
-         msg.entries[msg.count].hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED;
-         msg.entries[msg.count].frameFormat = CTLPI_DISPLAY_FORMAT_SRGB888;
-         msg.entries[msg.count].GetRenderFrame = &GetRenderFrame;
-      }
-      msg.count++;
-   }
-   if (state->m_colorFrame64 && state->m_width64)
-   {
-      if (msg.count < msg.maxEntryCount)
-      {
-         msg.entries[msg.count] = {};
-         msg.entries[msg.count].id = { { endpointId, 1 } };
-         msg.entries[msg.count].overrideId = dmdId.id;
-         msg.entries[msg.count].width = state->m_width64;
-         msg.entries[msg.count].height = 64;
-         msg.entries[msg.count].hardware = CTLPI_DISPLAY_HARDWARE_RGB_LED;
-         msg.entries[msg.count].frameFormat = CTLPI_DISPLAY_FORMAT_SRGB565;
-         msg.entries[msg.count].GetRenderFrame = &GetRenderFrame;
-      }
-      msg.count++;
-   }
-}
-
-// Select the first DMD with a large enough size that supports frame identification
-static void OnDmdSrcChanged(const unsigned int, void*, void*)
-{
-   if (pSerum == nullptr)
-      return;
-   std::lock_guard<std::mutex> lock(sourceMutex);
-   dmdId.id.id = 0;
-   GetDisplaySrcMsg getSrcMsg = { 0, 0, nullptr };
-   msgApi->BroadcastMsg(endpointId, getDmdSrcId, &getSrcMsg);
-   if (getSrcMsg.count == 0)
-      return;
-   getSrcMsg = { getSrcMsg.count, 0, new DisplaySrcId[getSrcMsg.count] };
-   msgApi->BroadcastMsg(endpointId, getDmdSrcId, &getSrcMsg);
-   for (unsigned int i = 0; i < getSrcMsg.count; i++)
-   {
-      if (getSrcMsg.entries[i].GetIdentifyFrame != nullptr && getSrcMsg.entries[i].width >= 128)
-      {
-         dmdId = getSrcMsg.entries[i];
+         selected = &controller;
          break;
       }
+      if (selected == nullptr)
+         selected = &controller;
    }
-   delete[] getSrcMsg.entries;
+   items.clear();
+   if (selected != nullptr)
+      items.push_back(*selected);
 }
 
-static void StopColorization()
+static void OnControllerChanged()
 {
-   // TODO this is somewhat slow as this will block for up to 16ms => use a condition variable
-   isRunning = false;
-   if (colorizeThread.joinable())
-      colorizeThread.join();
-   if (pSerum)
-   {
-      delete state;
-      state = nullptr;
-      pSerum = nullptr;
-      Serum_Dispose();
-      msgApi->BroadcastMsg(endpointId, onDmdSrcChangedId, nullptr);
-   }
-   dmdId.id.id = 0;
+   controllers->With(
+      [](const std::vector<ControllerDef>& items)
+      {
+         if (items.empty())
+         {
+            LOGI("Serum colorizer stopped");
+            return;
+         }
+         const ControllerDef& selectedController = items.front();
+         const std::string_view currentGameId = PinballPlugin::Controller::CtrlGetGameKey(selectedController.gameId);
+         const std::filesystem::path serumPath = GetColorization(PinballPlugin::Controller::CtrlGetGameNamespace(selectedController.gameId), currentGameId);
+         LOGI(std::format("Loading from '{}' for '{}'", PluginStrings::PathToUTF8(serumPath), selectedController.gameId));
+
+         // Claim the game before loading it, not after.
+         //
+         // The claim tells a consumer that can identify DMD frames itself -- PUP
+         // is the one that matters -- to stand down and take ours instead of
+         // matching every frame a second time. Publishing it after the load
+         // would mean claiming an unbounded amount of time later: a large
+         // colorization is hundreds of megabytes once read, and a cRZ converted
+         // on the way in takes longer still. The consumer cannot wait for a
+         // signal that may never come, so it would conclude nobody is
+         // identifying frames and say so, and every wait long enough to be safe
+         // would be too long to be useful.
+         //
+         // Claiming first inverts that: the claim lands in the same dispatch
+         // that starts the consumer, before any file is touched, and the
+         // question is settled before the first frame. What it costs is a claim
+         // that may turn out to be wrong, which is why it is withdrawn below if
+         // the load produced nothing to report. For that window the consumer
+         // stands down for a colorization that never arrives, at the start of a
+         // game, before anything could have needed a trigger.
+         //
+         // SelectController reduces the controller list to one entry, so the
+         // change this broadcasts does not survive our own filter and cannot
+         // recurse back into here.
+         dmdEventSrcGameId = selectedController.gameId;
+         dmdEventSrc->SetItem({ .covered = { selectedController.endpointId, dmdEventSrcGameId.c_str() }, .triggerEventName = "OnDmdTrigger:1" });
+
+         colorizer = std::make_unique<SerumColorizer>(serumPath, currentGameId, selectedController.endpointId);
+
+         if (colorizer->ProvidesDmdTriggers())
+            LOGI(std::format("Providing {} DMD trigger(s) for '{}'", colorizer->TriggerCount(), dmdEventSrcGameId));
+         else
+            dmdEventSrc->ClearItems();
+      });
 }
 
-static void OnControllerGameStart(const unsigned int eventId, void* userData, void* msgData)
+// A scene to play, from whoever knows the game should play one.
+//
+// This mirrors the outbound "Serum"/"OnDmdTrigger:1" and carries the same
+// payload, a pointer to the scene id. An earlier version of this listened for
+// 'D' events on "B2S"/"OnStateChange:1" on the grounds that the type is
+// documented as a DMD trigger for PUP and Serum both. That was wrong: nothing
+// in vpinball ever broadcasts a 'D' event there -- B2SServer emits only 'B',
+// 'C' and 'E' -- and the 'D' events PUP acts on are synthesised inside
+// B2SPluginEventStream and delivered by a function call, never reaching the
+// bus. The subscription fired only in a host that published the event itself.
+//
+// Ids outside this window are not scenes. Serum's own frame-identification
+// triggers travel the other way and share the numbering space with PUP's, so
+// the window is what separates "play scene N" from "frame N was recognised".
+// It matches the range libdmdutil has always applied.
+static constexpr unsigned int sceneTriggerMinEvent = 50000;
+static constexpr unsigned int sceneTriggerMaxEvent = 62000;
+
+static void MSGPIAPI OnTriggerScene(const unsigned int, void*, void* eventData)
 {
-   // FIXME: Temp fix for issues 3298, 3309, and maybe 3322?
-   if (isRunning)
-   {
-      LOGW("Ignoring game start, already running"s);
+   const unsigned int* scene = static_cast<const unsigned int*>(eventData);
+   if (scene == nullptr || !colorizer)
       return;
-   }
-   StopColorization();
-   // Setup Serum on the selected DMD
-   const CtlOnGameStartMsg* msg = static_cast<const CtlOnGameStartMsg*>(msgData);
-   assert(msg != nullptr && msg->gameId != nullptr);
-
-   VPXTableInfo tableInfo;
-   vpxApi->GetTableInfo(&tableInfo);
-   std::filesystem::path tablePath = tableInfo.path;
-
-   std::filesystem::path serumPath = serumPathProp_Get();
-   const std::filesystem::path cromc = msg->gameId + ".cROMc"s;
-   const std::filesystem::path crz = msg->gameId + ".cRZ"s;
-
-   // Priority 1: serum/rom/rom.cromc or .crz
-   if (auto path1 = find_case_insensitive_file_path(tablePath.parent_path() / "serum"sv / msg->gameId / cromc); !path1.empty())
-      serumPath = path1.parent_path().parent_path();
-   else if (auto path2 = find_case_insensitive_file_path(tablePath.parent_path() / "serum"sv / msg->gameId / crz); !path2.empty())
-      serumPath = path2.parent_path().parent_path();
-   // Priority 2: pinmame/altcolor/rom/rom.cromc or .crz
-   else if (auto path3 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / msg->gameId / cromc); !path3.empty())
-      serumPath = path3.parent_path().parent_path();
-   else if (auto path4 = find_case_insensitive_file_path(tablePath.parent_path() / "pinmame"sv / "altcolor"sv / msg->gameId / crz); !path4.empty())
-      serumPath = path4.parent_path().parent_path();
-   // Priority 3: global setting path
-   else if (!serumPath.empty())
-   {
-      if (find_case_insensitive_file_path(serumPath / msg->gameId / cromc).empty()
-         && find_case_insensitive_file_path(serumPath / msg->gameId / crz).empty())
-         serumPath.clear();
-   }
-
-   if (serumPath.empty())
-   {
-      LOGI("No colorization file found for "s + msg->gameId);
+   if (*scene < sceneTriggerMinEvent || *scene > sceneTriggerMaxEvent)
       return;
-   }
-
-   LOGI("Loading from " + serumPath.string() + " for " + msg->gameId);
-
-   pSerum = Serum_Load(serumPath.string().c_str(), msg->gameId, FLAG_REQUEST_32P_FRAMES | FLAG_REQUEST_64P_FRAMES);
-   OnDmdSrcChanged(onDmdSrcChangedId, nullptr, nullptr);
-   if (pSerum)
-   {
-      isRunning = true;
-      colorizeThread = std::thread(ColorizeThread);
-   }
-   else
-   {
-      LOGE("Failed to load colorization data");
-   }
-}
-
-static void OnControllerGameEnd(const unsigned int eventId, void* userData, void* msgData)
-{
-   StopColorization();
+   colorizer->QueueSceneTrigger(static_cast<uint16_t>(*scene));
 }
 
 }
@@ -392,35 +711,37 @@ MSGPI_EXPORT void MSGPIAPI SerumPluginLoad(const uint32_t sessionId, const MsgPl
 {
    msgApi = api;
    endpointId = sessionId;
-
-   // Request and setup shared login API
    LPISetup(endpointId, msgApi);
-
    msgApi->RegisterSetting(endpointId, &serumPathProp);
-
-   unsigned int getVpxApiId = msgApi->GetMsgID(VPXPI_NAMESPACE, VPXPI_MSG_GET_API);
-   msgApi->BroadcastMsg(endpointId, getVpxApiId, &vpxApi);
-   msgApi->ReleaseMsgID(getVpxApiId);
-
-   onDmdTrigger = msgApi->GetMsgID("Serum", "OnDmdTrigger");
-   msgApi->SubscribeMsg(endpointId, onControllerGameStartId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_START), OnControllerGameStart, nullptr);
-   msgApi->SubscribeMsg(endpointId, onControllerGameEndId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_EVT_ON_GAME_END), OnControllerGameEnd, nullptr);
-   msgApi->SubscribeMsg(endpointId, onDmdSrcChangedId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_ON_SRC_CHG_MSG), OnDmdSrcChanged, nullptr);
-   msgApi->SubscribeMsg(endpointId, getDmdSrcId = msgApi->GetMsgID(CTLPI_NAMESPACE, CTLPI_DISPLAY_GET_SRC_MSG), OnGetRenderDMDSrc, nullptr);
+   msgApi->RegisterSetting(endpointId, &serumIgnoreUnknownFramesTimeoutProp);
+   msgApi->RegisterSetting(endpointId, &serumMaxUnknownFramesToSkipProp);
+   msgApi->RegisterSetting(endpointId, &serumDisabledSizeProp);
+   msgApi->RegisterSetting(endpointId, &serumPupTriggersProp);
+   onDmdTrigger = msgApi->GetMsgID("Serum", "OnDmdTrigger:1");
+   // Installed before anything can load, so a load failure explains itself.
+   Serum_SetLogCallback(OnSerumLog, nullptr);
+   onTriggerScene = msgApi->GetMsgID("Serum", "TriggerScene:1");
+   msgApi->SubscribeMsg(endpointId, onTriggerScene, OnTriggerScene, nullptr);
+   dmdEventSrc = std::make_unique<CtrlItemProvider<DMDEventSrcId>>(msgApi, endpointId, dmdEventSrcGetMsgName, dmdEventSrcOnChangeMsgName);
+   controllers = std::make_unique<CtrlItemConsumer<ControllerDef>>(
+      msgApi, endpointId, CTLPI_CONTROLLERS_GET_MSG, CTLPI_CONTROLLERS_ON_CHG_MSG, [](std::vector<ControllerDef>& items) { SelectController(items); },
+      []()
+      {
+         colorizer = nullptr;
+         dmdEventSrc->ClearItems();
+      },
+      []() { OnControllerChanged(); });
+   controllers->Subscribe();
 }
 
 MSGPI_EXPORT void MSGPIAPI SerumPluginUnload()
 {
-   StopColorization();
-   msgApi->UnsubscribeMsg(getDmdSrcId, OnGetRenderDMDSrc, nullptr);
-   msgApi->UnsubscribeMsg(onDmdSrcChangedId, OnDmdSrcChanged, nullptr);
-   msgApi->UnsubscribeMsg(onControllerGameStartId, OnControllerGameStart, nullptr);
-   msgApi->UnsubscribeMsg(onControllerGameEndId, OnControllerGameEnd, nullptr);
-   msgApi->ReleaseMsgID(onControllerGameStartId);
-   msgApi->ReleaseMsgID(onControllerGameEndId);
+   controllers->Unsubscribe();
+   controllers = nullptr;
+   dmdEventSrc = nullptr;
+   msgApi->UnsubscribeMsg(onTriggerScene, OnTriggerScene, nullptr);
+   msgApi->ReleaseMsgID(onTriggerScene);
+   msgApi->FlushPendingCallbacks(endpointId); // Deliver queued triggers while onDmdTrigger is still valid
    msgApi->ReleaseMsgID(onDmdTrigger);
-   msgApi->ReleaseMsgID(onDmdSrcChangedId);
-   msgApi->ReleaseMsgID(getDmdSrcId);
-   msgApi->FlushPendingCallbacks(endpointId);
    msgApi = nullptr;
 }

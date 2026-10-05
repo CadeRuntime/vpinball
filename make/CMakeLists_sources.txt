@@ -20,6 +20,7 @@ set(VPX_SOURCES
    src/core/def.h
    src/core/def.cpp
    src/core/dispid.h
+   src/core/resourceid.h
    src/core/DynamicScript.cpp
    src/core/DynamicScript.h
    src/core/editablereg.cpp
@@ -30,8 +31,6 @@ set(VPX_SOURCES
    src/core/FileLocator.h
    src/core/ieditable.cpp
    src/core/ieditable.h
-   src/core/iselect.cpp
-   src/core/iselect.h
    src/core/pinundo.cpp
    src/core/pinundo.h
    src/core/main.cpp
@@ -51,6 +50,8 @@ set(VPX_SOURCES
    src/core/ScriptInterpreter.cpp
    src/core/Settings.cpp
    src/core/Settings.h
+   src/core/SettingsService.cpp
+   src/core/SettingsService.h
    src/core/TableDB.cpp
    src/core/TableDB.h
    src/core/TournamentFile.cpp
@@ -79,6 +80,8 @@ set(VPX_SOURCES
    src/input/XRInputHandler.h
 
    src/math/bbox.h
+   src/math/dragpoint.h
+   src/math/dragpoint.cpp
    src/math/ExponentialMovingAverage.h
    src/math/HighPassFilter.cpp
    src/math/HighPassFilter.h
@@ -89,6 +92,7 @@ set(VPX_SOURCES
    src/math/vector.h
    src/math/Mesh.h
    src/math/Mesh.cpp
+   src/math/MeshGLTF.cpp
    src/math/MeshUtils.h
    src/math/ModelViewProj.h
 
@@ -123,7 +127,6 @@ set(VPX_SOURCES
    src/meshes/triggerSimpleMesh.h
    src/meshes/triggerStarMesh.h
 
-   src/parts/dragpoint.h
    src/parts/Material.h
    src/parts/pinbinary.cpp
    src/parts/pinbinary.h
@@ -137,7 +140,6 @@ set(VPX_SOURCES
    src/parts/decal.h
    src/parts/dispreel.cpp
    src/parts/dispreel.h
-   src/parts/dragpoint.cpp
    src/parts/flasher.cpp
    src/parts/flasher.h
    src/parts/flipper.cpp
@@ -248,6 +250,8 @@ set(VPX_SOURCES
    src/renderer/Shader.h
    src/renderer/Texture.cpp
    src/renderer/Texture.h
+   src/renderer/TextureCompressor.cpp
+   src/renderer/TextureCompressor.h
    src/renderer/TextureManager.cpp
    src/renderer/TextureManager.h
    src/renderer/VertexBuffer.cpp
@@ -263,6 +267,8 @@ set(VPX_SOURCES
    src/renderer/XRGraphicBackend.h
    src/renderer/XRVulkanBackend.h
 
+   src/ui/EditorClipboard.cpp
+   src/ui/EditorClipboard.h
    src/ui/VPXFileFeedback.h
 
    src/ui/live/BallControl.cpp
@@ -280,9 +286,6 @@ set(VPX_SOURCES
    src/ui/live/PlumbOverlay.cpp
    src/ui/live/PlumbOverlay.h
    
-   src/ui/live/editor/EditableUIPart.h
-   src/ui/live/editor/PropertyPane.h
-   src/ui/live/editor/PropertyPane.cpp
    src/ui/live/editor/BallUIPart.h
    src/ui/live/editor/BallUIPart.cpp
    src/ui/live/editor/BumperUIPart.h
@@ -291,6 +294,12 @@ set(VPX_SOURCES
    src/ui/live/editor/DecalUIPart.cpp
    src/ui/live/editor/DispReelUIPart.h
    src/ui/live/editor/DispReelUIPart.cpp
+   src/ui/live/editor/EditorChrome.h
+   src/ui/live/editor/EditorChrome.cpp
+   src/ui/live/editor/EditorUIPart.h
+   src/ui/live/editor/EditorUIPart.cpp
+   src/ui/live/editor/EditorUIPartRegistry.h
+   src/ui/live/editor/EditorUIPartRegistry.cpp
    src/ui/live/editor/FlasherUIPart.h
    src/ui/live/editor/FlasherUIPart.cpp
    src/ui/live/editor/FlipperUIPart.h
@@ -305,16 +314,31 @@ set(VPX_SOURCES
    src/ui/live/editor/LightUIPart.cpp
    src/ui/live/editor/LightSeqUIPart.h
    src/ui/live/editor/LightSeqUIPart.cpp
+   src/ui/live/editor/LiveRenderContext.h
+   src/ui/live/editor/LiveRenderContext.cpp
+   src/ui/live/editor/OutlinerPanel.h
+   src/ui/live/editor/OutlinerPanel.cpp
+   src/ui/live/editor/PartLibraryPanel.h
+   src/ui/live/editor/PartLibraryPanel.cpp
    src/ui/live/editor/PartGroupUIPart.h
    src/ui/live/editor/PartGroupUIPart.cpp
    src/ui/live/editor/PlungerUIPart.h
    src/ui/live/editor/PlungerUIPart.cpp
    src/ui/live/editor/PrimitiveUIPart.h
    src/ui/live/editor/PrimitiveUIPart.cpp
+   src/ui/live/editor/PropertiesPanel.h
+   src/ui/live/editor/PropertiesPanel.cpp
+   src/ui/live/editor/PropertyPane.h
+   src/ui/live/editor/PropertyPane.cpp
    src/ui/live/editor/RampUIPart.h
    src/ui/live/editor/RampUIPart.cpp
+   src/ui/live/editor/RendererInspectionModal.h
+   src/ui/live/editor/RendererInspectionModal.cpp
    src/ui/live/editor/RubberUIPart.h
    src/ui/live/editor/RubberUIPart.cpp
+   src/ui/live/editor/ScriptPanel.h
+   src/ui/live/editor/ScriptPanel.cpp
+   src/ui/live/editor/Selection.h
    src/ui/live/editor/SpinnerUIPart.h
    src/ui/live/editor/SpinnerUIPart.cpp
    src/ui/live/editor/SurfaceUIPart.h
@@ -352,6 +376,10 @@ set(VPX_SOURCES
    src/ui/live/ingameui/InputProfilePage.cpp
    src/ui/live/ingameui/InputSettingsPage.h
    src/ui/live/ingameui/InputSettingsPage.cpp
+   src/ui/live/ingameui/LoadingPage.h
+   src/ui/live/ingameui/LoadingPage.cpp
+   src/ui/live/ingameui/LoggingSettingsPage.h
+   src/ui/live/ingameui/LoggingSettingsPage.cpp
    src/ui/live/ingameui/MiscSettingsPage.h
    src/ui/live/ingameui/MiscSettingsPage.cpp
    src/ui/live/ingameui/NudgeSensorSettingsPage.h
@@ -381,29 +409,20 @@ set(VPX_SOURCES
    src/ui/live/ingameui/SystemInfoPage.h
    src/ui/live/ingameui/SystemInfoPage.cpp
 
-   src/ui/win/codeview.cpp
-   src/ui/win/codeview.h
-   src/ui/win/codeviewedit.cpp
-   src/ui/win/codeviewedit.h
-   src/ui/win/hitrectsur.cpp
-   src/ui/win/hitrectsur.h
-   src/ui/win/hitsur.cpp
-   src/ui/win/hitsur.h
-   src/ui/win/PinTableMDI.cpp
-   src/ui/win/PinTableMDI.h
-   src/ui/win/PinTableWnd.cpp
-   src/ui/win/PinTableWnd.h
-   src/ui/win/ProgressDialog.cpp
-   src/ui/win/ProgressDialog.h
-   src/ui/win/WinEditor.cpp
-   src/ui/win/WinEditor.h
+   src/ui/LoadProgress.cpp
+   src/ui/LoadProgress.h
 
    src/utils/BiffReader.cpp
    src/utils/BiffReader.h
    src/utils/BiffWriter.cpp
    src/utils/BiffWriter.h
+   src/utils/md2.cpp
+   src/utils/md2.h
+   src/utils/TableHash.cpp
+   src/utils/TableHash.h
    src/utils/bulb.cpp
    src/utils/bulb.h
+   src/utils/denormals.h
    src/utils/eventproxy.h
    src/utils/wintimer.cpp
    src/utils/wintimer.h
@@ -416,11 +435,19 @@ set(VPX_SOURCES
    src/utils/lzwreader.cpp
    src/utils/lzwreader.h
    src/utils/hash.h
+   src/utils/JSONSerializer.cpp
+   src/utils/JSONSerializer.h
    src/utils/objloader.cpp
    src/utils/objloader.h
    src/utils/Logger.cpp
    src/utils/Logger.h
 
+   third-party/include/bc6h/basisu_bc6h.cpp
+   third-party/include/bc6h/basisu_bc6h.h
+   third-party/include/bc7e/basisu_bc7e_scalar.cpp
+   third-party/include/bc7e/basisu_bc7e_scalar.h
+   third-party/include/bc7f/basisu_bc7f.cpp
+   third-party/include/bc7f/basisu_bc7f.h
    third-party/include/forsyth.h
    third-party/include/gpuprofiler.cpp
    third-party/include/gpuprofiler.h
@@ -457,6 +484,8 @@ set(VPX_SOURCES
    third-party/include/miniz/miniz.c
    third-party/include/miniz/miniz.h
    third-party/include/unordered_dense.h
+   third-party/include/pole/pole.h
+   third-party/include/pole/pole.cpp
 )
 
 set(VPX_WINDOWS_SOURCES
@@ -478,6 +507,27 @@ set(VPX_WINDOWS_SOURCES
 
    src/ui/win/DragPointDialogs.h
    src/ui/win/DragPointDialogs.cpp
+   src/ui/win/ProgressDialog.cpp
+   src/ui/win/ProgressDialog.h
+   src/ui/win/codeview.cpp
+   src/ui/win/codeview.h
+   src/ui/win/codeviewedit.cpp
+   src/ui/win/codeviewedit.h
+   src/ui/win/hitrectsur.cpp
+   src/ui/win/hitrectsur.h
+   src/ui/win/hitsur.cpp
+   src/ui/win/hitsur.h
+   src/ui/win/sur.h
+   src/ui/win/IWinUIPart.cpp
+   src/ui/win/IWinUIPart.h
+   src/ui/win/PinTableMDI.cpp
+   src/ui/win/PinTableMDI.h
+   src/ui/win/PinTableWnd.cpp
+   src/ui/win/PinTableWnd.h
+   src/ui/win/WinEditor.cpp
+   src/ui/win/WinEditor.h
+   src/ui/win/WinUIPartRegistry.cpp
+   src/ui/win/WinUIPartRegistry.h
    src/ui/win/paintsur.cpp
    src/ui/win/paintsur.h
    src/ui/win/worker.cpp
@@ -499,8 +549,6 @@ set(VPX_WINDOWS_SOURCES
    src/ui/win/dialogs/EditorOptionsDialog.h
    src/ui/win/dialogs/ImageDialog.cpp
    src/ui/win/dialogs/ImageDialog.h
-   src/ui/win/dialogs/PlayerOptionsDialog.cpp
-   src/ui/win/dialogs/PlayerOptionsDialog.h
    src/ui/win/dialogs/LayersListDialog.cpp
    src/ui/win/dialogs/LayersListDialog.h
    src/ui/win/dialogs/MaterialDialog.cpp
@@ -523,10 +571,58 @@ set(VPX_WINDOWS_SOURCES
    src/ui/win/dialogs/TableInfoDialog.h
    src/ui/win/dialogs/ToolbarDialog.cpp
    src/ui/win/dialogs/ToolbarDialog.h
-   src/ui/win/dialogs/VPXLoadFileProgressBar.cpp
-   src/ui/win/dialogs/VPXLoadFileProgressBar.h
-   src/ui/win/dialogs/VPXSaveFileProgressBar.cpp
-   src/ui/win/dialogs/VPXSaveFileProgressBar.h
+   src/ui/win/dialogs/Win32ProgressBar.cpp
+   src/ui/win/dialogs/Win32ProgressBar.h
+
+   src/ui/win/parts/BallWinUIPart.cpp
+   src/ui/win/parts/BallWinUIPart.h
+   src/ui/win/parts/BumperWinUIPart.cpp
+   src/ui/win/parts/BumperWinUIPart.h
+   src/ui/win/parts/DecalWinUIPart.cpp
+   src/ui/win/parts/DecalWinUIPart.h
+   src/ui/win/parts/DispReelWinUIPart.cpp
+   src/ui/win/parts/DispReelWinUIPart.h
+   src/ui/win/parts/DragPointUIPartList.h
+   src/ui/win/parts/DragPointWinUIPart.cpp
+   src/ui/win/parts/DragPointWinUIPart.h
+   src/ui/win/parts/FlasherWinUIPart.cpp
+   src/ui/win/parts/FlasherWinUIPart.h
+   src/ui/win/parts/FlipperWinUIPart.cpp
+   src/ui/win/parts/FlipperWinUIPart.h
+   src/ui/win/parts/GateWinUIPart.cpp
+   src/ui/win/parts/GateWinUIPart.h
+   src/ui/win/parts/HitTargetWinUIPart.cpp
+   src/ui/win/parts/HitTargetWinUIPart.h
+   src/ui/win/parts/KickerWinUIPart.cpp
+   src/ui/win/parts/KickerWinUIPart.h
+   src/ui/win/parts/LightCenterWinUIPart.cpp
+   src/ui/win/parts/LightCenterWinUIPart.h
+   src/ui/win/parts/LightSeqWinUIPart.cpp
+   src/ui/win/parts/LightSeqWinUIPart.h
+   src/ui/win/parts/LightWinUIPart.cpp
+   src/ui/win/parts/LightWinUIPart.h
+   src/ui/win/parts/PartGroupWinUIPart.cpp
+   src/ui/win/parts/PartGroupWinUIPart.h
+   src/ui/win/parts/PlungerWinUIPart.cpp
+   src/ui/win/parts/PlungerWinUIPart.h
+   src/ui/win/parts/PrimitiveWinUIPart.cpp
+   src/ui/win/parts/PrimitiveWinUIPart.h
+   src/ui/win/parts/RampWinUIPart.cpp
+   src/ui/win/parts/RampWinUIPart.h
+   src/ui/win/parts/RubberWinUIPart.cpp
+   src/ui/win/parts/RubberWinUIPart.h
+   src/ui/win/parts/SpinnerWinUIPart.cpp
+   src/ui/win/parts/SpinnerWinUIPart.h
+   src/ui/win/parts/SurfaceWinUIPart.cpp
+   src/ui/win/parts/SurfaceWinUIPart.h
+   src/ui/win/parts/TableWinUIPart.cpp
+   src/ui/win/parts/TableWinUIPart.h
+   src/ui/win/parts/TextboxWinUIPart.cpp
+   src/ui/win/parts/TextboxWinUIPart.h
+   src/ui/win/parts/TimerWinUIPart.cpp
+   src/ui/win/parts/TimerWinUIPart.h
+   src/ui/win/parts/TriggerWinUIPart.cpp
+   src/ui/win/parts/TriggerWinUIPart.h
 
    src/ui/win/properties/BackglassCameraProperty.cpp
    src/ui/win/properties/BackglassCameraProperty.h
@@ -621,7 +717,6 @@ set(VPX_WINDOWS_SOURCES
    src/ui/win/res/bumper.rgs
    src/ui/win/res/hittarget.rgs
    src/ui/win/res/dispreel.rgs
-   src/ui/win/res/dragpoint.rgs
    src/ui/win/res/flasher.rgs
    src/ui/win/res/rubber.rgs
    src/ui/win/res/flipper.rgs
@@ -643,6 +738,9 @@ set(VPX_WINDOWS_SOURCES
    third-party/include/freeimage.h
    third-party/include/serial.cpp
    third-party/include/serial.h
+   third-party/include/scilexer.h
+   third-party/include/scintilla.h
+   third-party/include/Sci_Position.h
    third-party/include/hidapi/windows/hid.cpp
    third-party/include/nvapi/nvapi.h
    third-party/include/nvapi/nvapi_lite_common.h
@@ -652,9 +750,6 @@ set(VPX_WINDOWS_SOURCES
    third-party/include/nvapi/nvapi_lite_sli.h
    third-party/include/nvapi/nvapi_lite_stereo.h
    third-party/include/nvapi/nvapi_lite_surround.h
-   third-party/include/scilexer.h
-   third-party/include/scintilla.h
-   third-party/include/Sci_Position.h
    third-party/include/win32xx/include/wxx_appcore.h
    third-party/include/win32xx/include/wxx_appcore0.h
    third-party/include/win32xx/include/wxx_archive.h
@@ -714,13 +809,9 @@ set(VPX_WINDOWS_SOURCES
 set(VPX_STANDALONE_SOURCES
    ${VPX_SOURCES}
 
-   standalone/vpinball_standalone_i.c
-   standalone/vpinball_standalone_i.h
-   standalone/vpinball_standalone_i_proxy.cpp
-   standalone/PoleStream.cpp
-   standalone/PoleStorage.cpp
-
-   third-party/include/pole/pole.cpp
+   src/core/generated/vpinball_standalone_i.c
+   src/core/generated/vpinball_standalone_i.h
+   src/core/generated/vpinball_standalone_i_proxy.cpp
 )
 
 set(VPX_LIB_SOURCES
@@ -747,7 +838,6 @@ set(VPX_GL_SHADERS
    BasicShader.glfx
    ClassicLightShader.glfx
    DMDShader.glfx
-   DMDShaderVR.glfx
    FBShader.fxh
    FBShader.glfx
    FlasherShader.glfx

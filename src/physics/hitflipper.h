@@ -24,6 +24,16 @@ public:
    void SetSolenoidState(const bool s);
    float GetStrokeRatio() const;
 
+#ifdef FIX_PHYSICS
+   // Recomputes m_zeroAngNorm, m_inertiaShape, m_torqueScale and m_inertia
+   // from current geometry (m_hitcircleBase.radius, m_endradius, m_flipperradius)
+   // and current mass (m_d.m_OverrideMass or m_d.m_mass).
+   // Called from the constructor and from HitFlipper::UpdatePhysicsFromFlipper
+   // so live edits to mass propagate. Geometry edits via the COM API today
+   // do not propagate to the runtime mover, but this helper is ready for the wiring
+   void UpdateInertia();
+#endif
+
    void SetStartAngle(const float r);
    void SetEndAngle(const float r);
    float GetReturnRatio() const;
@@ -57,7 +67,11 @@ public:
 
    float m_angleStart, m_angleEnd;
 
-   float m_inertia;	        // moment of inertia
+   float m_inertia;         // moment of inertia
+#ifdef FIX_PHYSICS
+   float m_inertiaShape;    // shape-only factor k^2 (length^2), so m_inertia = mass * m_inertiaShape
+   float m_torqueScale;     // multiplier applied to coil torque; 1.0 unless m_backwards_compatibility is set
+#endif
 
    Vertex2D m_zeroAngNorm;  // base norms at zero degrees
 
@@ -70,6 +84,15 @@ public:
 
    bool m_enabled;
    bool m_lastHitFace;
+
+#ifdef FIX_PHYSICS
+   // When true (legacy model/default), coil torque is scaled by
+   // m_inertiaShape / (flipr^2 / 3) so that the per-Strength angular
+   // acceleration matches the old rod-approximation inertia and existing
+   // tables keep their feel. Set to false to drive the flipper with the
+   // raw Strength value against the more accurate inertia
+   bool m_backwards_compatibility;
+#endif
 
 #ifdef DEBUG_FLIPPERS
    uint32_t m_startTime;
@@ -103,4 +126,13 @@ public:
 
 private:
    uint32_t m_last_hittime;
+   // Contacts of the last RUMBLE_WINDOW_MS, summed for the contact rumble, see Collide()
+   static constexpr uint32_t RUMBLE_WINDOW_MS = 80;
+   static constexpr int RUMBLE_CONTACTS = 32; // more than a slap delivers within a window
+   static constexpr float RUMBLE_FULL_IMPACT = 30.f; // the sum at which the contact rumble saturates in level and length, see InputManager::PlayFlipperContactRumble
+   uint32_t m_rumbleContactMs[RUMBLE_CONTACTS];
+   float m_rumbleContactImpact[RUMBLE_CONTACTS];
+   int m_rumbleContactTail = 0;
+   int m_rumbleContactCount = 0;
+   float m_rumblePlayed = 0.f; // sum last played, reset when the window runs empty
 };

@@ -13,14 +13,16 @@ set(B2S_PLUGIN_SOURCES
    plugins/b2s/B2SPlugin.cpp
    plugins/b2s/B2SDataModel.h
    plugins/b2s/B2SDataModel.cpp
-   plugins/b2s/B2SDMDOverlay.h
-   plugins/b2s/B2SDMDOverlay.cpp
    plugins/b2s/B2SRenderer.h
    plugins/b2s/B2SRenderer.cpp
    plugins/b2s/B2SServer.h
    plugins/b2s/B2SServer.cpp
+   plugins/b2s/DMDOverlay.h
+   plugins/b2s/DMDOverlay.cpp
+   
    plugins/plugins/ResURIResolver.h
    plugins/plugins/ResURIResolver.cpp
+   
    third-party/include/tinyxml2/tinyxml2.h
    third-party/include/tinyxml2/tinyxml2.cpp
 )
@@ -85,16 +87,18 @@ if(BUILD_SHARED)
       endif()
    endif()
 
+   set_target_properties(B2SPlugin PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PLUGINS_DIR}/b2s"
+   )
+
    add_custom_command(TARGET B2SPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/b2s/plugin.cfg" "${PLUGINS_DIR}/b2s/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:B2SPlugin>" "${PLUGINS_DIR}/b2s"
-      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:B2SPlugin>"
+      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/b2s/plugin.cfg" "${PLUGINS_DIR}/b2s/plugin.cfg"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS AND PLATFORM STREQUAL "windows-mingw")
       add_custom_command(TARGET B2SPlugin POST_BUILD
-         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/b2s/libgcc_s_seh-1.dll"
-         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/b2s/libstdc++-6.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/b2s/libgcc_s_seh-1.dll"
+         COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/b2s/libstdc++-6.dll"
       )
    endif()
 endif()

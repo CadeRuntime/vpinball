@@ -5,6 +5,7 @@
 #include <filesystem>
 
 #include "InputManager.h"
+#include "physics/cabinet/CabinetNudgeSensor.h"
 #include "physics/cabinet/GamepadNudge.h"
 
 
@@ -25,6 +26,11 @@ public:
       SDL_JoystickID* const joystickIds = SDL_GetJoysticks(&joystickCount);
       for (int i = 0; i < joystickCount; i++)
          OnJoystickAdded(joystickIds[i]);
+      SDL_free(joystickIds);
+
+      #ifdef __ANDROID__
+         OpenDeviceVibrator();
+      #endif
    }
 
    SDLInputHandler& operator=(SDLInputHandler&&) = delete;
@@ -33,17 +39,34 @@ public:
    {
       for (const auto& joy : m_joysticks)
          OnJoystickRemoved(SDL_GetJoystickID(joy));
+
+      #ifdef __ANDROID__
+         CloseDeviceVibrator();
+      #endif
       SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD);
    }
 
-   void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration) override
+   void PlayRumble(const float lowFrequencySpeed, const float highFrequencySpeed, const int ms_duration, const bool kickLow, const bool kickHigh) override
    {
       for (auto joy : m_joysticks)
       {
-         Uint16 lowFreq = (Uint16)(saturate(lowFrequencySpeed) * 65535.0f);
-         Uint16 highFreq = (Uint16)(saturate(highFrequencySpeed) * 65535.0f);
+         Uint16 lowFreq = (Uint16)(GamepadMotorLevel(lowFrequencySpeed, kickLow) * 65535.0f);
+         Uint16 highFreq = (Uint16)(GamepadMotorLevel(highFrequencySpeed, kickHigh) * 65535.0f);
          SDL_RumbleJoystick(joy, lowFreq, highFreq, ms_duration);
       }
+
+      #ifdef __ANDROID__
+         if (m_deviceVibrator)
+         {
+            SDL_HapticEffect effect = {};
+            effect.leftright.type = SDL_HAPTIC_LEFTRIGHT;
+            effect.leftright.large_magnitude = (Uint16)(cbrtf(saturate(lowFrequencySpeed)) * 32767.0f);
+            effect.leftright.small_magnitude = (Uint16)(cbrtf(saturate(highFrequencySpeed)) * 32767.0f);
+            effect.leftright.length = ms_duration;
+            SDL_UpdateHapticEffect(m_deviceVibrator, m_deviceVibratorEffect, &effect);
+            SDL_RunHapticEffect(m_deviceVibrator, m_deviceVibratorEffect, 1);
+         }
+      #endif
    }
 
    void Update() override
@@ -194,12 +217,14 @@ private:
    {
       int joystickCount = 0;
       SDL_JoystickID* const joystickIds = SDL_GetJoysticks(&joystickCount);
-      for (int i = 0; i < joystickCount; i++)
+      bool present = false;
+      for (int i = 0; i < joystickCount && !present; i++)
       {
          if (SDL_GUID other = SDL_GetJoystickGUIDForID(joystickIds[i]); SDL_memcmp(&guid, &other, sizeof(SDL_GUID)) == 0)
-            return true;
+            present = true;
       }
-      return false;
+      SDL_free(joystickIds);
+      return present;
    }
 
    void OnJoystickAdded(SDL_JoystickID id)
@@ -226,7 +251,8 @@ private:
       int idIndex = 1;
       int nameIndex = 1;
       int joystickCount = 0;
-      const string sdlJoyName = SDL_GetJoystickName(joystick);
+      const char* const tmpJoyName = SDL_GetJoystickName(joystick); // null if not available
+      const string sdlJoyName = tmpJoyName ? tmpJoyName : "";
       SDL_JoystickID* const joystickIds = SDL_GetJoysticks(&joystickCount);
       for (int i = 0; i < joystickCount; i++)
       {
@@ -234,9 +260,10 @@ private:
             break;
          if (SDL_GUID other = SDL_GetJoystickGUIDForID(joystickIds[i]); SDL_memcmp(&guid, &other, sizeof(SDL_GUID)) == 0)
             idIndex++;
-         if (string otherName = SDL_GetJoystickNameForID(joystickIds[i]); otherName == sdlJoyName)
+         if (const char* const otherName = SDL_GetJoystickNameForID(joystickIds[i]); (otherName ? otherName : "") == sdlJoyName)
             nameIndex++;
       }
+      SDL_free(joystickIds);
       char strGuid[33];
       SDL_GUIDToString(guid, strGuid, 33);
       const string settingId = "SDLJoy_"s + strGuid + '_' + std::to_string(idIndex);
@@ -355,9 +382,9 @@ private:
                std::unique_ptr<PlungerSensor> plunger = std::make_unique<PlungerSensor>(&m_pininput);
                plunger->GetPositionSensor()->SetMapping(SensorMapping::Create(deviceId, 0x0202, SensorMapping::Type::Position));
                map.MapPlunger(std::move(plunger));
-               std::unique_ptr<VPX::Physics::GamepadNudge> nudge = std::make_unique<VPX::Physics::GamepadNudge>(&m_pininput);
-               nudge->GetXSensor().SetMapping(SensorMapping::Create(deviceId, 0x0200, SensorMapping::Type::Acceleration));
-               nudge->GetYSensor().SetMapping(SensorMapping::Create(deviceId, 0x0201, SensorMapping::Type::Acceleration));
+               std::unique_ptr<VPX::Physics::CabinetNudgeSensor> nudge = std::make_unique<VPX::Physics::CabinetNudgeSensor>(&m_pininput);
+               nudge->GetXAccSensor().SetMapping(SensorMapping::Create(deviceId, 0x0200, SensorMapping::Type::Acceleration).WithScale(9.80665f));
+               nudge->GetYAccSensor().SetMapping(SensorMapping::Create(deviceId, 0x0201, SensorMapping::Type::Acceleration).WithScale(9.80665f));
                map.MapNudge(std::move(nudge));
             });
          break;
@@ -526,6 +553,68 @@ private:
       uint16_t deviceId = m_joystickIds[id];
       m_pininput.UnregisterDevice(deviceId);
       m_joystickIds.erase(id);
+   }
+
+#ifdef __ANDROID__
+   void OpenDeviceVibrator()
+   {
+      if (!SDL_InitSubSystem(SDL_INIT_HAPTIC))
+      {
+         PLOGE << "Failed to initialize haptic with error: " << SDL_GetError();
+         return;
+      }
+      int hapticCount = 0;
+      SDL_HapticID* const hapticIds = SDL_GetHaptics(&hapticCount);
+      for (int i = 0; i < hapticCount && m_deviceVibrator == nullptr; i++)
+      {
+         const char* const name = SDL_GetHapticNameForID(hapticIds[i]);
+         if (name && strcmp(name, "VIBRATOR_SERVICE") == 0)
+            m_deviceVibrator = SDL_OpenHaptic(hapticIds[i]);
+      }
+      SDL_free(hapticIds);
+      if (m_deviceVibrator == nullptr)
+         return;
+      SDL_HapticEffect effect = {};
+      effect.type = SDL_HAPTIC_LEFTRIGHT;
+      m_deviceVibratorEffect = SDL_CreateHapticEffect(m_deviceVibrator, &effect);
+      if (m_deviceVibratorEffect < 0)
+      {
+         PLOGE << "Failed to create device vibrator effect with error: " << SDL_GetError();
+         SDL_CloseHaptic(m_deviceVibrator);
+         m_deviceVibrator = nullptr;
+      }
+   }
+
+   void CloseDeviceVibrator()
+   {
+      if (m_deviceVibrator)
+      {
+         if (m_deviceVibratorEffect >= 0)
+            SDL_DestroyHapticEffect(m_deviceVibrator, m_deviceVibratorEffect);
+         SDL_CloseHaptic(m_deviceVibrator);
+      }
+      m_deviceVibrator = nullptr;
+      m_deviceVibratorEffect = -1;
+      SDL_QuitSubSystem(SDL_INIT_HAPTIC);
+   }
+
+   SDL_Haptic* m_deviceVibrator = nullptr;
+   SDL_HapticEffectID m_deviceVibratorEffect = -1;
+#endif
+
+   // Measured with an accelerometer on an Xbox pad: eccentric mass motors need well over 100 ms from rest to full
+   // amplitude, do not move below 0.3 and are full at about 0.86. So every level is mapped onto the usable range
+   // and a kick is driven at twice the mapped level (capped).
+   static constexpr float RUMBLE_MOTOR_FLOOR = 0.3f;
+   static constexpr float RUMBLE_KICK_GAIN = 2.f;
+
+   static float GamepadMotorLevel(const float speed, const bool kick)
+   {
+      const float level = saturate(speed);
+      if (level <= 0.f)
+         return 0.f;
+      const float motor = RUMBLE_MOTOR_FLOOR + (1.f - RUMBLE_MOTOR_FLOOR) * level;
+      return kick ? min(1.f, motor * RUMBLE_KICK_GAIN) : motor;
    }
 
    InputManager& m_pininput;

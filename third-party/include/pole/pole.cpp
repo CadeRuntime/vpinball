@@ -16,12 +16,19 @@
    More datatype changes to allow for 32 and 64 bit code, some fixes involving incremental updates, flushing
    Copyright 2013 <srbaum@gmail.com>
 
-   Corrected some of the artificial (=failing on 32bit systems) handling of 64bit sizes/indices, leading to a lot of warnings
-   Note that things can still fail on 32bit systems for large files, but it should at least assert now
-   Also some minor optimizations
+   - Corrected some of the artificial (=failing on 32bit systems) handling of 64bit sizes/indices, leading to a lot of warnings
+   - Note that things can still fail on 32bit systems for large files, but it should at least assert now
+   - Allow multithreaded reading of multiple streams from a single storage (synchronized read access)
+   - Also some minor optimizations
+   - Fixed OLE FAT entries sector indices wrongly considered as 64bit, causing over allocation
+   - Fixed DirTree::flush partial last directory block
+   - Fixed StorageIO::flush not padding file to sector boundary
+   - Fixed StorageIO::flush writing uninitialized data in the last DIFAT sector
+   - Balance directory sibling trees on flush (deep chains break recursive readers)
+   - Added creation of version 4 files with 4K sectors (Storage::open bLargeSectors)
    2026 VPX team
 
-   Version: 0.5.2 VPX
+   Version: 0.5.5 VPX
 
    Redistribution and use in source and binary forms, with or without 
    modification, are permitted provided that the following conditions 
@@ -56,7 +63,9 @@
 #include <string>
 #include <vector>
 #include <queue>
+#include <algorithm>
 #include <limits>
+#include <mutex>
 
 #include <cstring>
 
@@ -71,6 +80,13 @@
 // enable to activate debugging output
 // #define POLE_DEBUG
 #define CACHEBUFSIZE 4096 //a presumably reasonable size for the read cache
+// Readahead window used by StreamIO::read. Callers such as VPX's BiffReader read stream
+// contents a few bytes at a time, and without a window each such call became its own
+// block-sized request. Measured on a 428 MB table holding 1860 streams: block chains are
+// contiguous, averaging 352 KB per run, and raising this to 1 MB moved throughput by under
+// 5%. The window is allocated lazily and never exceeds the stream's own length, so small
+// streams stay small.
+#define READAHEADBUFSIZE (256*1024)
 
 namespace POLE
 {
@@ -88,6 +104,7 @@ class Header final
     uint64 num_sbat;         // blocks allocated for small bat
     uint64 mbat_start;       // starting block to store meta bat
     uint64 num_mbat;         // blocks allocated for meta bat
+    uint64 num_dirent;       // blocks allocated for directory (only written for 4K sector files)
     uint64 bb_blocks[109];
     bool dirty;                // Needs to be written
     
@@ -135,16 +152,17 @@ class DirEntry final
 {
   public:
     DirEntry(): valid(), dir(), size(), start(), prev(), next(), child() {}
-    bool valid;          // false if invalid (should be skipped)
-    std::string name;    // the name, not in unicode anymore 
-    bool dir;            // true if directory   
-    uint64 size;         // size (not valid if directory)
-    uint64 start;        // starting block
-    uint64 prev;         // previous sibling
-    uint64 next;         // next sibling
-    uint64 child;        // first child
-    int compare(const DirEntry& de);
-    int compare(const std::string& name2) const;
+    bool valid;            // false if invalid (should be skipped)
+    std::string name;      // the name (UTF-8, or as given when created)
+    std::u16string name16; // the name as stored in the file (UTF-16, at most 31 code units)
+    bool dir;              // true if directory   
+    uint64 size;           // size (not valid if directory)
+    uint64 start;          // starting block
+    uint64 prev;           // previous sibling
+    uint64 next;           // next sibling
+    uint64 child;          // first child
+    int compare(const DirEntry& de) const;
+    int compare(const std::u16string& name2) const;
 
 };
 
@@ -162,13 +180,14 @@ class DirTree final
     int64 parent( uint64 index );
     std::string fullName( uint64 index );
     std::vector<uint64> children( uint64 index );
-    uint64 find_child( uint64 index, const std::string& name, uint64 &closest );
+    uint64 find_child( uint64 index, const std::string& name, const std::u16string& name16, uint64 &closest, bool scanSiblings );
     void load( unsigned char* buffer, uint64 len );
     void save( unsigned char* buffer );
     uint64 size();
     void debug();
     bool isDirty() const;
     void markAsDirty(uint64 dataIndex, int64 bigBlockSize);
+    void rebalance(int64 bigBlockSize);
     void flush(const std::vector<uint64>& blocks, StorageIO *const io, uint64 bigBlockSize, uint64 sb_start, uint64 sb_size);
     size_t unused();
     void findParentAndSib(uint64 inIdx, const std::string& inFullName, uint64 &parentIdx, uint64 &sibIdx);
@@ -191,7 +210,10 @@ class StorageIO final
     bool opened;              // true if file is opened
     uint64 filesize;   // size of the file
     bool writeable;           // true if the file can be modified
-    
+    bool writeError;          // true if any write failed since opening
+
+    std::mutex readMutex;
+
     Header* header;           // storage header 
     DirTree* dirtree;         // directory tree
     AllocTable* bbat;         // allocation table for big blocks
@@ -207,9 +229,10 @@ class StorageIO final
     StorageIO( Storage* storage, const char* filename );
     ~StorageIO();
     
-    bool open(bool bWriteAccess = false, bool bCreate = false);
+    bool open(bool bWriteAccess = false, bool bCreate = false, bool bLargeSectors = false);
     void close();
     void flush();
+    void writeCheck();        // like fileCheck, but records failures
     void load(bool bWriteAccess);
     void create();
     void init();
@@ -284,6 +307,10 @@ class StreamIO final
 
     // pointer for read
     uint64 m_pos;
+    // readahead window over this stream's block chain, see READAHEADBUFSIZE
+    std::vector<unsigned char> ra_buf;
+    uint64 ra_pos;
+    uint64 ra_len;
 
     // simple cache system to speed-up getch()
     unsigned char* cache_data;
@@ -348,6 +375,121 @@ static inline void writeU32( unsigned char* ptr, uint32 data )
   ptr[3] = (unsigned char)((data >> 24) & 0xff);
 }
 
+// Directory entry names are stored as UTF-16, at most 31 code units plus a terminator (MS-CFB 2.6.1), and are UTF-8 in memory
+static const size_t MaxNameUnits = 31;
+
+// Bytes that are not valid UTF-8 are taken as Latin-1 code units, as earlier versions stored names one byte per code unit
+static std::u16string NameToUTF16(const std::string& name)
+{
+    std::u16string result;
+    result.reserve(name.size());
+    const size_t n = name.size();
+    for (size_t i = 0; i < n;)
+    {
+        const unsigned char c = static_cast<unsigned char>(name[i]);
+        uint32 cp = c;
+        size_t len = 1;
+        if (c >= 0xC2 && c <= 0xF4)
+        {
+            len = (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+            cp = c & ((c < 0xE0) ? 0x1F : (c < 0xF0) ? 0x0F : 0x07);
+            bool valid = i + len <= n;
+            for (size_t k = 1; valid && k < len; k++)
+            {
+                const unsigned char cc = static_cast<unsigned char>(name[i + k]);
+                valid = (cc & 0xC0) == 0x80;
+                cp = (cp << 6) | (cc & 0x3F);
+            }
+            // Reject overlong forms, surrogates and code points past U+10FFFF
+            if (!valid || (len == 3 && cp < 0x800) || (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)) || (cp >= 0xD800 && cp <= 0xDFFF))
+            {
+                cp = c;
+                len = 1;
+            }
+        }
+        if (cp >= 0x10000)
+        {
+            cp -= 0x10000;
+            result.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
+            result.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
+        }
+        else
+            result.push_back(static_cast<char16_t>(cp));
+        i += len;
+    }
+    return result;
+}
+
+static std::string NameFromUTF16(const std::u16string& name)
+{
+    std::string result;
+    result.reserve(name.size());
+    for (size_t i = 0; i < name.size(); i++)
+    {
+        uint32 cp = name[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < name.size() && name[i + 1] >= 0xDC00 && name[i + 1] <= 0xDFFF)
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (name[++i] - 0xDC00);
+        else if (cp >= 0xD800 && cp <= 0xDFFF)
+            cp = 0xFFFD; // Unpaired surrogate
+        if (cp < 0x80)
+            result += static_cast<char>(cp);
+        else if (cp < 0x800)
+        {
+            result += static_cast<char>(0xC0 | (cp >> 6));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+        else if (cp < 0x10000)
+        {
+            result += static_cast<char>(0xE0 | (cp >> 12));
+            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+        else
+        {
+            result += static_cast<char>(0xF0 | (cp >> 18));
+            result += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            result += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    return result;
+}
+
+static std::u16string TruncateName(std::u16string name)
+{
+    if (name.size() > MaxNameUnits)
+    {
+        size_t len = MaxNameUnits;
+        if (name[len - 1] >= 0xD800 && name[len - 1] <= 0xDBFF) // Do not split a surrogate pair
+            len--;
+        name.resize(len);
+    }
+    return name;
+}
+
+// Whether a stored name matches a looked up one, also accepting the forms written by earlier versions:
+// names truncated to 32 code units, and names stored one byte per code unit (compared as bytes, truncated to 32)
+static bool NameMatches(const std::u16string& stored, const std::u16string& name16, const std::string& name)
+{
+    size_t len = stored.size();
+    if (len > MaxNameUnits)
+        len = (stored[MaxNameUnits - 1] >= 0xD800 && stored[MaxNameUnits - 1] <= 0xDBFF) ? MaxNameUnits - 1 : MaxNameUnits;
+    if (len == name16.size() && stored.compare(0, len, name16) == 0)
+        return true;
+    if (stored.size() != std::min<size_t>(name.size(), 32))
+        return false;
+    for (size_t i = 0; i < stored.size(); i++)
+        if (stored[i] != static_cast<unsigned char>(name[i]))
+            return false;
+    return true;
+}
+
+// Simple uppercase for ASCII and Latin-1 (Windows uses a full Unicode table: other letters keep their case here)
+static inline char16_t UpcaseNameUnit(const char16_t c)
+{
+    return ((c >= u'a' && c <= u'z') || (c >= 0xE0 && c <= 0xFE && c != 0xF7)) ? static_cast<char16_t>(c - 0x20) : c;
+}
+
 static const unsigned char pole_magic[] = 
  { 0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1 };
 
@@ -363,6 +505,7 @@ Header::Header()
     num_sbat(0),                // [40H,04] number of SECTs in the MiniFAT chain
     mbat_start(AllocTable::Eof),// [44H,04] first SECT in the DIFAT chain
     num_mbat(0),                // [48H,04] number of SECTs in the DIFAT chain
+    num_dirent(0),              // [28H,04] number of SECTs in the directory chain (version 4 only)
     dirty(true)	
 
 {
@@ -388,6 +531,7 @@ bool Header::valid() const
 void Header::load( const unsigned char* buffer ) {
   b_shift      = readU16( buffer + 0x1e ); // [1EH,02] size of sectors in power-of-two; typically 9 indicating 512-byte sectors and 12 for 4096
   s_shift      = readU16( buffer + 0x20 ); // [20H,02] size of mini-sectors in power-of-two; typically 6 indicating 64-byte mini-sectors
+  num_dirent   = readU32( buffer + 0x28 ); // [28H,04] number of SECTs in the directory chain (version 4 only)
   num_bat      = readU32( buffer + 0x2c ); // [2CH,04] number of SECTs in the FAT chain
   dirent_start = readU32( buffer + 0x30 ); // [30H,04] first SECT in the directory chain
   threshold    = readU32( buffer + 0x38 ); // [38H,04] maximum size for a mini stream; typically 4096 bytes
@@ -413,10 +557,11 @@ void Header::save( unsigned char* buffer )
   writeU32( buffer + 12, 0 );             // unknown
   writeU32( buffer + 16, 0 );             // unknown
   writeU16( buffer + 24, 0x003e );        // revision ?
-  writeU16( buffer + 26, 3 );             // version ?
+  writeU16( buffer + 26, b_shift == 12 ? 4 : 3 ); // major version: 3 for 512 byte sectors, 4 for 4096 byte sectors
   writeU16( buffer + 28, 0xfffe );        // unknown
   writeU16( buffer + 0x1e, (uint32) b_shift );
   writeU16( buffer + 0x20, (uint32) s_shift );
+  writeU32( buffer + 0x28, b_shift == 12 ? (uint32) num_dirent : 0 );
   writeU32( buffer + 0x2c, (uint32) num_bat );
   writeU32( buffer + 0x30, (uint32) dirent_start );
   writeU32( buffer + 0x38, (uint32) threshold );
@@ -538,6 +683,8 @@ std::vector<uint64> AllocTable::follow( uint64 start ) const
   uint64 p = start;
   while( p < count() )
   {
+    // A longer chain loops on itself (corrupted file)
+    if( chain.size() >= count() ) { chain.clear(); break; }
     if( p == (uint64)Eof ) break;
     if( p == (uint64)Bat ) break;
     if( p == (uint64)MetaBat ) break;
@@ -606,7 +753,9 @@ void AllocTable::markAsDirty(uint64 dataIndex, int64 bigBlockSize)
 void AllocTable::flush(const std::vector<uint64>& blocks, StorageIO *const io, uint64 bigBlockSize)
 {
     assert(bigBlockSize * blocks.size() <= std::numeric_limits<size_t>::max());
-    unsigned char *buffer = new unsigned char[size_t(bigBlockSize * blocks.size())];
+    const size_t bufferSize = size_t(bigBlockSize * blocks.size());
+    unsigned char *buffer = new unsigned char[bufferSize];
+    memset(buffer, 0xff, bufferSize); // Entries past count() are free (FREESECT)
     save(buffer);
     for (size_t idx = 0; idx < blocks.size(); idx++)
     {
@@ -642,22 +791,35 @@ void AllocTable::debug()
 }
 
 // =========== DirEntry ==========
-// "A node with a shorter name is less than a node with a inter name"
-// "For nodes with the same length names, compare the two names." 
-// --Windows Compound Binary File Format Specification, Section 2.5
-int DirEntry::compare(const DirEntry& de)
+// "A node with a shorter name is less than a node with a longer name"
+// "For nodes with the same length names, compare the two names" after converting them to uppercase
+// --Windows Compound Binary File Format Specification (MS-CFB), Section 2.6.4
+// Names only differing by case (not valid, but written by earlier versions) are then compared exactly, to keep a total order
+int DirEntry::compare(const DirEntry& de) const
 {
-    return compare(de.name);
+    return compare(de.name16);
 }
 
-int DirEntry::compare(const std::string& name2) const
+int DirEntry::compare(const std::u16string& name2) const
 {
-    if (name.length() < name2.length())
-        return -1;
-    else if (name.length() > name2.length())
-        return 1;
-    else
-        return name.compare(name2);
+    if (name16.size() != name2.size())
+        return name16.size() < name2.size() ? -1 : 1;
+    // Units before the first exact difference are equal once uppercased too (names often share long prefixes, e.g. GameItem123)
+    auto a = name16.begin();
+    auto b = name2.begin();
+    while (a != name16.end() && *a == *b)
+        ++a, ++b;
+    if (a == name16.end())
+        return 0;
+    const int exact = (*a < *b) ? -1 : 1;
+    for (; a != name16.end(); ++a, ++b)
+    {
+        const char16_t ua = UpcaseNameUnit(*a);
+        const char16_t ub = UpcaseNameUnit(*b);
+        if (ua != ub)
+            return ua < ub ? -1 : 1;
+    }
+    return exact;
 }
 
 
@@ -678,6 +840,7 @@ void DirTree::clear(int64 bigBlockSize)
   entries.resize( 1 );
   entries[0].valid = true;
   entries[0].name = "Root Entry";
+  entries[0].name16 = u"Root Entry";
   entries[0].dir = true;
   entries[0].size = 0;
   entries[0].start = End;
@@ -810,7 +973,9 @@ DirEntry* DirTree::entry( const std::string& name, bool create, int64 bigBlockSi
      */
      // dima: performance optimisation of the previous
      uint64 closest = End;
-     child = find_child( index, *it, closest );
+     const std::u16string fullName16 = NameToUTF16( *it );
+     const std::u16string name16 = TruncateName( fullName16 ); // Names longer than the format allows are consistently truncated
+     child = find_child( index, *it, name16, closest, !create );
      
      // traverse to the child
      if( child > 0 ) index = child;
@@ -824,7 +989,8 @@ DirEntry* DirTree::entry( const std::string& name, bool create, int64 bigBlockSi
        index = unused();
        DirEntry* e = entry( index );
        e->valid = true;
-       e->name = *it;
+       e->name = (name16.size() < fullName16.size()) ? NameFromUTF16( name16 ) : *it;
+       e->name16 = name16;
        e->dir = (levelsLeft > 0);
        if (!e->dir)
            e->size = streamSize;
@@ -870,7 +1036,7 @@ DirEntry* DirTree::entry( const std::string& name, bool create, int64 bigBlockSi
            io->bbat->set(nblock, AllocTable::Eof);
            io->bbat->markAsDirty(nblock, bigBlockSize);
            blocks.push_back(nblock);
-           uint64 bbidxn = nblock / (io->bbat->blockSize / sizeof(uint64));
+           uint64 bbidxn = nblock / (io->bbat->blockSize / sizeof(uint32));
            while (bbidxn >= io->header->num_bat)
                io->addbbatBlock();
        }
@@ -880,17 +1046,33 @@ DirEntry* DirTree::entry( const std::string& name, bool create, int64 bigBlockSi
    return entry( index );
 }
 
-// helper function: recursively find siblings of index
-static void dirtree_find_siblings( DirTree* dirtree, std::vector<uint64>& result, 
+// helper function: find siblings of index (in-order walk)
+// Iterative and bounded, as a corrupted file may hold cycles or very deep trees
+static void dirtree_find_siblings( DirTree* dirtree, std::vector<uint64>& result,
   uint64 index )
 {
-    DirEntry* e = dirtree->entry( index );
-    if (!e) return;
-    if (e->prev != DirTree::End)
-        dirtree_find_siblings(dirtree, result, e->prev);
-    result.push_back(index);
-    if (e->next != DirTree::End)
-        dirtree_find_siblings(dirtree, result, e->next);
+    const uint64 count = dirtree->entryCount();
+    uint64 visits = 0; // A valid tree visits each entry at most once
+    std::vector<uint64> stack;
+    uint64 current = index;
+    while (true)
+    {
+        // Walk down the 'prev' branch
+        while (current < count)
+        {
+            if (++visits > count) return;
+            DirEntry* e = dirtree->entry( current );
+            if (!e) break;
+            stack.push_back(current);
+            current = e->prev;
+        }
+        if (stack.empty())
+            break;
+        current = stack.back();
+        stack.pop_back();
+        result.push_back(current);
+        current = dirtree->entry( current )->next;
+    }
 }
 
 std::vector<uint64> DirTree::children( uint64 index )
@@ -904,35 +1086,47 @@ std::vector<uint64> DirTree::children( uint64 index )
   return result;
 }
 
-static uint64 dirtree_find_sibling( DirTree* dirtree, uint64 index, const std::string& name, uint64& closest ) {
+static uint64 dirtree_find_sibling( DirTree* dirtree, uint64 index, const std::u16string& name, uint64& closest ) {
 
-    uint64 count = dirtree->entryCount();
-    DirEntry* e = dirtree->entry( index );
-    if (!e || !e->valid) return 0;
-    int cval = e->compare(name);
-    if (cval == 0)
-        return index;
-    if (cval > 0)
+    const uint64 count = dirtree->entryCount();
+    // Bounded, as a corrupted file may hold cycles
+    for (uint64 steps = 0; steps < count; steps++)
     {
-        if (e->prev > 0 && e->prev < count)
-            return dirtree_find_sibling( dirtree, e->prev, name, closest );
-    }
-    else
-    {
-        if (e->next > 0 && e->next < count)
-            return dirtree_find_sibling( dirtree, e->next, name, closest );
+        DirEntry* e = dirtree->entry( index );
+        if (!e || !e->valid) return 0;
+        const int cval = e->compare(name);
+        if (cval == 0)
+            return index;
+        const uint64 next = (cval > 0) ? e->prev : e->next;
+        if (next == 0 || next >= count)
+            break;
+        index = next;
     }
     closest = index;
     return 0;
 }
 
-uint64 DirTree::find_child( uint64 index, const std::string& name, uint64& closest ) {
+uint64 DirTree::find_child( uint64 index, const std::string& name, const std::u16string& name16, uint64& closest, bool scanSiblings ) {
 
   uint64 count = entryCount();
   DirEntry* p = entry( index );
-  if (p && p->valid && p->child < count )
-    return dirtree_find_sibling( this, p->child, name, closest );
-  
+  if (!p || !p->valid || p->child >= count )
+    return 0;
+
+  if (const uint64 found = dirtree_find_sibling( this, p->child, name16, closest ); found || !scanSiblings)
+    return found;
+
+  // Not found in the tree order: the file may have been written in another order (earlier versions compared case sensitively)
+  // or with names in an earlier form (see NameMatches), so look for the name among all the siblings. Not done when creating
+  // entries (saving), as it would make it quadratic: files are written from scratch, only holding entries created by this version
+  std::vector<uint64> siblings;
+  dirtree_find_siblings( this, siblings, p->child );
+  for (const uint64 sib : siblings)
+  {
+    const DirEntry* const e = entry( sib );
+    if (e && e->valid && !e->name16.empty() && NameMatches( e->name16, name16, name ))
+      return sib;
+  }
   return 0;
 }
 
@@ -947,18 +1141,22 @@ void DirTree::load( unsigned char* buffer, uint64 size )
     // would be < 32 if first char in the name isn't printable
     unsigned prefix = 32;
     
-    // parse name of this entry, which stored as Unicode 16-bit
-    std::string name;
+    // parse name of this entry, stored as UTF-16 (length in bytes, terminator included)
+    std::u16string name;
     int name_len = readU16( buffer + 0x40+p );
     if( name_len > 64 ) name_len = 64;
-    for( int j=0; ( buffer[j+p]) && (j<name_len); j+= 2 )
-      name.append( 1, buffer[j+p] );
-      
+    for( int j=0; j+1 < name_len; j+= 2 )
+    {
+      const char16_t c = static_cast<char16_t>( readU16( buffer + j+p ) );
+      if( c == 0 ) break;
+      name.push_back( c );
+    }
+
     // first char isn't printable ? remove it...
-    if( buffer[p] < 32 )
-    { 
-      prefix = buffer[0]; 
-      name.erase( 0,1 ); 
+    if( !name.empty() && name[0] < 32 )
+    {
+      prefix = buffer[0];
+      name.erase( 0,1 );
     }
     
     // 2 = file (aka stream), 1 = directory (aka storage), 5 = root
@@ -966,7 +1164,8 @@ void DirTree::load( unsigned char* buffer, uint64 size )
     
     DirEntry e;
     e.valid = ( type != 0 );
-    e.name = name;
+    e.name = NameFromUTF16( name );
+    e.name16 = name;
     e.start = readU32( buffer + 0x74+p );
     e.size = readU32( buffer + 0x78+p );
     e.prev = readU32( buffer + 0x44+p );
@@ -1013,20 +1212,16 @@ void DirTree::save( unsigned char* buffer )
     if( !e ) continue;
     if( e->dir )
     {
-      e->start = 0xffffffff;
+      e->start = 0;
       e->size = 0;
     }
     
-    // max length for name is 32 chars
-    name = e->name;
-    if( name.length() > 32 )
-      name.erase( 32, name.length() );
-      
-    // write name as Unicode 16-bit
-    for( unsigned j = 0; j < name.length(); j++ )
-      buffer[ i*128 + j*2 ] = name[j];
+    // write name as UTF-16 (at most 31 code units, entries loaded from files written by earlier versions may hold 32)
+    const std::u16string name16 = TruncateName( e->name16 );
+    for( size_t j = 0; j < name16.size(); j++ )
+      writeU16( buffer + i*128 + j*2, name16[j] );
 
-    writeU16( buffer + i*128 + 0x40, static_cast<uint32>(name.length()*2 + 2) );
+    writeU16( buffer + i*128 + 0x40, static_cast<uint32>(name16.size()*2 + 2) );
     writeU32( buffer + i*128 + 0x74, (uint32) e->start );
     writeU32( buffer + i*128 + 0x78, (uint32) e->size );
     writeU32( buffer + i*128 + 0x44, (uint32) e->prev );
@@ -1057,11 +1252,74 @@ void DirTree::markAsDirty(uint64 dataIndex, int64 bigBlockSize)
     dirtyBlocks.push_back(dbidx);
 }
 
+static void dirtree_collect_siblings(DirTree* dirtree, std::vector<uint64>& result, uint64 index)
+{
+    uint64 count = dirtree->entryCount();
+    std::vector<uint64> pending;
+    pending.push_back(index);
+    while (!pending.empty())
+    {
+        uint64 idx = pending.back();
+        pending.pop_back();
+        if (idx == DirTree::End || idx >= count)
+            continue;
+        DirEntry* e = dirtree->entry(idx);
+        if (!e || !e->valid)
+            continue;
+        result.push_back(idx);
+        pending.push_back(e->prev);
+        pending.push_back(e->next);
+    }
+}
+
+static uint64 dirtree_balance(DirTree* dirtree, const std::vector<uint64>& sorted, size_t lo, size_t hi, int64 bigBlockSize)
+{
+    if (lo >= hi)
+        return DirTree::End;
+    size_t mid = lo + (hi - lo) / 2;
+    uint64 prev = dirtree_balance(dirtree, sorted, lo, mid, bigBlockSize);
+    uint64 next = dirtree_balance(dirtree, sorted, mid + 1, hi, bigBlockSize);
+    DirEntry* e = dirtree->entry(sorted[mid]);
+    if (e->prev != prev || e->next != next)
+    {
+        e->prev = prev;
+        e->next = next;
+        dirtree->markAsDirty(sorted[mid], bigBlockSize);
+    }
+    return sorted[mid];
+}
+
+// Siblings are inserted as a plain binary search tree, so creating streams in sorted order
+// (the common case) degenerates into a linked list. Rebuild each storage's sibling tree as a
+// balanced one before writing, as readers that recurse over it choke on deep chains.
+void DirTree::rebalance(int64 bigBlockSize)
+{
+    for (size_t idx = 0; idx < entryCount(); idx++)
+    {
+        DirEntry* e = entry(idx);
+        if (!e || !e->valid || !e->dir || e->child == End)
+            continue;
+        std::vector<uint64> children;
+        dirtree_collect_siblings(this, children, e->child);
+        std::sort(children.begin(), children.end(), [this](uint64 a, uint64 b) { return entry(a)->compare(*entry(b)) < 0; });
+        uint64 child = dirtree_balance(this, children, 0, children.size(), bigBlockSize);
+        if (e->child != child)
+        {
+            e->child = child;
+            markAsDirty(idx, bigBlockSize);
+        }
+    }
+}
+
 void DirTree::flush(const std::vector<uint64>& blocks, StorageIO *const io, uint64 bigBlockSize, uint64 sb_start, uint64 sb_size)
 {
+    rebalance(bigBlockSize);
     uint64 bufLen = size();
-    assert(bufLen <= std::numeric_limits<size_t>::max());
-    unsigned char *buffer = new unsigned char[(size_t)bufLen];
+    uint64 allocLen = static_cast<uint64>(blocks.size()) * bigBlockSize;
+    if (allocLen < bufLen)
+        allocLen = bufLen;
+    assert(allocLen <= std::numeric_limits<size_t>::max());
+    unsigned char *buffer = new unsigned char[(size_t)allocLen]();
     save(buffer);
     writeU32( buffer + 0x74, (uint32) sb_start );
     writeU32( buffer + 0x78, (uint32) sb_size );
@@ -1076,12 +1334,9 @@ void DirTree::flush(const std::vector<uint64>& blocks, StorageIO *const io, uint
                 break;
             }
         }
-        uint64 bytesToWrite = bigBlockSize;
         uint64 pos = bigBlockSize*idx;
-        if ((bufLen - pos) < bytesToWrite)
-            bytesToWrite = bufLen - pos;
         if (bDirty)
-            io->saveBigBlock(blocks[idx], 0, &buffer[pos], bytesToWrite);
+            io->saveBigBlock(blocks[idx], 0, &buffer[pos], bigBlockSize);
     }
     dirtyBlocks.clear();
     delete[] buffer;
@@ -1235,16 +1490,17 @@ void DirTree::debug()
 // =========== StorageIO ==========
 
 StorageIO::StorageIO( Storage* st, const char* fname )
-: storage(st),        
+: storage(st),
   filename(fname),
-  file(), 
-  result(Storage::Ok),        
-  opened(false),        
-  filesize(0),        
-  writeable(false),        
-  header(new Header()),        
-  dirtree(new DirTree(1ull << header->b_shift)),        
-  bbat(new AllocTable()),        
+  file(),
+  result(Storage::Ok),
+  opened(false),
+  filesize(0),
+  writeable(false),
+  writeError(false),
+  header(new Header()),
+  dirtree(new DirTree(1ull << header->b_shift)),
+  bbat(new AllocTable()),
   sbat(new AllocTable()),
   sb_blocks(),
   mbat_blocks(),
@@ -1265,13 +1521,18 @@ StorageIO::~StorageIO()
   delete header;
 }
 
-bool StorageIO::open(bool bWriteAccess, bool bCreate)
+bool StorageIO::open(bool bWriteAccess, bool bCreate, bool bLargeSectors)
 {
   // already opened ? close first
   if (opened)
       close();
+  writeError = false;
   if (bCreate)
   {
+      header->b_shift = bLargeSectors ? 12 : 9;
+      bbat->blockSize = (uint64) 1 << header->b_shift;
+      sbat->blockSize = (uint64) 1 << header->s_shift;
+      dirtree->clear(bbat->blockSize);
       create();
       init();
       writeable = true;
@@ -1291,6 +1552,8 @@ void StorageIO::load(bool bWriteAccess)
   uint64 buflen = 0;
   std::vector<uint64> blocks;
   
+  std::unique_lock lock(readMutex);
+
   // open the file, check for error
   result = Storage::OpenFailed;
 
@@ -1312,13 +1575,15 @@ void StorageIO::load(bool bWriteAccess)
   file.seekg(0, std::ios::end );
   filesize = static_cast<uint64>(file.tellg());
 
-  // load header
-  buffer = new unsigned char[512];
+  // load header (zeroed, as a truncated file may not fill it)
+  buffer = new unsigned char[512]();
   file.seekg( 0 ); 
   file.read( (char*)buffer, 512 );
   fileCheck(file);
   header->load( buffer );
   delete[] buffer;
+
+  lock.unlock();
 
   // check OLE magic id
   result = Storage::NotOLE;
@@ -1334,7 +1599,11 @@ void StorageIO::load(bool bWriteAccess)
   // important block size
   bbat->blockSize = (uint64) 1 << header->b_shift;
   sbat->blockSize = (uint64) 1 << header->s_shift;
-  
+
+  // Allocation table sectors are stored in the file, so bounded by its size (corrupted header)
+  const uint64 fileBlocks = filesize / bbat->blockSize;
+  if( header->num_bat > fileBlocks || header->num_mbat > fileBlocks ) return;
+
   blocks = getbbatBlocks(true);
   
   // load big bat
@@ -1342,11 +1611,11 @@ void StorageIO::load(bool bWriteAccess)
   if( buflen > 0 )
   {
     assert(buflen <= std::numeric_limits<size_t>::max());
-    buffer = new unsigned char[ (size_t)buflen ];  
+    buffer = new unsigned char[ (size_t)buflen ]();  // zeroed, as a truncated file may not fill it
     loadBigBlocks( blocks, buffer, buflen );
     bbat->load( buffer, buflen );
     delete[] buffer;
-  }  
+  }
 
   // load small bat
   blocks.clear();
@@ -1355,26 +1624,27 @@ void StorageIO::load(bool bWriteAccess)
   if( buflen > 0 )
   {
     assert(buflen <= std::numeric_limits<size_t>::max());
-    buffer = new unsigned char[ (size_t)buflen ];  
+    buffer = new unsigned char[ (size_t)buflen ]();  // zeroed, as a truncated file may not fill it
     loadBigBlocks( blocks, buffer, buflen );
     sbat->load( buffer, buflen );
     delete[] buffer;
-  }  
-  
+  }
+
   // load directory tree
   blocks.clear();
   blocks = bbat->follow( header->dirent_start );
   buflen = static_cast<uint64>(blocks.size())*bbat->blockSize;
+  if( buflen < 128 ) return; // Root entry needed (mini stream start read below)
   assert(buflen <= std::numeric_limits<size_t>::max());
-  buffer = new unsigned char[ (size_t)buflen ];  
+  buffer = new unsigned char[ (size_t)buflen ]();  // zeroed, as a truncated file may not fill it
   loadBigBlocks( blocks, buffer, buflen );
   dirtree->load( buffer, buflen );
   unsigned sb_start = readU32( buffer + 0x74 );
   delete[] buffer;
-  
+
   // fetch block chain as data for small-files
   sb_blocks = bbat->follow( sb_start ); // small files
-  
+
   // for troubleshooting, just enable this block
 #if 0
   header->debug();
@@ -1382,7 +1652,7 @@ void StorageIO::load(bool bWriteAccess)
   bbat->debug();
   dirtree->debug();
 #endif
-  
+
   // so far so good
   result = Storage::Ok;
   opened = true;
@@ -1417,7 +1687,7 @@ void StorageIO::init()
     header->num_bat = 1;
     header->num_sbat = 1;
     header->dirty = true;
-    bbat->set(0, AllocTable::Eof);
+    bbat->set(0, AllocTable::Bat);
     bbat->markAsDirty(0, bbat->blockSize);
     bbat->set(1, AllocTable::Eof);
     bbat->markAsDirty(1, bbat->blockSize);
@@ -1431,13 +1701,25 @@ void StorageIO::init()
 
 void StorageIO::flush()
 {
+    if (writeable)
+    {
+        uint64 num_dirent = static_cast<uint64>(bbat->follow(header->dirent_start).size());
+        if (num_dirent != header->num_dirent)
+        {
+            header->num_dirent = num_dirent;
+            header->dirty = true;
+        }
+    }
     if (header->dirty)
     {
-        unsigned char *buffer = new unsigned char[512];
+        assert(bbat->blockSize >= 512 && bbat->blockSize <= std::numeric_limits<size_t>::max());
+        unsigned char *buffer = new unsigned char[(size_t)bbat->blockSize]();
         header->save( buffer );
         file.seekp( 0 ); 
-        file.write( (char*)buffer, 512 );
-        fileCheck(file);
+        file.write( (char*)buffer, (std::streamsize)bbat->blockSize );
+        writeCheck();
+        if (filesize < bbat->blockSize)
+            filesize = bbat->blockSize;
         delete[] buffer;
     }
     if (bbat->isDirty())
@@ -1458,9 +1740,10 @@ void StorageIO::flush()
         uint64 nBytes = bbat->blockSize * static_cast<uint64>(mbat_blocks.size());
         assert(nBytes <= std::numeric_limits<size_t>::max());
         unsigned char *buffer = new unsigned char[(size_t)nBytes];
+        memset(buffer, 0xff, (size_t)nBytes);
         uint64 sIdx = 0;
         uint64 dcount = 0;
-        uint64 blockCapacity = bbat->blockSize / sizeof(uint64) - 1;
+        uint64 blockCapacity = bbat->blockSize / sizeof(uint32) - 1;
         size_t blockIdx = 0;
         for (size_t mdIdx = 0; mdIdx < mbat_data.size(); mdIdx++)
         {
@@ -1478,12 +1761,26 @@ void StorageIO::flush()
                 dcount = 0;
             }
         }
+        if (dcount != 0)
+            writeU32(buffer + (mbat_blocks.size() - 1) * bbat->blockSize + blockCapacity * 4, AllocTable::Eof);
         saveBigBlocks(mbat_blocks, 0, buffer, nBytes);
         delete[] buffer;
         mbatDirty = false;
     }
+    // Pad the file to a whole number of sectors; partial writes of the last
+    // data or directory block would otherwise leave the file mid-sector.
+    const uint64 blockSize = bbat->blockSize;
+    uint64 alignedSize = (filesize + blockSize - 1) / blockSize * blockSize;
+    if (writeable && alignedSize > filesize)
+    {
+        std::vector<char> zeros(static_cast<size_t>(alignedSize - filesize), 0);
+        file.seekp(filesize);
+        file.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+        writeCheck();
+        filesize = alignedSize;
+    }
     file.flush();
-    fileCheck(file);
+    writeCheck();
 
   /* Note on Microsoft implementation:
      - directory entries are stored in the last block(s)
@@ -1495,15 +1792,26 @@ void StorageIO::flush()
 void StorageIO::close()
 {
   if( !opened ) return;
-  
+
+  std::lock_guard lock(readMutex);
+
   file.close(); 
+  if (writeable && file.fail()) // closing flushes buffered data, which may fail
+    writeError = true;
   opened = false;
-  
+
   std::list<Stream*>::iterator it;
   for( it = streams.begin(); it != streams.end(); ++it )
     delete *it;
 }
 
+
+void StorageIO::writeCheck()
+{
+  if (file.fail())
+    writeError = true;
+  file.clear();
+}
 
 StreamIO* StorageIO::streamIO( const std::string& name, bool bCreate, int64 streamSize )
 {
@@ -1593,25 +1901,40 @@ uint64 StorageIO::loadBigBlocks( const std::vector<uint64>& blocks,
 {
   // sentinel
   if( !data ) return 0;
+  std::lock_guard fileLock(readMutex);
   fileCheck(file);
   if( !file.good() ) return 0;
   if( blocks.size() < 1 ) return 0;
   if( maxlen == 0 ) return 0;
 
-  // read block one by one, seems fast enough
+  // Read each run of consecutive blocks in a single request. Block chains in a .vpx are
+  // overwhelmingly contiguous, so this collapses what was one seek and one read per block
+  // into roughly one per run. It matters most on a network filesystem, where each request
+  // costs a round trip rather than just a syscall.
   uint64 bytes = 0;
-  for( size_t i=0; (i < blocks.size() ) && ( bytes<maxlen ); i++ )
+  size_t i = 0;
+  while( ( i < blocks.size() ) && ( bytes < maxlen ) )
   {
-    uint64 block = blocks[i];
-    uint64 pos =  bbat->blockSize * ( block+1 );
-    uint64 p = (bbat->blockSize < maxlen-bytes) ? bbat->blockSize : maxlen-bytes;
-    if( pos + p > filesize )
-        p = filesize - pos;
+    // extend the run while the next block immediately follows the previous one
+    size_t runEnd = i + 1;
+    while( ( runEnd < blocks.size() ) && ( blocks[runEnd] == blocks[runEnd-1] + 1 ) )
+      runEnd++;
+
+    const uint64 pos = bbat->blockSize * ( blocks[i] + 1 );
+    // A chain pointing past the end of the file would underflow the clamp below, and that
+    // length is then used directly as a read size, so stop rather than clamp.
+    if( pos >= filesize ) break;
+
+    uint64 p = static_cast<uint64>( runEnd - i ) * bbat->blockSize;
+    if( p > maxlen - bytes ) p = maxlen - bytes;
+    if( pos + p > filesize ) p = filesize - pos;
+
     file.seekg( pos );
     file.read( (char*)data + bytes, p );
     fileCheck(file);
     // should use gcount to see how many bytes were really returned - eof check...
     bytes += p;
+    i = runEnd;
   }
 
   return bytes;
@@ -1621,9 +1944,12 @@ uint64 StorageIO::loadBigBlock( uint64 block,
   unsigned char* data, uint64 maxlen )
 {
   // sentinel
-  if( !data ) return 0;
-  fileCheck(file);
-  if( !file.good() ) return 0;
+  {
+     if( !data ) return 0;
+     std::lock_guard fileLock(readMutex);
+     fileCheck(file);
+     if( !file.good() ) return 0;
+  }
   
   // wraps call for loadBigBlocks
   std::vector<uint64> blocks;
@@ -1654,7 +1980,7 @@ uint64 StorageIO::saveBigBlocks( const std::vector<uint64>& blocks, uint64 offse
         tobeWritten = maxWrite;
     file.seekp( pos );
     file.write( (char*)data + bytes, tobeWritten );
-    fileCheck(file);
+    writeCheck();
 
     bytes += tobeWritten;
     offset = 0;
@@ -1683,18 +2009,23 @@ uint64 StorageIO::loadSmallBlocks( const std::vector<uint64>& blocks,
   unsigned char* data, uint64 maxlen )
 {
   // sentinel
-  if( !data ) return 0;
-  fileCheck(file);
-  if( !file.good() ) return 0;
-  if( blocks.size() < 1 ) return 0;
-  if( maxlen == 0 ) return 0;
+  {
+     if( !data ) return 0;
+     std::lock_guard fileLock(readMutex);
+     fileCheck(file);
+     if( !file.good() ) return 0;
+     if( blocks.size() < 1 ) return 0;
+     if( maxlen == 0 ) return 0;
+  }
 
   // our own local buffer
   assert(bbat->blockSize <= std::numeric_limits<size_t>::max());
   unsigned char* buf = new unsigned char[ (size_t)bbat->blockSize ];
 
-  // read small block one by one
+  // Sixty-four mini-blocks live inside one big block, so consecutive mini-blocks almost
+  // always resolve to the block already in hand. Remember it rather than re-reading it.
   uint64 bytes = 0;
+  uint64 loadedIndex = std::numeric_limits<uint64>::max();
   for( size_t i=0; ( i<blocks.size() ) && ( bytes<maxlen ); i++ )
   {
     uint64 block = blocks[i];
@@ -1704,7 +2035,11 @@ uint64 StorageIO::loadSmallBlocks( const std::vector<uint64>& blocks,
     uint64 bbindex = pos / bbat->blockSize;
     if( bbindex >= sb_blocks.size() ) break;
 
-    loadBigBlock( sb_blocks[ (size_t)bbindex ], buf, bbat->blockSize );
+    if( bbindex != loadedIndex )
+    {
+      loadBigBlock( sb_blocks[ (size_t)bbindex ], buf, bbat->blockSize );
+      loadedIndex = bbindex;
+    }
 
     // copy the data
     uint64 offset = pos % bbat->blockSize;
@@ -1724,9 +2059,12 @@ uint64 StorageIO::loadSmallBlock( uint64 block,
   unsigned char* data, uint64 maxlen )
 {
   // sentinel
-  if( !data ) return 0;
-  fileCheck(file);
-  if( !file.good() ) return 0;
+  {
+     if( !data ) return 0;
+     std::lock_guard fileLock(readMutex);
+     fileCheck(file);
+     if( !file.good() ) return 0;
+  }
 
   // wraps call for loadSmallBlocks
   std::vector<uint64> blocks;
@@ -1819,7 +2157,7 @@ std::vector<uint64> StorageIO::getbbatBlocks(bool bLoading)
         if( (header->num_bat > 109) && (header->num_mbat > 0) ) 
         {
             assert(bbat->blockSize <= std::numeric_limits<size_t>::max());
-            unsigned char* buffer2 = new unsigned char[ (size_t)bbat->blockSize ];
+            unsigned char* buffer2 = new unsigned char[ (size_t)bbat->blockSize ](); // zeroed, as a truncated file may not fill it
             size_t k = 109;
             uint64 sector;
             size_t mdidx = 0;
@@ -1869,7 +2207,7 @@ uint64 StorageIO::ExtendFile( std::vector<uint64> *chain )
 {
     uint64 newblockIdx = bbat->unused();
     bbat->set(newblockIdx, AllocTable::Eof);
-    uint64 bbidx = newblockIdx / (bbat->blockSize / sizeof(uint64));
+    uint64 bbidx = newblockIdx / (bbat->blockSize / sizeof(uint32));
     while (bbidx >= header->num_bat)
         addbbatBlock();
     bbat->markAsDirty(newblockIdx, bbat->blockSize);
@@ -1885,7 +2223,7 @@ uint64 StorageIO::ExtendFile( std::vector<uint64> *chain )
 void StorageIO::addbbatBlock()
 {
     uint64 newblockIdx = bbat->unused();
-    bbat->set(newblockIdx, AllocTable::MetaBat);
+    bbat->set(newblockIdx, AllocTable::Bat);
 
     if (header->num_bat < 109)
         header->bb_blocks[header->num_bat] = newblockIdx;
@@ -1894,7 +2232,7 @@ void StorageIO::addbbatBlock()
         mbatDirty = true;
         mbat_data.push_back(newblockIdx);
         uint64 metaIdx = header->num_bat - 109;
-        uint64 idxPerBlock = bbat->blockSize / sizeof(uint64) - 1; //reserve room for index to next block
+        uint64 idxPerBlock = bbat->blockSize / sizeof(uint32) - 1; //reserve room for index to next block
         uint64 idxBlock = metaIdx / idxPerBlock;
         if (idxBlock == mbat_blocks.size())
         {
@@ -1921,6 +2259,9 @@ StreamIO::StreamIO( StorageIO* s, DirEntry* e)
     eof(false),
     fail(false),
     m_pos(0),
+    ra_buf(),
+    ra_pos(0),
+    ra_len(0),             // indicating an empty readahead window
     cache_data(new unsigned char[CACHEBUFSIZE]),        
     cache_size(0),         // indicating an empty cache
     cache_pos(0)
@@ -2046,59 +2387,96 @@ uint64 StreamIO::read( uint64 pos, unsigned char* data, uint64 maxlen )
   if( maxlen == 0 ) return 0;
 
   uint64 totalbytes = 0;
-  
+
   DirEntry *entry = io->dirtree->entry(entryIdx);
-  if (pos + maxlen > entry->size)
+  if (pos >= entry->size) return 0; // also guards the subtraction below
+  if (maxlen > entry->size - pos)
       maxlen = entry->size - pos;
   if ( entry->size < io->header->threshold )
   {
-    // small file
-    uint64 index = pos / io->sbat->blockSize;
+    // Small file, served out of the same readahead window the big-file branch uses. The
+    // previous form fetched one mini-block per call, and each of those pulled a whole
+    // 4 KiB block, so a caller reading four bytes at a time paid a block read per call.
+    const uint64 miniSize = io->sbat->blockSize;
+    assert(miniSize <= std::numeric_limits<size_t>::max());
 
-    if( index >= blocks.size() ) return 0;
+    if( pos / miniSize >= blocks.size() ) return 0;
 
-    assert(io->sbat->blockSize <= std::numeric_limits<size_t>::max());
-    unsigned char* buf = new unsigned char[ (size_t)io->sbat->blockSize ];
-    uint64 offset = pos % io->sbat->blockSize;
     while( totalbytes < maxlen )
     {
-      if( index >= blocks.size() ) break;
-      io->loadSmallBlock( blocks[(size_t)index], buf, io->bbat->blockSize );
-      uint64 count = io->sbat->blockSize - offset;
-      if( count > maxlen-totalbytes ) count = maxlen-totalbytes;
-      assert(count <= std::numeric_limits<size_t>::max());
-      memcpy( data+totalbytes, buf + offset, (size_t)count );
-      totalbytes += count;
-      offset = 0;
-      index++;
-    }
-    delete[] buf;
+      const uint64 wanted = pos + totalbytes;
+      const bool inWindow = ( ra_len > 0 ) && ( wanted >= ra_pos ) && ( wanted < ra_pos + ra_len );
+      if( !inWindow )
+      {
+        const uint64 index = wanted / miniSize;
+        if( index >= blocks.size() ) break;
 
+        // A mini stream is under the threshold that decides this branch, so the rest of
+        // its chain always fits in one window and one fill covers every later read.
+        const uint64 span = ( static_cast<uint64>( blocks.size() ) - index ) * miniSize;
+        assert(span <= std::numeric_limits<size_t>::max());
+        if( ra_buf.size() < (size_t)span ) ra_buf.resize( (size_t)span );
+
+        const std::vector<uint64> chain( blocks.begin() + (size_t)index, blocks.end() );
+        const uint64 got = io->loadSmallBlocks( chain, ra_buf.data(), span );
+        if( got == 0 ) break;
+
+        ra_pos = index * miniSize;
+        ra_len = got;
+      }
+
+      const uint64 offset = wanted - ra_pos;
+      uint64 count = ra_len - offset;
+      if( count > maxlen - totalbytes ) count = maxlen - totalbytes;
+      assert(count <= std::numeric_limits<size_t>::max());
+      memcpy( data + totalbytes, ra_buf.data() + (size_t)offset, (size_t)count );
+      totalbytes += count;
+    }
   }
   else
   {
-    // big file
-    uint64 index = pos / io->bbat->blockSize;
-    
-    if( index >= blocks.size() ) return 0;
-    
-    assert(io->bbat->blockSize <= std::numeric_limits<size_t>::max());
-    unsigned char* buf = new unsigned char[ (size_t)io->bbat->blockSize ];
-    uint64 offset = pos % io->bbat->blockSize;
+    // Big file, served out of a readahead window rather than a block at a time. The
+    // previous form issued a block-sized read on every call, so a caller reading four
+    // bytes at a time paid a whole block read per four bytes.
+    const uint64 blockSize = io->bbat->blockSize;
+    assert(blockSize <= std::numeric_limits<size_t>::max());
+
+    if( pos / blockSize >= blocks.size() ) return 0;
+
+    const uint64 windowBlocks = (READAHEADBUFSIZE + blockSize - 1) / blockSize;
     while( totalbytes < maxlen )
     {
-      if( index >= blocks.size() ) break;
-      io->loadBigBlock( blocks[(size_t)index], buf, io->bbat->blockSize );
-      uint64 count = io->bbat->blockSize - offset;
-      if( count > maxlen-totalbytes ) count = maxlen-totalbytes;
-      assert(count <= std::numeric_limits<size_t>::max());
-      memcpy( data+totalbytes, buf + offset, (size_t)count );
-      totalbytes += count;
-      index++;
-      offset = 0;
-    }
-    delete [] buf;
+      const uint64 wanted = pos + totalbytes;
+      const bool inWindow = ( ra_len > 0 ) && ( wanted >= ra_pos ) && ( wanted < ra_pos + ra_len );
+      if( !inWindow )
+      {
+        // refill, block aligned so the window maps onto whole blocks
+        const uint64 index = wanted / blockSize;
+        if( index >= blocks.size() ) break;
 
+        uint64 nblocks = static_cast<uint64>( blocks.size() ) - index;
+        if( nblocks > windowBlocks ) nblocks = windowBlocks;
+
+        const uint64 span = nblocks * blockSize;
+        assert(span <= std::numeric_limits<size_t>::max());
+        if( ra_buf.size() < (size_t)span ) ra_buf.resize( (size_t)span );
+
+        const std::vector<uint64> chain( blocks.begin() + (size_t)index,
+                                         blocks.begin() + (size_t)( index + nblocks ) );
+        const uint64 got = io->loadBigBlocks( chain, ra_buf.data(), span );
+        if( got == 0 ) break;
+
+        ra_pos = index * blockSize;
+        ra_len = got;
+      }
+
+      const uint64 offset = wanted - ra_pos;
+      uint64 count = ra_len - offset;
+      if( count > maxlen - totalbytes ) count = maxlen - totalbytes;
+      assert(count <= std::numeric_limits<size_t>::max());
+      memcpy( data + totalbytes, ra_buf.data() + (size_t)offset, (size_t)count );
+      totalbytes += count;
+    }
   }
 
   return totalbytes;
@@ -2229,9 +2607,14 @@ int Storage::result() const
   return (int) io->result;
 }
 
-bool Storage::open(bool bWriteAccess, bool bCreate)
+bool Storage::hasWriteError() const
 {
-  return io->open(bWriteAccess, bCreate);
+  return io->writeError;
+}
+
+bool Storage::open(bool bWriteAccess, bool bCreate, bool bLargeSectors)
+{
+  return io->open(bWriteAccess, bCreate, bLargeSectors);
 }
 
 void Storage::close()
@@ -2265,6 +2648,30 @@ bool Storage::exists( const std::string& name )
 {
     DirEntry* e = io->dirtree->entry( name, false );
     return (e != 0);
+}
+
+uint64 Storage::streamOffset( const std::string& name )
+{
+  DirEntry* e = io->dirtree->entry( name, false );
+  if( !e || e->dir ) return 0;
+
+  if( e->size >= io->header->threshold )
+  {
+    const std::vector<uint64> chain = io->bbat->follow( e->start );
+    if( chain.empty() ) return 0;
+    return io->bbat->blockSize * ( chain[0] + 1 );
+  }
+
+  // Below the threshold the stream lives in the mini-stream container, so its chain is in
+  // mini-block units and has to be resolved through the container's own block chain before
+  // it can be compared with a big stream's offset.
+  const std::vector<uint64> chain = io->sbat->follow( e->start );
+  if( chain.empty() ) return 0;
+  const uint64 pos = chain[0] * io->sbat->blockSize;
+  const uint64 bbindex = pos / io->bbat->blockSize;
+  if( bbindex >= io->sb_blocks.size() ) return 0;
+  return io->bbat->blockSize * ( io->sb_blocks[(size_t)bbindex] + 1 )
+       + ( pos % io->bbat->blockSize );
 }
 
 bool Storage::isWriteable() const

@@ -23,6 +23,7 @@
 #include <thread>
 #include <mutex>
 #include <semaphore>
+#include <atomic>
 #endif
 
 #if defined(ENABLE_OPENGL) && !defined(__STANDALONE__)
@@ -85,9 +86,6 @@ public:
          LINESTRIP
       };
 
-      // Names of the graphics backends selectable on this platform: reported as supported by bgfx and not
-      // filtered out (excludes Noop, WebGPU, and Direct3D12 in release). Single source of truth shared by
-      // the graphics settings UI and the GfxBackend validation/log so they cannot drift.
       static std::vector<std::string> GetSelectableBackendNames();
 
    #elif defined(ENABLE_OPENGL)
@@ -161,7 +159,8 @@ public:
    bool SupportLayeredRendering() const
    {
       #if defined(ENABLE_BGFX)
-      return bgfx::getCaps()->supported & (BGFX_CAPS_INSTANCING | BGFX_CAPS_TEXTURE_2D_ARRAY | BGFX_CAPS_VIEWPORT_LAYER_ARRAY);
+      constexpr uint64_t caps = BGFX_CAPS_VIEWPORT_LAYER_ARRAY;
+      return (bgfx::getCaps()->supported & caps) == caps;
       #elif defined(ENABLE_OPENGL)
       return true;
       #elif defined(ENABLE_DX9)
@@ -179,7 +178,14 @@ public:
 
    void UploadTexture(ITexManCacheable* texture, const bool linearRGB);
    void SetSamplerState(int unit, SamplerFilter filter, SamplerAddressMode clamp_u, SamplerAddressMode clamp_v);
+
+   // Default texture (1x1 Black)
    std::shared_ptr<Sampler> m_nullTexture = nullptr;
+
+   // Stand-in for a texture that could not be created (failed decode, unsupported file, out of memory), so that callers never need to pass a null on (8x8 magenta checker)
+   std::shared_ptr<BaseTexture> m_fallbackTexture = nullptr;
+   std::shared_ptr<const BaseTexture> OrFallback(std::shared_ptr<const BaseTexture> tex) const { return tex ? std::move(tex) : m_fallbackTexture; }
+
    TextureManager m_texMan;
    const bool m_compressTextures;
 
@@ -190,7 +196,7 @@ public:
    vector<std::shared_ptr<SharedIndexBuffer>> m_pendingSharedIndexBuffers;
    vector<std::shared_ptr<SharedVertexBuffer>> m_pendingSharedVertexBuffers;
 
-   bool m_framePending = false;
+   std::atomic<bool> m_framePending = false;
 
    const int m_nEyes;
    Shader* m_uiShader = nullptr;
@@ -260,6 +266,19 @@ private:
    vector<VPX::Window*> m_screenshotWindow;
    vector<std::filesystem::path> m_screenshotFilename;
    std::function<void(bool)> m_screenshotCallback = [](bool) { };
+   #if defined(ENABLE_BGFX)
+   void OnScreenshotCaptured(const char* filePath, uint32_t width, uint32_t height, uint32_t pitch, bgfx::TextureFormat::Enum format, const void* data, uint32_t size, bool yflip);
+   #if defined(ENABLE_XR)
+   void RequestVRScreenshot(RenderTarget* vrRenderTarget, const std::filesystem::path& filename);
+   void ProcessVRScreenshot();
+   bgfx::TextureHandle m_vrScreenshotTex = BGFX_INVALID_HANDLE;
+   vector<uint8_t> m_vrScreenshotData;
+   uint32_t m_vrScreenshotReadyFrame = 0;
+   uint16_t m_vrScreenshotWidth = 0;
+   uint16_t m_vrScreenshotHeight = 0;
+   std::filesystem::path m_vrScreenshotFilename;
+   #endif
+   #endif
 
    uint64_t m_presentTimestampReference = 0;
 
@@ -272,6 +291,8 @@ public:
    bgfx::VertexLayout* m_pVertexTexelDeclaration = nullptr;
    bgfx::VertexLayout* m_pVertexNormalTexelDeclaration = nullptr;
    bgfx::ViewId m_activeViewId = 0;
+   uint16_t m_activeViewClearFlags = BGFX_CLEAR_NONE; // Accumulated clear flags of the active view (BGFX applies a single clear per view, using the last defined state)
+   uint32_t m_activeViewClearColor = 0;
    uint64_t m_bgfxState = 0;
 
    bool m_frameNoPresent = false; // Flag set when the next frame should be submitted without VBlank sync disabled
@@ -280,7 +301,7 @@ public:
    std::binary_semaphore m_frameReadySem { 0 }; // Semaphore to signal when a frame is ready to be submitted
    std::mutex m_frameMutex; // Mutex to lock acces to retained render frame between logic thread and render thread
 
-   std::vector<bgfx::ProgramHandle> m_mipmapPrograms;
+   bgfx::ProgramHandle m_srgbMipmapProgram = BGFX_INVALID_HANDLE;
 
    uint64_t m_lastGPUFrameLength = 0;
 
@@ -304,9 +325,11 @@ private:
    uint32_t m_lastPresentFrameIdx = 0;
    float m_renderLatency = 0.f;
 
-   bool m_renderDeviceAlive;
+   std::atomic<bool> m_renderDeviceAlive;
    std::thread m_renderThread;
+   // Pending uploads are written by the logic thread (e.g. during table load) and consumed by the render thread
    vector<std::shared_ptr<Sampler>> m_pendingTextureUploads;
+   std::mutex m_pendingTextureUploadsMutex;
    std::unique_ptr<ShaderState> m_uniformState = nullptr;
 
    class tBGFXCallback : public bgfx::CallbackI
@@ -347,7 +370,7 @@ public:
 private:
    GLfloat m_maxaniso;
    int m_GLversion;
-   static GLuint m_samplerStateCache[3 * 3 * 5];
+   static GLuint m_samplerStateCache[3 * 3 * 6];
 
    void CaptureGLScreenshot();
 

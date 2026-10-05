@@ -5,7 +5,7 @@
 
 namespace B2SLegacy {
 
-PinMAMEAPI::PinMAMEAPI(MsgPluginAPI* msgApi, uint32_t endpointId, Server* server, ScriptClassDef* serverClassDef)
+PinMAMEAPI::PinMAMEAPI(const MsgPluginAPI* msgApi, uint32_t endpointId, Server* server, ScriptClassDef* serverClassDef)
    : m_server(server),
      m_serverClassDef(serverClassDef),
      m_controllerClassProxy(msgApi, endpointId, "PinMAME_", "PinMAME_Controller", "B2SLegacy_", serverClassDef),
@@ -96,7 +96,7 @@ void PinMAMEAPI::HandleCall(int memberIndex, ScriptVariant* pArgs, ScriptVariant
             gameName = pArgs[0].vString.string;
          LOGI("Setting GameName to '" + gameName + "' in B2S settings");
          m_server->GetB2SSettings()->SetGameName(gameName);
-         m_server->GetB2SSettings()->SetB2SName(""s);
+         m_server->SetB2SName(""s);
       }
    }
    else if (methodName == "Run"sv)

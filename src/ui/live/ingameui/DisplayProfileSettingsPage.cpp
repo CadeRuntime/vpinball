@@ -3,6 +3,7 @@
 #include "core/stdafx.h"
 #include "DisplayProfileSettingsPage.h"
 
+#include "math/matrix.h"
 #include "renderer/RenderCommand.h"
 #include "renderer/Renderer.h"
 #include "utils/color.h"
@@ -288,7 +289,7 @@ void DisplayProfileSettingsPage::Render(float elapsed)
       }
       BaseTexture::Update(m_dmdTexture, 128, 32, BaseTexture::Format::BW_FP32, m_dmdTexture->data());
 
-      m_player->m_renderer->SetupDMDRender(m_selectedProfile, true, vec3(1.f, 1.f, 1.f), m_previewBrightness, m_dmdTexture, 1.0f, Renderer::Reinhard, nullptr, vec4(0.f, 0.f, 0.f, 0.f),
+      m_player->m_renderer->SetupDMDRender(m_selectedProfile, true, vec3(1.f, 1.f, 1.f), m_previewBrightness, m_dmdTexture, 1.0f, 0.f, Renderer::Reinhard, nullptr, vec4(0.f, 0.f, 0.f, 0.f),
          vec3(1.f, 1.f, 1.f), 0.f, nullptr, vec4(0.f, 0.f, 1.f, 1.f), vec3(0.f, 0.f, 0.f));
    }
    else
@@ -354,13 +355,13 @@ void DisplayProfileSettingsPage::Render(float elapsed)
    matWorldViewProj[0].SetIdentity();
    matWorldViewProj[1].SetIdentity();
    const vec4 cameraPos[2] = { { 0.f, 0.f, 0.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
-   m_player->m_renderer->m_renderDevice->m_DMDShader->SetVector(SHADER_cameraPosWorld, &cameraPos[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
-   m_player->m_renderer->m_renderDevice->m_DMDShader->SetMatrix(SHADER_matRotViewProj, &matWorldViewProj[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
+   m_player->m_renderer->m_renderDevice->m_DMDShader->SetVector(ShaderUniform::cameraPosWorld, &cameraPos[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
+   m_player->m_renderer->m_renderDevice->m_DMDShader->SetMatrix(ShaderUniform::matRotViewProj, &matWorldViewProj[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
    #else
    Matrix3D matWorldViewProj[2];
    matWorldViewProj[0] = Matrix3D::MatrixIdentity();
    matWorldViewProj[1] = Matrix3D::MatrixIdentity();
-   m_player->m_renderer->m_renderDevice->m_DMDShader->SetMatrix(SHADER_matWorldViewProj, &matWorldViewProj[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
+   m_player->m_renderer->m_renderDevice->m_DMDShader->SetMatrix(ShaderUniform::matWorldViewProj, &matWorldViewProj[0], m_player->m_renderer->m_renderDevice->GetCurrentRenderTarget()->m_nLayers);
    #endif
    m_player->m_renderer->m_renderDevice->DrawTexturedQuad(m_player->m_renderer->m_renderDevice->m_DMDShader, vertices);
    m_player->m_renderer->m_renderDevice->GetCurrentPass()->m_commands.back()->SetTransparent(true);

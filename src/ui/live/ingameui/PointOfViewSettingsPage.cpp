@@ -46,13 +46,19 @@ void PointOfViewSettingsPage::Close(bool isBackwardAnimation)
       m_player->m_renderer->DisableStaticPrePass(false);
 }
 
+bool PointOfViewSettingsPage::IsPovEditAction() const
+{
+   // POV edit playtests from the editor run on a live copy of the edited table: only standalone sessions
+   // (PovEdit command line action) are meant to close the application once the user is done
+   return m_player->m_playMode == Player::PlayMode::EditPOV && m_player->m_ptable->m_liveBaseTable == nullptr;
+}
+
 void PointOfViewSettingsPage::Save()
 {
    InGameUIPage::Save();
 
-   // FIXME this should be part of the action, not of the ingameui
-   /* FIXME if (g_app->m_commandLineProcessor.m_povEdit)
-      g_pvp->QuitPlayer(Player::CloseState::CS_CLOSE_APP); */
+   if (IsPovEditAction())
+      m_player->SetCloseState(Player::CS_CLOSE_APP);
 }
 
 void PointOfViewSettingsPage::ResetToStoredValues()
@@ -62,9 +68,8 @@ void PointOfViewSettingsPage::ResetToStoredValues()
    UpdateDefaults();
    RequestRebuild();
 
-   // FIXME this should be part of the action, not of the ingameui
-   /* FIXME if (g_app->m_commandLineProcessor.m_povEdit)
-      g_pvp->QuitPlayer(Player::CloseState::CS_CLOSE_APP);*/
+   if (IsPovEditAction())
+      m_player->SetCloseState(Player::CS_CLOSE_APP);
 }
 
 void PointOfViewSettingsPage::ResetToDefaults()
@@ -74,7 +79,7 @@ void PointOfViewSettingsPage::ResetToDefaults()
    if (ViewSetup& viewSetup = GetCurrentViewSetup(); viewSetup.mMode == VLM_WINDOW)
    {
       const PinTable* table = m_player->m_ptable;
-      const float screenInclination = table->m_settings.GetPlayer_ScreenInclination();
+      const float screenInclination = table->GetSettings().GetPlayer_ScreenInclination();
       viewSetup.SetViewPosFromPlayerPosition(table, m_playerPos, screenInclination);
    }
    OnPointOfViewChanged();
@@ -285,7 +290,7 @@ void PointOfViewSettingsPage::BuildPage()
       [this](float, float v)
       {
          m_playerPos.x = v;
-         const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+         const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
          GetCurrentViewSetup().SetViewPosFromPlayerPosition(m_player->m_ptable, m_playerPos, screenInclination);
          OnPointOfViewChanged();
          RequestRebuild();
@@ -298,7 +303,7 @@ void PointOfViewSettingsPage::BuildPage()
       [this](float, float v)
       {
          m_playerPos.y = v;
-         const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+         const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
          GetCurrentViewSetup().SetViewPosFromPlayerPosition(m_player->m_ptable, m_playerPos, screenInclination);
          OnPointOfViewChanged();
          RequestRebuild();
@@ -311,7 +316,7 @@ void PointOfViewSettingsPage::BuildPage()
       [this](float, float v)
       {
          m_playerPos.z = v;
-         const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+         const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
          GetCurrentViewSetup().SetViewPosFromPlayerPosition(m_player->m_ptable, m_playerPos, screenInclination);
          OnPointOfViewChanged();
          RequestRebuild();
@@ -374,7 +379,7 @@ void PointOfViewSettingsPage::BuildPage()
       [this](float, float v)
       {
          GetCurrentViewSetup().mWindowTopZOfs = v;
-         const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+         const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
          m_player->m_ptable->GetViewSetup().SetViewPosFromPlayerPosition(m_player->m_ptable, m_playerPos, screenInclination);
          OnPointOfViewChanged();
          RequestRebuild(); // As it changes the real to virtual world scale
@@ -386,7 +391,7 @@ void PointOfViewSettingsPage::BuildPage()
       [this](float, float v)
       {
          GetCurrentViewSetup().mWindowBottomZOfs = v;
-         const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+         const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
          m_player->m_ptable->GetViewSetup().SetViewPosFromPlayerPosition(m_player->m_ptable, m_playerPos, screenInclination);
          OnPointOfViewChanged();
          RequestRebuild(); // As it changes the real to virtual world scale
@@ -479,7 +484,7 @@ void PointOfViewSettingsPage::Render(float elapsed)
 {
    if ((m_player->m_ptable->GetViewMode() == ViewSetupID::BG_FULLSCREEN) && (m_player->m_ptable->GetViewSetup().mMode == VLM_WINDOW))
    {
-      const float screenInclination = m_player->m_ptable->m_settings.GetPlayer_ScreenInclination();
+      const float screenInclination = g_settingsService.GetActiveSettings().GetPlayer_ScreenInclination();
       m_playerPos = m_player->m_ptable->GetViewSetup().GetPlayerPositionFromViewPos(m_player->m_ptable, screenInclination);
    }
 

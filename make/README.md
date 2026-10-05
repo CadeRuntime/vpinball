@@ -61,6 +61,41 @@ cmake -DPLATFORM=windows -DARCH=x86 -B build
 
 All combinations — including the iOS/Android shared-library builds — are handled by the single root `CMakeLists.txt`; an unsupported combination prints the list of supported ones. The source manifests live in `make/CMakeLists_sources.txt` and the plugins in `make/CMakeLists_plugins.txt`.
 
+### Building only the plugins
+
+Set `-DBUILD_APP=OFF` to build the plugins without the application. Each plugin is written to `<build>/plugins/<name>/`, or to `-DPLUGINS_DIR` if set:
+
+```bash
+cmake -DBUILD_APP=OFF -DPLUGINS_DIR=/path/to/plugins -DCMAKE_BUILD_TYPE=Release -B build
+cmake --build build
+```
+
+To build specific plugins, name their targets:
+
+```bash
+cmake --build build --target PinMAMEPlugin SerumPlugin
+```
+
+### Building and running the tests
+
+The `vpx-test` target (a doctest runner sharing the application sources, equivalent of the
+MSVC `vpx-test` project) is excluded from the default build and available on windows,
+windows-mingw, macos and linux:
+
+```bash
+cmake --build build --target vpx-test
+```
+
+The content of `tests/assets` is copied to a `test-assets` folder next to the executable.
+Run it from there; tests tagged `[render]` need a GPU/display, the rest are headless:
+
+```bash
+./build/vpx-test --test-case-exclude="*[render]*"
+```
+
+* A relative `PLUGINS_DIR` is resolved against the build directory.
+* `PLUGINS_DIR` is ignored when the application is built, and on iOS and Android, where the plugins are static libraries linked into the application.
+
 #### Supported Platforms
 
 <details open>
@@ -120,7 +155,7 @@ build/VPinballX_BGFX.app/Contents/MacOS/VPinballX_BGFX -play src/assets/exampleT
 
 ```
 sudo apt-get update
-sudo apt install git build-essential pkg-config autoconf automake libtool cmake nasm bison curl zlib1g-dev libdrm-dev libgbm-dev libglu1-mesa-dev libegl-dev libgl1-mesa-dev libwayland-dev libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libpipewire-0.3-dev
+sudo apt install git build-essential pkg-config autoconf automake libtool cmake nasm bison curl python3 zlib1g-dev libdrm-dev libgbm-dev libglu1-mesa-dev libegl-dev libgl1-mesa-dev libwayland-dev libwayland-egl-backend-dev libudev-dev libx11-dev libxcursor-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev libxrandr-dev libasound2-dev libpipewire-0.3-dev
 platforms/linux-x64/external.sh
 cmake -DCMAKE_BUILD_TYPE=Release -B build
 cmake --build build -- -j$(nproc)
@@ -143,26 +178,26 @@ cmake --build build/ios-arm64 -- -j$(sysctl -n hw.ncpu)
 #cmake -DPLATFORM=ios-simulator -DARCH=arm64 -DCMAKE_BUILD_TYPE=Release -B build/ios-simulator-arm64
 #cmake --build build/ios-simulator-arm64 -- -j$(sysctl -n hw.ncpu)
 
-open standalone/ios/VPinball.xcodeproj
+open apps/ios/VPinball.xcodeproj
 ```
 </details>
 
 <details>
 <summary>android-arm64-v8a (Mobile)</summary>
 
-> Minimum supported version: Android 13 (API level 33)
+> Minimum supported version: Android 13 (API level 33). Targets Android 16 (API level 36) and compiles against API level 37, so the `android-37` platform must be installed in the Android SDK.
 
 ```
 brew install cmake bison curl
 export PATH="$(brew --prefix bison)/bin:$PATH"
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-export ANDROID_HOME=/Users/jmillard/Library/Android/sdk
-export ANDROID_NDK=/Users/jmillard/Library/Android/sdk/ndk/28.2.13676358
-export ANDROID_NDK_HOME=/Users/jmillard/Library/Android/sdk/ndk/28.2.13676358
+export ANDROID_HOME=$HOME/Library/Android/sdk
+export ANDROID_NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358
+export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/28.2.13676358
 platforms/android-arm64-v8a/external.sh
 cmake -DPLATFORM=android -DARCH=arm64-v8a -DCMAKE_BUILD_TYPE=Release -B build/android-arm64-v8a
 cmake --build build/android-arm64-v8a -- -j$(sysctl -n hw.ncpu)
-cd standalone/android
+cd apps/android
 ./gradlew assembleMobileDebug
 ```
 </details>
@@ -170,17 +205,19 @@ cd standalone/android
 <details>
 <summary>android-arm64-v8a (Quest)</summary>
 
+> Same SDK requirements as the mobile build: minimum Android 13 (API level 33), targets API level 36, compiles against API level 37.
+
 ```
 brew install cmake bison curl
 export PATH="$(brew --prefix bison)/bin:$PATH"
 export JAVA_HOME=$(/usr/libexec/java_home -v 21)
-export ANDROID_HOME=/Users/jmillard/Library/Android/sdk
-export ANDROID_NDK=/Users/jmillard/Library/Android/sdk/ndk/28.2.13676358
-export ANDROID_NDK_HOME=/Users/jmillard/Library/Android/sdk/ndk/28.2.13676358
+export ANDROID_HOME=$HOME/Library/Android/sdk
+export ANDROID_NDK=$HOME/Library/Android/sdk/ndk/28.2.13676358
+export ANDROID_NDK_HOME=$HOME/Library/Android/sdk/ndk/28.2.13676358
 platforms/android-arm64-v8a/external.sh
 cmake -DPLATFORM=android -DARCH=arm64-v8a -DENABLE_XR=ON -DCMAKE_BUILD_TYPE=Release -B build/android-arm64-v8a
 cmake --build build/android-arm64-v8a -- -j$(sysctl -n hw.ncpu)
-cd standalone/android
+cd apps/android
 ./gradlew assembleQuestDebug
 ```
 </details>
@@ -282,6 +319,45 @@ build/VPinballX_BGFX -play src/assets/exampleTable.vpx
 
 > [!NOTE]
 > Instructions for unsupported platforms are provided as-is and are not officially maintained by the team. Community contributions to improve and update them are welcome.
+
+## Running and debugging
+
+After building, run a table from the build folder:
+
+**macOS:**
+```
+build/VPinballX_BGFX.app/Contents/MacOS/VPinballX_BGFX -play src/assets/exampleTable.vpx
+```
+
+**Linux:**
+```
+build/VPinballX_BGFX -play src/assets/exampleTable.vpx
+```
+
+Use `-h` to list all options, or see [Command Line](<../docs/Command Line.md>).
+
+### Visual Studio Code (macOS, Linux)
+
+- Install the [C/C++ Extension Pack](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools-extension-pack) extension.
+- Open the `vpinball` folder.
+- If prompted, select the latest clang (macOS) or gcc (Linux) kit.
+- Go to `Settings` -> `CMake: Debug Config` and click `Edit in settings.json`.
+- Update `settings.json` with:
+  ```
+  "cmake.debugConfig": {
+     "args": [ "-play", "${workspaceFolder}/src/assets/exampleTable.vpx" ]
+  }
+  ```
+- Click the bug button (to the left of the play button) in the bottom bar.
+
+### iOS and Android
+
+- iOS: build `libvpinball` as described above, then open `apps/ios/VPinball.xcodeproj` in Xcode and run on a device or simulator.
+- Android: build `libvpinball` as described above, then open `apps/android` in Android Studio and select the `mobile` or `quest` build variant.
+
+### Table script patches
+
+Some older tables need their scripts patched to run with the Wine VBScript engine. A patched script named after the table and placed next to it is used instead of the embedded one (see [File Layout](../docs/FileLayout.md)). Community patches are collected in the [vpx-standalone-scripts](https://github.com/jsm174/vpx-standalone-scripts) repository.
 
 ## Continuous Integration
 

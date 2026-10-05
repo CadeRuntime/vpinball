@@ -35,46 +35,41 @@ CVPreference::CVPreference(const COLORREF crTextColor, const bool bDisplay, cons
 
 void CVPreference::SetCheckBox(const HWND hwndDlg)
 {
-#ifndef __STANDALONE__
    SNDMSG(GetDlgItem(hwndDlg, IDC_ChkBox_code), BM_SETCHECK, m_highlight ? BST_CHECKED : BST_UNCHECKED, 0L);
-#endif
 }
 
 void CVPreference::ReadCheckBox(const HWND hwndDlg)
 {
-#ifndef __STANDALONE__
    m_highlight = !!IsDlgButtonChecked(hwndDlg, IDC_ChkBox_code);
-#endif
 }
 
 void CVPreference::GetPrefsFromReg()
 {
-   m_highlight = g_app->m_settings.GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName).value());
-   m_rgb = g_app->m_settings.GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_color").value());
-   m_pointSize = g_app->m_settings.GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontPointSize").value());
-   string tmp = g_app->m_settings.GetString(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_Font").value());
+   m_highlight = g_settingsService.GetAppSettings().GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName).value());
+   m_rgb = g_settingsService.GetAppSettings().GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_color").value());
+   m_pointSize = g_settingsService.GetAppSettings().GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontPointSize").value());
+   string tmp = g_settingsService.GetAppSettings().GetString(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_Font").value());
    strncpy_s(m_logFont.lfFaceName, std::size(m_logFont.lfFaceName), tmp.c_str());
-   m_logFont.lfWeight = g_app->m_settings.GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontWeight").value());
-   m_logFont.lfItalic = g_app->m_settings.GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontItalic").value());
-   m_logFont.lfUnderline = g_app->m_settings.GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontUnderline").value());
-   m_logFont.lfStrikeOut = g_app->m_settings.GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontStrike").value());
+   m_logFont.lfWeight = g_settingsService.GetAppSettings().GetInt(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontWeight").value());
+   m_logFont.lfItalic = g_settingsService.GetAppSettings().GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontItalic").value());
+   m_logFont.lfUnderline = g_settingsService.GetAppSettings().GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontUnderline").value());
+   m_logFont.lfStrikeOut = g_settingsService.GetAppSettings().GetBool(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontStrike").value());
 }
 
 void CVPreference::SetPrefsToReg()
 {
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName).value(), m_highlight, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_color").value(), (int)m_rgb, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontPointSize").value(), m_pointSize, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_Font").value(), string(m_logFont.lfFaceName), false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontWeight").value(), (int)m_logFont.lfWeight, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontItalic").value(), m_logFont.lfItalic, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontUnderline").value(), m_logFont.lfUnderline, false);
-   g_app->m_settings.Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontStrike").value(), m_logFont.lfStrikeOut, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName).value(), m_highlight, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_color").value(), (int)m_rgb, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontPointSize").value(), m_pointSize, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_Font").value(), string(m_logFont.lfFaceName), false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontWeight").value(), (int)m_logFont.lfWeight, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontItalic").value(), m_logFont.lfItalic, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontUnderline").value(), m_logFont.lfUnderline, false);
+   g_settingsService.GetAppSettings().Set(Settings::GetRegistry().GetPropertyId("CVEdit"s, m_regName + "_FontStrike").value(), m_logFont.lfStrikeOut, false);
 }
 
 void CVPreference::SetDefaultFont(const HWND hwndDlg)
 {
-#ifndef __STANDALONE__
 	LOGFONT* const plfont = &m_logFont;
 	memset(plfont, 0, sizeof(LOGFONT));
 	HFONT hFont = (HFONT)GetStockObject(ANSI_FIXED_FONT);
@@ -83,23 +78,17 @@ void CVPreference::SetDefaultFont(const HWND hwndDlg)
 	GetObject(hFont, sizeof(LOGFONT), plfont);
 	m_pointSize = 10;
 	GetHeightFromPointSize(hwndDlg);
-#endif
 }
 
 int CVPreference::GetHeightFromPointSize(const HWND hwndDlg)
 {
-#ifndef __STANDALONE__
 	const CClientDC clientDC(hwndDlg);
 	const int Height = -MulDiv(m_pointSize, clientDC.GetDeviceCaps(LOGPIXELSY), 72);
 	return Height;
-#else
-	return 0;
-#endif
 }
 
 void CVPreference::ApplyPreferences(const HWND hwndScin, const CVPreference* DefaultPref)
 {
-#ifndef __STANDALONE__
 	const int id = m_sciKeywordID;
 	const bool HL = m_highlight;
 	SendMessage(hwndScin, SCI_STYLESETFORE,      id, HL ? (LPARAM)m_rgb : (LPARAM)DefaultPref->m_rgb);
@@ -109,5 +98,4 @@ void CVPreference::ApplyPreferences(const HWND hwndScin, const CVPreference* Def
 	SendMessage(hwndScin, SCI_STYLESETITALIC,    id, HL ? (LPARAM)m_logFont.lfItalic : (LPARAM)DefaultPref->m_logFont.lfItalic);
 	SendMessage(hwndScin, SCI_STYLESETUNDERLINE, id, HL ? (LPARAM)m_logFont.lfUnderline : (LPARAM)DefaultPref->m_logFont.lfUnderline);
 	// There is no strike through in Scintilla (yet!)
-#endif
 }

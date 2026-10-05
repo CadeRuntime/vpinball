@@ -80,8 +80,9 @@ void PlungerSettingsPage::Close(bool isBackwardAnimation)
 void PlungerSettingsPage::AppendPlot()
 {
    const float t = static_cast<float>((double)msec() / 1000.);
-   m_positionPlot.AddPoint(t, m_player->m_pininput.m_plungerHandler->GetPosition());
-   m_velocityPlot.AddPoint(t, m_player->m_pininput.m_plungerHandler->GetVelocity());
+   constexpr float visualRestPos = 0.1666666f;
+   m_positionPlot.AddPoint(t, -m_player->m_pininput.m_plungerHandler->GetPosition(visualRestPos) + visualRestPos);
+   m_velocityPlot.AddPoint(t, -m_player->m_pininput.m_plungerHandler->GetHitVelocity(visualRestPos));
 }
 
 void PlungerSettingsPage::Render(float elapsed)
@@ -104,6 +105,12 @@ void PlungerSettingsPage::Render(float elapsed)
 
    AppendPlot();
 
+   const float now = static_cast<float>(static_cast<double>(msec()) / 1000.);
+   const float lastHitDelayMs = static_cast<float>(static_cast<double>(g_pplayer->m_time_msec - m_player->m_physics->GetLastPlungerHit()) / 1000.);
+   const float tLastHit = (lastHitDelayMs < m_positionPlot.m_timeSpan) && (fmodf(now, m_positionPlot.m_timeSpan) >= fmodf(now - lastHitDelayMs, m_positionPlot.m_timeSpan))
+      ? fmodf(now - lastHitDelayMs, m_positionPlot.m_timeSpan)
+      : 0.f;
+
    if (ImPlot::BeginPlot("##Plunger", ImVec2(plotWidth, plotHeight), ImPlotFlags_None))
    {
       ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
@@ -111,16 +118,21 @@ void PlungerSettingsPage::Render(float elapsed)
       ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault);
       ImPlot::SetupAxisLimits(ImAxis_X1, 0, m_positionPlot.m_timeSpan, ImGuiCond_Always);
       ImPlot::SetupAxisLimits(ImAxis_Y1, -1.2f, 1.2f, ImGuiCond_Always);
-      if (m_velocityPlot.HasData() && m_player->m_pininput.m_plungerHandler->HasVelocity())
+      ImPlot::SetupAxisLimits(ImAxis_Y2, -10.2f, 10.2f, ImGuiCond_Always);
+      if (m_velocityPlot.HasData())
       {
-         ImPlot::PlotLine("Speed", &m_velocityPlot.m_data[0].x, &m_velocityPlot.m_data[0].y, m_velocityPlot.m_data.size(),
+         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+         ImPlot::PlotLine("Hit Velocity", &m_velocityPlot.m_data[0].x, &m_velocityPlot.m_data[0].y, m_velocityPlot.m_data.size(),
             { ImPlotProp_FillColor, ImVec4(1, 0, 0, 0.25f), ImPlotProp_Offset, m_velocityPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       }
       if (m_positionPlot.HasData())
       {
+         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
          ImPlot::PlotLine("Position", &m_positionPlot.m_data[0].x, &m_positionPlot.m_data[0].y, m_positionPlot.m_data.size(),
             { ImPlotProp_Offset, m_positionPlot.m_offset, ImPlotProp_Stride, 2 * (int)sizeof(float) });
       }
+      if (tLastHit > 0.f)
+         ImPlot::PlotInfLines("Hit", &tLastHit, 1);
       ImPlot::EndPlot();
    }
 

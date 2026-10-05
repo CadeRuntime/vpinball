@@ -62,11 +62,33 @@ static void NormalizeNormals()
 }
 #endif
 
-bool ObjLoader::Load(const string& filename, const bool flipTv, const bool convertToLeftHanded)
+// fscanf_s takes the sizes of string buffers, but standalone builds map it to fscanf (see main.h) which does not:
+// the widths in the formats bound the reads there
+#ifdef __STANDALONE__
+#define SCANF_BUFFER_SIZE(buffer)
+#else
+#define SCANF_BUFFER_SIZE(buffer) , static_cast<unsigned int>(std::size(buffer))
+#endif
+
+bool ObjLoader::Load(const std::filesystem::path& filename, const MeshUnits units)
 {
-   FILE* f;
-   if ((fopen_s(&f, filename.c_str(), "r") != 0) || !f)
+   FILE* const f = open_file(filename, "r");
+   if (!f)
       return false;
+
+   // Convert from the file's convention to VPX's (left-handed, X to the right, Y toward the player, Z up, in VP units)
+   const auto convertAxes = [units](Vertex3Ds& v)
+   {
+      if (units == MeshUnits::VPUnits)
+         v.z = -v.z;
+      else // MeshUnits::Meters
+      {
+         const float y = v.y;
+         v.y = v.z;
+         v.z = y;
+      }
+   };
+   const float unitsToVpu = (units == MeshUnits::Meters) ? MTOVPU(1.f) : 1.f;
 
    m_tmpVerts.clear();
    m_tmpTexel.clear();
@@ -83,11 +105,7 @@ bool ObjLoader::Load(const string& filename, const bool flipTv, const bool conve
    while (true)
    {
       char lineHeader[256];
-      const int res = fscanf_s(f, "\n%s", lineHeader
-#ifndef __STANDALONE__
-      ,static_cast<unsigned int>(std::size(lineHeader))
-#endif
-      );
+      const int res = fscanf_s(f, "\n%255s", lineHeader SCANF_BUFFER_SIZE(lineHeader));
       if (res == EOF)
       {
          fclose(f);
@@ -102,8 +120,8 @@ bool ObjLoader::Load(const string& filename, const bool flipTv, const bool conve
             ShowError("Error parsing `v`");
             goto Error;
          }
-         if (convertToLeftHanded)
-            tmp.z = -tmp.z;
+         convertAxes(tmp);
+         tmp *= unitsToVpu;
          m_tmpVerts.push_back(tmp);
       }
       else if (lineHeader == "vt"sv)
@@ -114,8 +132,8 @@ bool ObjLoader::Load(const string& filename, const bool flipTv, const bool conve
             ShowError("Error parsing `vt`");
             goto Error;
          }
-         if (flipTv || convertToLeftHanded)
-            tmp.y = 1.f - tmp.y;
+         // Wavefront UV origin is bottom-left while VPX uses top-left
+         tmp.y = 1.f - tmp.y;
          m_tmpTexel.push_back(tmp);
       }
       else if (lineHeader == "vn"sv)
@@ -126,8 +144,7 @@ bool ObjLoader::Load(const string& filename, const bool flipTv, const bool conve
             ShowError("Error parsing `vn`");
             goto Error;
          }
-         if (convertToLeftHanded)
-            tmp.z = -tmp.z;
+         convertAxes(tmp);
          m_tmpNorms.push_back(tmp);
       }
       else if (lineHeader == "f"sv)
@@ -171,8 +188,8 @@ bool ObjLoader::Load(const string& filename, const bool flipTv, const bool conve
             goto Error;
          }
 
-         if (convertToLeftHanded)
-            std::ranges::reverse(faceVerts.begin(), faceVerts.end());
+         // Both supported file conventions are right-handed: reverse winding to compensate for the axis conversion
+         std::ranges::reverse(faceVerts.begin(), faceVerts.end());
 
          // triangulate the face (assumes convex face)
          MyPoly tmpFace;
@@ -279,7 +296,7 @@ Error:
    return false;
 }
 
-void ObjLoader::Save(const string& filename, const string& description, const Mesh& mesh)
+bool ObjLoader::Save(const std::filesystem::path& filename, const string& description, const Mesh& mesh, const MeshUnits units)
 {
    /*
    f = fopen(filename.c_str(), "wt");
@@ -313,19 +330,18 @@ void ObjLoader::Save(const string& filename, const string& description, const Me
    */
    if (mesh.m_animationFrames.empty())
    {
-      ExportStart(filename);
+      if (!ExportStart(filename))
+         return false;
       fprintf_s(m_fHandle, "# Visual Pinball OBJ file\n");
       fprintf_s(m_fHandle, "# numVerts: %u numFaces: %u\n", (unsigned int)mesh.NumVertices(), (unsigned int)mesh.NumIndices());
       WriteObjectName(description);
-      WriteVertexInfo(mesh.m_vertices.data(), (unsigned int)mesh.m_vertices.size());
+      WriteVertexInfo(mesh.m_vertices.data(), (unsigned int)mesh.m_vertices.size(), units);
       WriteFaceInfoLong(mesh.m_indices);
       ExportEnd();
    }
    else
    {
-      const std::size_t pos = filename.find_last_of('.');
-      assert(pos != string::npos);
-      const string name = filename.substr(0, pos);
+      const std::filesystem::path name = std::filesystem::path(filename).replace_extension();
       for (unsigned int i = 0; i < (unsigned int)mesh.m_animationFrames.size(); i++)
       {
          vector<Vertex3D_NoTex2> vertsTmp = mesh.m_vertices;
@@ -340,60 +356,85 @@ void ObjLoader::Save(const string& filename, const string& description, const Me
             vertsTmp[t].ny = vi.ny;
             vertsTmp[t].nz = vi.nz;
          }
-         const string fname = name + '_' + std::format("{:05}", i) + ".obj";
-         ExportStart(fname);
+         const std::filesystem::path fname = std::filesystem::path(name) += std::format("_{:05}.obj", i);
+         if (!ExportStart(fname))
+            return false;
          fprintf_s(m_fHandle, "# Visual Pinball OBJ file\n");
          fprintf_s(m_fHandle, "# numVerts: %u numFaces: %u\n", (unsigned int)mesh.NumVertices(), (unsigned int)mesh.NumIndices());
          WriteObjectName(description);
-         WriteVertexInfo(vertsTmp.data(), (unsigned int)mesh.m_vertices.size());
+         WriteVertexInfo(vertsTmp.data(), (unsigned int)mesh.m_vertices.size(), units);
          WriteFaceInfoLong(mesh.m_indices);
          ExportEnd();
       }
    }
-}
-
-bool ObjLoader::ExportStart(const string& filename)
-{
-#ifndef __STANDALONE__
-   const string matname = filename.substr(0, filename.find_last_of('.')) + ".mtl";
-   if ((fopen_s(&m_matFile, matname.c_str(), "wt") != 0) || !m_matFile)
-      return false;
-   fprintf_s(m_matFile, "# Visual Pinball table mat file\n");
-
-   if ((fopen_s(&m_fHandle, filename.c_str(), "wt") != 0) || !m_fHandle)
-      return false;
-   m_faceIndexOffset = 0;
-   fprintf_s(m_fHandle, "# Visual Pinball table OBJ file\n");
-   const size_t pos = matname.find_last_of(PATH_SEPARATOR_CHAR);
-   const string nameonly = pos != string::npos ? matname.substr(pos+1) : matname;
-   fprintf_s(m_fHandle, "mtllib %s\n", nameonly.c_str());
-#endif
    return true;
 }
 
-void ObjLoader::WriteVertexInfo(const Vertex3D_NoTex2* verts, unsigned int numVerts)
+bool ObjLoader::ExportStart(const std::filesystem::path& filename)
 {
+   const std::filesystem::path matname = std::filesystem::path(filename).replace_extension(".mtl");
+   m_matFile = open_file(matname, "wt");
+   if (m_matFile == nullptr)
+      return false;
+   m_fHandle = open_file(filename, "wt");
+   if (m_fHandle == nullptr)
+   {
+      ExportEnd();
+      std::error_code ec;
+      std::filesystem::remove(matname, ec); // No material file without its mesh
+      return false;
+   }
+   fprintf_s(m_matFile, "# Visual Pinball table mat file\n");
+   m_faceIndexOffset = 0;
+   fprintf_s(m_fHandle, "# Visual Pinball table OBJ file\n");
+   fprintf_s(m_fHandle, "mtllib %s\n", PathToUTF8(matname.filename()).c_str()); // OBJ text is UTF-8
+   return true;
+}
+
+void ObjLoader::WriteVertexInfo(const Vertex3D_NoTex2* verts, unsigned int numVerts, const MeshUnits units)
+{
+   // Convert from VPX's convention (left-handed, X to the right, Y toward the player, Z up, in VP units) to the file's one
+   const auto convertAxes = [units](Vertex3Ds& v)
+   {
+      if (units == MeshUnits::VPUnits)
+         v.z = -v.z;
+      else // MeshUnits::Meters
+      {
+         const float y = v.y;
+         v.y = v.z;
+         v.z = y;
+      }
+   };
+   const float vpuToUnits = (units == MeshUnits::Meters) ? VPUTOM(1.f) : 1.f;
+
    for (unsigned i = 0; i < numVerts; i++)
    {
-      fprintf_s(m_fHandle, "v %f %f %f\n", verts[i].x, verts[i].y, -verts[i].z);
+      Vertex3Ds v(verts[i].x, verts[i].y, verts[i].z);
+      convertAxes(v);
+      v *= vpuToUnits;
+      fprintf_s(m_fHandle, "v %f %f %f\n", v.x, v.y, v.z);
    }
    for (unsigned i = 0; i < numVerts; i++)
    {
       float tu = verts[i].tu;
       float tv = 1.f - verts[i].tv;
-      if (infNaN(tu)) tu = 0.0f;
-      if (infNaN(tv)) tv = 0.0f;
+      if (infNaN(tu))
+         tu = 0.0f;
+      if (infNaN(tv))
+         tv = 0.0f;
       fprintf_s(m_fHandle, "vt %f %f\n", tu, tv);
    }
    for (unsigned i = 0; i < numVerts; i++)
    {
-      float nx = verts[i].nx;
-      float ny = verts[i].ny;
-      float nz = verts[i].nz;
-      if (infNaN(nx)) nx = 0.0f;
-      if (infNaN(ny)) ny = 0.0f;
-      if (infNaN(nz)) nz = 0.0f;
-      fprintf_s(m_fHandle, "vn %f %f %f\n", nx, ny, -nz);
+      Vertex3Ds n(verts[i].nx, verts[i].ny, verts[i].nz);
+      if (infNaN(n.x))
+         n.x = 0.0f;
+      if (infNaN(n.y))
+         n.y = 0.0f;
+      if (infNaN(n.z))
+         n.z = 0.0f;
+      convertAxes(n);
+      fprintf_s(m_fHandle, "vn %f %f %f\n", n.x, n.y, n.z);
    }
 }
 
@@ -428,17 +469,16 @@ void ObjLoader::WriteFaceInfoList(const WORD* faces, const unsigned int numIndic
    }
 }
 
-bool ObjLoader::LoadMaterial(const string& filename, Material* const mat)
+bool ObjLoader::LoadMaterial(const std::filesystem::path& filename, Material* const mat)
 {
-#ifndef __STANDALONE__
-   FILE* f;
-   if ((fopen_s(&f, filename.c_str(), "r") != 0) || !f)
+   FILE* const f = open_file(filename, "r");
+   if (!f)
       return false;
 
    while (true)
    {
       char lineHeader[256];
-      const int res = fscanf_s(f, "\n%s", lineHeader, static_cast<unsigned int>(std::size(lineHeader)));
+      const int res = fscanf_s(f, "\n%255s", lineHeader SCANF_BUFFER_SIZE(lineHeader));
       if (res == EOF)
       {
          fclose(f);
@@ -446,8 +486,9 @@ bool ObjLoader::LoadMaterial(const string& filename, Material* const mat)
       }
       if (lineHeader == "newmtl"sv)
       {
-         char buf[MAXSTRING];
-         fscanf_s(f, "%s\n", buf, MAXSTRING);
+         char buf[256];
+         buf[0] = '\0';
+         fscanf_s(f, "%255s\n", buf SCANF_BUFFER_SIZE(buf));
          mat->m_name = buf;
       }
       else if (lineHeader == "Ns"sv)
@@ -503,7 +544,6 @@ bool ObjLoader::LoadMaterial(const string& filename, Material* const mat)
       }
    }
    fclose(f);
-#endif
    return true;
 }
 
@@ -527,3 +567,5 @@ void ObjLoader::WriteMaterial(string texelName, string texelFilename, const Mate
       fprintf_s(m_matFile, "map_ka %s\n\n", texelFilename.c_str());
    }
 }
+
+#undef SCANF_BUFFER_SIZE

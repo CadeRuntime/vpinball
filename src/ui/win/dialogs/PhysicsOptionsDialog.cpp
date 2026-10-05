@@ -9,6 +9,7 @@
 
 #include "core/VPApp.h"
 #include "parts/pintable.h"
+#include "ui/win/PinTableWnd.h"
 #include "ui/win/resource.h"
 #include "ui/win/WinEditor.h"
 
@@ -18,7 +19,9 @@ static string physicsoptions[num_physicsoptions];
 static unsigned int physicsselection = 0;
 
 
-PhysicsOptionsDialog::PhysicsOptionsDialog() : CDialog(IDD_PHYSICS_OPTIONS)
+PhysicsOptionsDialog::PhysicsOptionsDialog(PinTableWnd* tableEditor)
+   : CDialog(IDD_PHYSICS_OPTIONS)
+   , m_tableEditor(tableEditor)
 {
 }
 
@@ -30,48 +33,48 @@ BOOL PhysicsOptionsDialog::OnInitDialog()
     ::SendMessage(hwndList, LB_RESETCONTENT, 0, 0);
     for (unsigned int i = 0; i < num_physicsoptions; i++)
     {
-        physicsoptions[i] = g_app->m_settings.GetPlayer_PhysicsSetName(i);
+        physicsoptions[i] = g_settingsService.GetAppSettings().GetPlayer_PhysicsSetName(i);
         string tmp = std::to_string(i + 1) + ": " + physicsoptions[i];
         const size_t index = ::SendMessage(hwndList, LB_ADDSTRING, 0, (size_t)tmp.c_str());
     }
     ::SendMessage(hwndList, LB_SETCURSEL, physicsselection, 0);
     ::SendMessage(hwndList, WM_SETREDRAW, TRUE, 0);
 
-    const float FlipperPhysicsMass = g_app->m_settings.GetPlayer_FlipperPhysicsMass(physicsselection);
+    const float FlipperPhysicsMass = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsMass(physicsselection);
     SetItemText(DISPID_Flipper_Speed, FlipperPhysicsMass);
-    const float FlipperPhysicsStrength = g_app->m_settings.GetPlayer_FlipperPhysicsStrength(physicsselection);
+    const float FlipperPhysicsStrength = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsStrength(physicsselection);
     SetItemText(19, FlipperPhysicsStrength);
-    const float FlipperPhysicsElasticity = g_app->m_settings.GetPlayer_FlipperPhysicsElasticity(physicsselection);
+    const float FlipperPhysicsElasticity = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsElasticity(physicsselection);
     SetItemText(21, FlipperPhysicsElasticity);
-    const float FlipperPhysicsScatter = g_app->m_settings.GetPlayer_FlipperPhysicsScatter(physicsselection);
+    const float FlipperPhysicsScatter = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsScatter(physicsselection);
     SetItemText(112, FlipperPhysicsScatter);
-    const float FlipperPhysicsTorqueDamping = g_app->m_settings.GetPlayer_FlipperPhysicsEOSTorque(physicsselection);
+    const float FlipperPhysicsTorqueDamping = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsEOSTorque(physicsselection);
     SetItemText(113, FlipperPhysicsTorqueDamping);
-    const float FlipperPhysicsTorqueDampingAngle = g_app->m_settings.GetPlayer_FlipperPhysicsEOSTorqueAngle(physicsselection);
+    const float FlipperPhysicsTorqueDampingAngle = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsEOSTorqueAngle(physicsselection);
     SetItemText(189, FlipperPhysicsTorqueDampingAngle);
-    const float FlipperPhysicsReturnStrength = g_app->m_settings.GetPlayer_FlipperPhysicsReturnStrength(physicsselection);
+    const float FlipperPhysicsReturnStrength = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsReturnStrength(physicsselection);
     SetItemText(23, FlipperPhysicsReturnStrength);
-    const float FlipperPhysicsElasticityFalloff = g_app->m_settings.GetPlayer_FlipperPhysicsElasticityFalloff(physicsselection);
+    const float FlipperPhysicsElasticityFalloff = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsElasticityFalloff(physicsselection);
     SetItemText(22, FlipperPhysicsElasticityFalloff);
-    const float FlipperPhysicsFriction = g_app->m_settings.GetPlayer_FlipperPhysicsFriction(physicsselection);
+    const float FlipperPhysicsFriction = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsFriction(physicsselection);
     SetItemText(109, FlipperPhysicsFriction);
-    const float FlipperPhysicsCoilRampUp = g_app->m_settings.GetPlayer_FlipperPhysicsCoilRampUp(physicsselection);
+    const float FlipperPhysicsCoilRampUp = g_settingsService.GetAppSettings().GetPlayer_FlipperPhysicsCoilRampUp(physicsselection);
     SetItemText(110, FlipperPhysicsCoilRampUp);
-    const float TablePhysicsGravityConstant = g_app->m_settings.GetPlayer_TablePhysicsGravityConstant(physicsselection);
+    const float TablePhysicsGravityConstant = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsGravityConstant(physicsselection);
     SetItemText(1100, TablePhysicsGravityConstant);
-    const float TablePhysicsContactFriction = g_app->m_settings.GetPlayer_TablePhysicsContactFriction(physicsselection);
+    const float TablePhysicsContactFriction = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsContactFriction(physicsselection);
     SetItemText(1101, TablePhysicsContactFriction);
-    const float TablePhysicsElasticity = g_app->m_settings.GetPlayer_TablePhysicsElasticity(physicsselection);
+    const float TablePhysicsElasticity = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsElasticity(physicsselection);
     SetItemText(1708, TablePhysicsElasticity);
-    const float TablePhysicsElasticityFalloff = g_app->m_settings.GetPlayer_TablePhysicsElasticityFalloff(physicsselection);
+    const float TablePhysicsElasticityFalloff = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsElasticityFalloff(physicsselection);
     SetItemText(1709, TablePhysicsElasticityFalloff);
-    const float TablePhysicsScatterAngle = g_app->m_settings.GetPlayer_TablePhysicsScatterAngle(physicsselection);
+    const float TablePhysicsScatterAngle = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsScatterAngle(physicsselection);
     SetItemText(1710, TablePhysicsScatterAngle);
-    const float TablePhysicsContactScatterAngle = g_app->m_settings.GetPlayer_TablePhysicsContactScatterAngle(physicsselection);
+    const float TablePhysicsContactScatterAngle = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsContactScatterAngle(physicsselection);
     SetItemText(1102, TablePhysicsContactScatterAngle);
-    const float TablePhysicsMinSlope = g_app->m_settings.GetPlayer_TablePhysicsMinSlope(physicsselection);
+    const float TablePhysicsMinSlope = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsMinSlope(physicsselection);
     SetItemText(1103, TablePhysicsMinSlope);
-    const float TablePhysicsMaxSlope = g_app->m_settings.GetPlayer_TablePhysicsMaxSlope(physicsselection);
+    const float TablePhysicsMaxSlope = g_settingsService.GetAppSettings().GetPlayer_TablePhysicsMaxSlope(physicsselection);
     SetItemText(1104, TablePhysicsMaxSlope);
 
     SetDlgItemText(1110, physicsoptions[physicsselection].c_str());
@@ -125,15 +128,15 @@ BOOL PhysicsOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
 
             if (tmp != physicsselection)
             {
-                int result = g_pvp->MessageBox("Save", "Save current physics set?", MB_YESNOCANCEL | MB_ICONQUESTION);
-                if (result == IDYES)
-                    SaveCurrentPhysicsSetting();
+               int result = m_tableEditor->m_vpxEditor->MessageBox("Save", "Save current physics set?", MB_YESNOCANCEL | MB_ICONQUESTION);
+               if (result == IDYES)
+                  SaveCurrentPhysicsSetting();
 
-                if (result != IDCANCEL)
-                {
-                    physicsselection = (unsigned int)tmp;
-                    SendMessage(WM_INITDIALOG, 0, 0); // reinit all boxes
-                }
+               if (result != IDCANCEL)
+               {
+                  physicsselection = (unsigned int)tmp;
+                  SendMessage(WM_INITDIALOG, 0, 0); // reinit all boxes
+               }
                 else
                     ::SendMessage(hwndList, LB_SETCURSEL, physicsselection, 0);
             }
@@ -174,7 +177,7 @@ BOOL PhysicsOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
         case 1112:
         {
             char szFileName[MAXSTRING];
-            /*CComObject<PinTable>* const pt = g_pvp->GetActiveTable();
+            /*CComObject<PinTable>* const pt = m_tableEditor->m_table;
             if (pt)
             {
                strncpy_s(szFileName, std::size(szFileName), pt->m_filename.c_str());
@@ -189,7 +192,7 @@ BOOL PhysicsOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
             OPENFILENAME ofn = {};
             ofn.lStructSize = sizeof(OPENFILENAME);
             ofn.hInstance = g_app->GetInstanceHandle();
-            ofn.hwndOwner = g_pvp->GetHwnd();
+            ofn.hwndOwner = m_tableEditor->m_vpxEditor->GetHwnd();
             // TEXT
             ofn.lpstrFilter = "Visual Pinball Physics (*.vpp)\0*.vpp\0";
             ofn.lpstrFile = szFileName;
@@ -197,7 +200,7 @@ BOOL PhysicsOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
             ofn.lpstrDefExt = "vpp";
             ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
 
-            string szInitialDir = g_app->m_settings.GetRecentDir_PhysicsDir();
+            string szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_PhysicsDir();
             ofn.lpstrInitialDir = szInitialDir.c_str();
 
             const int ret = GetSaveFileName(&ofn);
@@ -209,7 +212,7 @@ BOOL PhysicsOptionsDialog::OnCommand(WPARAM wParam, LPARAM lParam)
             if (index != string::npos)
             {
                 const string newInitDir(szFilename.substr(0, index));
-                g_app->m_settings.SetRecentDir_PhysicsDir(newInitDir, false);
+                g_settingsService.GetAppSettings().SetRecentDir_PhysicsDir(newInitDir, false);
             }
 
             tinyxml2::XMLDocument xmlDoc;
@@ -324,15 +327,15 @@ void PhysicsOptionsDialog::OnOK()
 
 bool PhysicsOptionsDialog::LoadSetting()
 {
-    const string& szInitialDir = g_app->m_settings.GetRecentDir_PhysicsDir();
+    const string& szInitialDir = g_settingsService.GetAppSettings().GetRecentDir_PhysicsDir();
 
     vector<string> szFileName;
-    if (!g_pvp->OpenFileDialog(szInitialDir, szFileName, "Visual Pinball Physics (*.vpp)\0*.vpp\0", "vpp", 0))
-        return false;
+    if (!m_tableEditor->m_vpxEditor->OpenFileDialog(szInitialDir, szFileName, "Visual Pinball Physics (*.vpp)\0*.vpp\0", "vpp", 0))
+       return false;
 
     const size_t index = szFileName[0].find_last_of(PATH_SEPARATOR_CHAR);
     if (index != string::npos)
-        g_app->m_settings.SetRecentDir_PhysicsDir(szFileName[0].substr(0, index), false);
+        g_settingsService.GetAppSettings().SetRecentDir_PhysicsDir(szFileName[0].substr(0, index), false);
 
     tinyxml2::XMLDocument xmlDoc;
     try
@@ -405,23 +408,23 @@ void PhysicsOptionsDialog::SetItemText(int id, float value)
 
 void PhysicsOptionsDialog::SaveCurrentPhysicsSetting()
 {
-    g_app->m_settings.SetPlayer_FlipperPhysicsMass(physicsselection, sz2f(GetItemText(DISPID_Flipper_Speed)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsStrength(physicsselection, sz2f(GetItemText(19)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsElasticity(physicsselection, sz2f(GetItemText(21)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsScatter(physicsselection, sz2f(GetItemText(112)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsEOSTorque(physicsselection, sz2f(GetItemText(113)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsEOSTorqueAngle(physicsselection, sz2f(GetItemText(189)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsReturnStrength(physicsselection, sz2f(GetItemText(23)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsElasticityFalloff(physicsselection, sz2f(GetItemText(22)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsFriction(physicsselection, sz2f(GetItemText(109)), false);
-    g_app->m_settings.SetPlayer_FlipperPhysicsCoilRampUp(physicsselection, sz2f(GetItemText(110)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsGravityConstant(physicsselection, sz2f(GetItemText(1100)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsContactFriction(physicsselection, sz2f(GetItemText(1101)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsElasticity(physicsselection, sz2f(GetItemText(1708)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsElasticityFalloff(physicsselection, sz2f(GetItemText(1709)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsScatterAngle(physicsselection, sz2f(GetItemText(1710)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsContactScatterAngle(physicsselection, sz2f(GetItemText(1102)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsMinSlope(physicsselection, sz2f(GetItemText(1103)), false);
-    g_app->m_settings.SetPlayer_TablePhysicsMaxSlope(physicsselection, sz2f(GetItemText(1104)), false);
-    g_app->m_settings.SetPlayer_PhysicsSetName(physicsselection, GetItemText(1110), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsMass(physicsselection, sz2f(GetItemText(DISPID_Flipper_Speed)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsStrength(physicsselection, sz2f(GetItemText(19)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsElasticity(physicsselection, sz2f(GetItemText(21)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsScatter(physicsselection, sz2f(GetItemText(112)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsEOSTorque(physicsselection, sz2f(GetItemText(113)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsEOSTorqueAngle(physicsselection, sz2f(GetItemText(189)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsReturnStrength(physicsselection, sz2f(GetItemText(23)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsElasticityFalloff(physicsselection, sz2f(GetItemText(22)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsFriction(physicsselection, sz2f(GetItemText(109)), false);
+    g_settingsService.GetAppSettings().SetPlayer_FlipperPhysicsCoilRampUp(physicsselection, sz2f(GetItemText(110)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsGravityConstant(physicsselection, sz2f(GetItemText(1100)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsContactFriction(physicsselection, sz2f(GetItemText(1101)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsElasticity(physicsselection, sz2f(GetItemText(1708)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsElasticityFalloff(physicsselection, sz2f(GetItemText(1709)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsScatterAngle(physicsselection, sz2f(GetItemText(1710)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsContactScatterAngle(physicsselection, sz2f(GetItemText(1102)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsMinSlope(physicsselection, sz2f(GetItemText(1103)), false);
+    g_settingsService.GetAppSettings().SetPlayer_TablePhysicsMaxSlope(physicsselection, sz2f(GetItemText(1104)), false);
+    g_settingsService.GetAppSettings().SetPlayer_PhysicsSetName(physicsselection, GetItemText(1110), false);
 }

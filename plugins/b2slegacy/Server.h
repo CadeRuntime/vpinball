@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include <functional>
+#include <mutex>
 #include <unordered_dense.h>
 #include "forms/FormBackglass.h"
 #include "classes/B2SCollectData.h"
@@ -14,10 +15,10 @@ namespace B2SLegacy {
 
 class PinMAMEAPI;
 
-class Server : public ScriptablePlugin::IScriptProxy
+class Server : public PinballPlugin::Scriptable::IScriptProxy
 {
 public:
-   Server(MsgPluginAPI* msgApi, uint32_t endpointId, VPXPluginAPI* vpxApi, ScriptClassDef* pinmameClassDef);
+   Server(const MsgPluginAPI* msgApi, uint32_t endpointId, VPXPluginAPI* vpxApi, ScriptClassDef* pinmameClassDef);
    ~Server();
 
    PSC_IMPLEMENT_REFCOUNT()
@@ -40,10 +41,18 @@ public:
    void SetPuPHide(bool puPHide);
    void B2SSetData(int id, int value);
    void B2SSetData(const string& name, int value);
+   void B2SSetData(int id, const string& value);
+   void B2SSetData(const string& name, const string& value);
    void B2SPulseData(int id);
    void B2SPulseData(const string& name);
    void B2SSetPos(int id, int xpos, int ypos);
-   void B2SSetPos(const string& name, int xpos, int ypos);
+   void B2SSetPos(int id, int xpos, const string& ypos);
+   void B2SSetPos(int id, const string& xpos, int ypos);
+   void B2SSetPos(int id, const string& xpos, const string& ypos);
+   void B2SSetPos(const string& id, int xpos, int ypos);
+   void B2SSetPos(const string& id, int xpos, const string& ypos);
+   void B2SSetPos(const string& id, const string& xpos, int ypos);
+   void B2SSetPos(const string& id, const string& xpos, const string& ypos);
    void B2SSetIllumination(const string& name, int value);
    void B2SSetLED(int digit, int value);
    void B2SSetLED(int digit, const string& text);
@@ -104,6 +113,8 @@ public:
    uint32_t GetEndpointId() const { return m_endpointId; }
    void SetOnDestroyHandler(std::function<void(Server*)> handler) { m_onDestroyHandler = handler; }
    float GetState(int b2sId) const;
+   int GetPlayerScore(int playerno) const;
+   int GetScoreDigit(int digit) const;
    void GetChangedLamps();
    void GetChangedLamps(ScriptVariant* pRet);
    void GetChangedSolenoids();
@@ -115,7 +126,6 @@ public:
    void SetSwitch(int switchId, bool value);
    void CheckGetMech(int number, int mech);
    int OnRender(VPXRenderContext2D* const renderCtx, void* context);
-   void OnDevSrcChanged(const unsigned int msgId, void* userData, void* msgData);
 
    void ForwardCall(void* me, int memberIndex, ScriptVariant* pArgs, ScriptVariant* pRet) override { m_pinmameApi.HandleCall(memberIndex, pArgs, pRet); }
 
@@ -173,44 +183,51 @@ private:
    string m_szPath = "./";
    Timer* m_pTimer = nullptr;
 
-   DevSrcId m_deviceStateSrc {};
+   PinballPlugin::Controller::CtrlItemConsumer<ControllerDef> m_pinmameControllers;
+   mutable PinballPlugin::Controller::CtrlItemConsumer<StateSrcId> m_stateSources;
 
-   static Server* m_singleton;
-   ankerl::unordered_dense::map<int, float> m_b2sStates;
-   const unsigned int m_onGameStartId;
-   const unsigned int m_onGameEndId;
+   string m_controllerGameId;
    bool m_gameRunning = false;
-   const unsigned int m_onGetDevSrcId;
-   DevSrcId m_devSrc {};
-   vector<string> m_devSrcNames;
-   void UpdateDevSrc();
-   struct ChgCallback
+   ankerl::unordered_dense::map<int, float> m_b2sStates;
+   ankerl::unordered_dense::map<int, int> m_playerScores;
+   ankerl::unordered_dense::map<int, int> m_scoreDigits;
+   const unsigned int m_onStateChangeEventId;
+   PinballPlugin::Controller::CtrlItemProvider<ControllerDef> m_exposedControllers;
+   PinballPlugin::Controller::CtrlItemProvider<StateSrcId> m_exposedStates;
+   void UpdateStateSrc();
+   mutable std::mutex m_stateMutex;
+   struct CallContext
    {
-      ctlpi_chg_callback m_callback;
-      unsigned int m_index;
-      void* m_context;
+      Server* me;
+      int id;
    };
-   ankerl::unordered_dense::map<int, vector<ChgCallback>> m_stateChgCallbacks;
-   static void OnGetDevSrc(const unsigned int, void*, void* msgData);
-   static uint8_t MSGPIAPI GetByteState(const unsigned int deviceIndex);
-   static float MSGPIAPI GetFloatState(const unsigned int deviceIndex);
-   static void MSGPIAPI RegisterStateChangeCallback(unsigned int deviceIndex, int isRegister, ctlpi_chg_callback cb, void* ctx);
+   vector<StateDef> m_lampStateDefs;
+   vector<string> m_lampStateNames;
+   vector<CallContext> m_lampStateIds;
+   vector<StateDef> m_playerScoreStateDefs;
+   vector<string> m_playerScoreNames;
+   vector<CallContext> m_playerScoreIds;
+   vector<StateDef> m_scoreDigitStateDefs;
+   vector<string> m_scoreDigitNames;
+   vector<CallContext> m_scoreDigitIds;
+   static void MSGPIAPI GetLampState(void* callContext, void* pResult);
+   static void MSGPIAPI GetPlayerScore(void* callContext, void* pResult);
+   static void MSGPIAPI GetScoreDigit(void* callContext, void* pResult);
 
-   MsgPluginAPI* const m_msgApi;
+   const MsgPluginAPI* const m_msgApi;
    VPXPluginAPI* const m_vpxApi;
    const uint32_t m_endpointId;
 
    const unsigned int m_onGetAuxRendererId;
    const unsigned int m_onAuxRendererChgId;
-   const unsigned int m_onDevChangedMsgId;
+   const unsigned int m_onStateChangedMsgId;
 
    PinMAMEAPI m_pinmameApi;
 
    std::function<void(Server*)> m_onDestroyHandler;
 
    static int OnRenderStatic(VPXRenderContext2D* ctx, void* userData);
-   static void OnGetRendererStatic(const unsigned int, void*, void* msgData);
-   static void OnDevSrcChangedStatic(const unsigned int msgId, void* userData, void* msgData);
+   static void OnGetRendererStatic(const unsigned int msgId, void* userData, void* msgData);
 
    bool m_ready = false;
 };

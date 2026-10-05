@@ -4,6 +4,7 @@
 #include "hittarget.h"
 
 #include "core/VPApp.h"
+#include "math/matrix.h"
 #include "meshes/dropTargetT2Mesh.h"
 #include "meshes/dropTargetT3Mesh.h"
 #include "meshes/dropTargetT4Mesh.h"
@@ -19,8 +20,6 @@
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
 #include "renderer/VertexBuffer.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/objloader.h"
 
 
@@ -115,14 +114,14 @@ void HitTarget::SetMeshType(const TargetType type)
 
 HRESULT HitTarget::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
 {
-   SetDefaults(false);
+   SetDefaults(fromMouseClick);
    m_d.m_vPosition.x = x;
    m_d.m_vPosition.y = y;
-   UpdateStatusBarInfo();
+   TransformVertices();
    return S_OK;
 }
 
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsHitTarget_##prop() : Settings::GetDefaultPropsHitTarget_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsHitTarget_##prop() : Settings::GetDefaultPropsHitTarget_##prop##_Default()
 void HitTarget::SetDefaults(const bool fromMouseClick)
 {
    LinkProp(m_d.m_legacy, LegacyMode);
@@ -158,7 +157,7 @@ void HitTarget::SetDefaultPhysics(const bool fromMouseClick)
 
 void HitTarget::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsHitTarget_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsHitTarget_##prop(field, false)
    LinkProp(m_d.m_legacy, LegacyMode);
    LinkProp(m_d.m_visible, Visible);
    LinkProp(m_d.m_isDropped, IsDropped);
@@ -441,9 +440,26 @@ void HitTarget::TransformVertices()
    }
 }
 
+void HitTarget::GetEditorWireframe(vector<Vertex2D> &edges) const
+{
+   edges.reserve(m_numIndices * 2);
+   for (unsigned i = 0; i < m_numIndices; i += 3)
+   {
+      const Vertex3Ds &A = m_hitUIVertices[m_indices[i]];
+      const Vertex3Ds &B = m_hitUIVertices[m_indices[i + 1]];
+      const Vertex3Ds &C = m_hitUIVertices[m_indices[i + 2]];
+      edges.emplace_back(A.x, A.y);
+      edges.emplace_back(B.x, B.y);
+      edges.emplace_back(B.x, B.y);
+      edges.emplace_back(C.x, C.y);
+      edges.emplace_back(C.x, C.y);
+      edges.emplace_back(A.x, A.y);
+   }
+}
+
 void HitTarget::ExportMesh(ObjLoader& loader)
 {
-   const string name = MakeString(m_wzName);
+   const string& name = m_name;
 
    SetMeshType(m_d.m_targetType);
 
@@ -465,76 +481,6 @@ void HitTarget::ExportMesh(ObjLoader& loader)
 //////////////////////////////
 // Rendering
 //////////////////////////////
-
-// 2D
-
-void HitTarget::UIRenderPass1(Sur * const psur)
-{
-}
-
-void HitTarget::UIRenderPass2(Sur * const psur)
-{
-   psur->SetLineColor(RGB(0, 0, 0), false, 1);
-   psur->SetObject(this);
-
-    for (unsigned i = 0; i < m_numIndices; i += 3)
-    {
-       const Vertex3Ds * const A = &m_hitUIVertices[m_indices[i]];
-       const Vertex3Ds * const B = &m_hitUIVertices[m_indices[i + 1]];
-       const Vertex3Ds * const C = &m_hitUIVertices[m_indices[i + 2]];
-       psur->Line(A->x, A->y, B->x, B->y);
-       psur->Line(B->x, B->y, C->x, C->y);
-       psur->Line(C->x, C->y, A->x, A->y);
-    }
-
-    if (m_selectstate == SelectState::NotSelected)
-       return;
-
-    const float radangle = ANGTORAD(m_d.m_rotZ-180.0f);
-    constexpr float halflength = 50.0f;
-    constexpr float len1 = halflength * 0.5f;
-    constexpr float len2 = len1 * 0.5f;
-    {
-       Vertex2D tmp;
-
-       // Draw Arrow
-       psur->SetLineColor(RGB(255, 0, 0), false, 1);
-
-       {
-       const float sn = sinf(radangle);
-       const float cs = cosf(radangle);
-
-       tmp.x = m_d.m_vPosition.x + sn*len1;
-       tmp.y = m_d.m_vPosition.y - cs*len1;
-       }
-
-       psur->Line(tmp.x, tmp.y, m_d.m_vPosition.x, m_d.m_vPosition.y);
-       {
-          const float arrowang = radangle + 0.6f;
-          const float sn = sinf(arrowang);
-          const float cs = cosf(arrowang);
-
-          psur->Line(tmp.x, tmp.y,  m_d.m_vPosition.x + sn*len2, m_d.m_vPosition.y - cs*len2);
-       }
-       {
-         const float arrowang = ANGTORAD(m_d.m_rotZ-180.0f) - 0.6f;
-         const float sn = sinf(arrowang);
-         const float cs = cosf(arrowang);
-
-         psur->Line(tmp.x, tmp.y,
-            m_d.m_vPosition.x + sn*len2, m_d.m_vPosition.y - cs*len2);
-       }
-    }
-   // draw center marker
-//    psur->SetLineColor(RGB(128, 128, 128), false, 1);
-//    psur->Line(m_d.m_vPosition.x - 10.0f, m_d.m_vPosition.y, m_d.m_vPosition.x + 10.0f, m_d.m_vPosition.y);
-//    psur->Line(m_d.m_vPosition.x, m_d.m_vPosition.y - 10.0f, m_d.m_vPosition.x, m_d.m_vPosition.y + 10.0f);
-}
-
-void HitTarget::UpdateStatusBarInfo()
-{
-   TransformVertices();
-}
 
 #pragma region Rendering
 
@@ -686,11 +632,11 @@ void HitTarget::Render(const unsigned int renderMask)
    else
    {
       m_renderer->m_renderDevice->ResetRenderState();
-      m_renderer->m_renderDevice->m_basicShader->SetVector(SHADER_fDisableLighting_top_below, m_d.m_disableLightingTop, m_d.m_disableLightingBelow, 0.f, 0.f);
+      m_renderer->m_renderDevice->m_basicShader->SetVector(ShaderUniform::fDisableLighting_top_below, m_d.m_disableLightingTop, m_d.m_disableLightingBelow, 0.f, 0.f);
       const Material *const mat = m_ptable->GetMaterial(m_d.m_szMaterial);
       m_renderer->m_renderDevice->m_basicShader->SetBasic(mat, m_ptable->GetImage(m_d.m_szImage));
       m_renderer->m_renderDevice->DrawMesh(m_renderer->m_renderDevice->m_basicShader, mat->m_bOpacityActive, m_d.m_vPosition, m_d.m_depthBias, m_meshBuffer, RenderDevice::TRIANGLELIST, 0, m_numIndices);
-      m_renderer->m_renderDevice->m_basicShader->SetVector(SHADER_fDisableLighting_top_below, 0.f, 0.f, 0.f, 0.f);
+      m_renderer->m_renderDevice->m_basicShader->SetVector(ShaderUniform::fDisableLighting_top_below, 0.f, 0.f, 0.f, 0.f);
    }
 }
 
@@ -746,30 +692,17 @@ void HitTarget::UpdateTarget()
 // Positioning
 //////////////////////////////
 
-void HitTarget::SetObjectPos()
+void HitTarget::Translate(const Vertex2D &offset)
 {
-    m_vpinball->SetObjectPosCur(m_d.m_vPosition.x, m_d.m_vPosition.y);
-}
+   m_d.m_vPosition.x += offset.x;
+   m_d.m_vPosition.y += offset.y;
 
-void HitTarget::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_vPosition.x += dx;
-   m_d.m_vPosition.y += dy;
-
-   UpdateStatusBarInfo();
+   TransformVertices();
 }
 
 Vertex2D HitTarget::GetCenter() const
 {
    return {m_d.m_vPosition.x, m_d.m_vPosition.y};
-}
-
-void HitTarget::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_vPosition.x = pv.x;
-   m_d.m_vPosition.y = pv.y;
-
-   UpdateStatusBarInfo();
 }
 
 //////////////////////////////
@@ -783,7 +716,7 @@ void HitTarget::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteFloat(FID(ROTZ), m_d.m_rotZ);
    writer.WriteString(FID(IMAG), m_d.m_szImage);
    writer.WriteInt(FID(TRTY), m_d.m_targetType);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteString(FID(MATR), m_d.m_szMaterial);
    writer.WriteBool(FID(TVIS), m_d.m_visible);
    writer.WriteBool(FID(LEMO), m_d.m_legacy);
@@ -823,7 +756,7 @@ void HitTarget::Load(IObjectReader& reader)
          case FID(ROTZ): m_d.m_rotZ = reader.AsFloat(); break;
          case FID(IMAG): m_d.m_szImage = reader.AsString(); break;
          case FID(TRTY): m_d.m_targetType = static_cast<TargetType>(reader.AsInt()); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(MATR): m_d.m_szMaterial = reader.AsString(); break;
          case FID(TVIS): m_d.m_visible = reader.AsBool(); break;
          case FID(LEMO): m_d.m_legacy = reader.AsBool(); break;
@@ -856,6 +789,7 @@ void HitTarget::Load(IObjectReader& reader)
          }
          return true;
       });
+   TransformVertices();
 }
 
 
@@ -917,9 +851,6 @@ STDMETHODIMP HitTarget::put_Visible(VARIANT_BOOL newVal)
 STDMETHODIMP HitTarget::get_X(float *pVal)
 {
    *pVal = m_d.m_vPosition.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 
@@ -1058,7 +989,7 @@ STDMETHODIMP HitTarget::get_Friction(float *pVal)
 
 STDMETHODIMP HitTarget::put_Friction(float newVal)
 {
-   m_d.m_friction = saturate(newVal);
+   m_d.m_friction = max(newVal, 0.f); // Friction can not be negative, but may exceed 1
    return S_OK;
 }
 

@@ -187,7 +187,7 @@ if [ "${PINMAME_EXPECTED_SHA}" != "${PINMAME_FOUND_SHA}" ]; then
    mkdir pinmame
    cd pinmame
 
-   curl -sL https://github.com/vbousquet/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
+   curl -sL https://github.com/vpinball/pinmame/archive/${PINMAME_SHA}.tar.gz -o pinmame-${PINMAME_SHA}.tar.gz
    tar xzf pinmame-${PINMAME_SHA}.tar.gz
    mv pinmame-${PINMAME_SHA} pinmame
    cd pinmame
@@ -229,7 +229,9 @@ if [ "${OPENXR_EXPECTED_SHA}" != "${OPENXR_FOUND_SHA}" ]; then
    cmake \
       -G "Visual Studio 18 2026" \
       -A Win32 \
+      -DBUILD_WITH_SYSTEM_JSONCPP=OFF \
       -DBUILD_TESTS=OFF \
+      -DBUILD_API_LAYERS=OFF \
       -DDYNAMIC_LOADER=ON \
       -DOPENXR_DEBUG_POSTFIX="" \
       -B build
@@ -445,7 +447,6 @@ cp freeimage/freeimage/Source/FreeImage.h ../../../third-party/include
 cp bgfx/bgfx.cmake/build/cmake/bgfx/${BUILD_TYPE}/bgfx.lib ../../../third-party/build-libs/windows-x86
 cp -r bgfx/bgfx.cmake/bgfx/include/bgfx ../../../third-party/include/
 cp bgfx/bgfx.cmake/build/cmake/bimg/${BUILD_TYPE}/bimg.lib ../../../third-party/build-libs/windows-x86
-cp bgfx/bgfx.cmake/build/cmake/bimg/${BUILD_TYPE}/bimg_decode.lib ../../../third-party/build-libs/windows-x86
 cp bgfx/bgfx.cmake/build/cmake/bimg/${BUILD_TYPE}/bimg_encode.lib ../../../third-party/build-libs/windows-x86
 cp -r bgfx/bgfx.cmake/bimg/include/bimg ../../../third-party/include/
 cp bgfx/bgfx.cmake/build/cmake/bx/${BUILD_TYPE}/bx.lib ../../../third-party/build-libs/windows-x86
@@ -453,11 +454,14 @@ cp -r bgfx/bgfx.cmake/bx/include/bx ../../../third-party/include/
 
 cp pinmame/pinmame/build/${BUILD_TYPE}/pinmame.lib ../../../third-party/build-libs/windows-x86
 cp pinmame/pinmame/build/${BUILD_TYPE}/pinmame.dll ../../../third-party/runtime-libs/windows-x86
-cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include
+mkdir -p ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/libpinmame.h ../../../third-party/include/pinmame
+cp pinmame/pinmame/src/libpinmame/PinMAMEPlugin.h ../../../third-party/include/pinmame
 
 cp openxr/openxr/build/src/loader/${BUILD_TYPE}/openxr_loader.lib ../../../third-party/build-libs/windows-x86
 cp openxr/openxr/build/src/loader/${BUILD_TYPE}/openxr_loader.dll ../../../third-party/runtime-libs/windows-x86
-cp -r openxr/openxr/include/openxr ../../../third-party/include
+mkdir -p ../../../third-party/include/openxr
+cp openxr/openxr/build/include/openxr/*.h ../../../third-party/include/openxr
 
 cp libdmdutil/libdmdutil/build/${BUILD_TYPE}/dmdutil.lib ../../../third-party/build-libs/windows-x86
 cp libdmdutil/libdmdutil/build/${BUILD_TYPE}/dmdutil.dll ../../../third-party/runtime-libs/windows-x86

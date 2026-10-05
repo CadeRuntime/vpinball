@@ -18,24 +18,6 @@ IEditable::~IEditable()
    SetPartGroup(nullptr);
 }
 
-void IEditable::Delete()
-{
-   MarkForDelete();
-
-   GetPTable()->RemovePart(this);
-
-   for (size_t i = 0; i < m_vCollection.size(); i++)
-   {
-      Collection *const pcollection = m_vCollection[i];
-      pcollection->m_visel.find_erase(GetISelect());
-   }
-}
-
-void IEditable::Uncreate()
-{
-   GetPTable()->RemovePart(this);
-}
-
 void IEditable::SetPartGroup(PartGroup* partGroup)
 {
    if (m_partGroup != partGroup)
@@ -77,6 +59,46 @@ bool IEditable::IsChild(const PartGroup* group) const
    return parent == group;
 }
 
+bool IEditable::IsUIVisible(const bool applyPartGroupVisibility) const
+{
+   return m_uiVisible && (!applyPartGroupVisibility || GetPartGroup() == nullptr || GetPartGroup()->IsUIVisible(true));
+}
+
+void IEditable::FlipY(const Vertex2D& pvCenter)
+{
+   const Vertex2D vCenter = GetCenter();
+   Translate(Vertex2D(0.f, -2.f * (vCenter.y - pvCenter.y)));
+}
+
+void IEditable::FlipX(const Vertex2D& pvCenter)
+{
+   const Vertex2D vCenter = GetCenter();
+   Translate(Vertex2D(-2.f * (vCenter.x - pvCenter.x), 0.f));
+}
+
+void IEditable::Rotate(const float ang, const Vertex2D& pvCenter, const bool useElementCenter)
+{
+   const Vertex2D vCenter = GetCenter();
+
+   const float sn = sinf(ANGTORAD(ang));
+   const float cs = cosf(ANGTORAD(ang));
+
+   const float dx = vCenter.x - pvCenter.x;
+   const float dy = vCenter.y - pvCenter.y;
+
+   Translate(Vertex2D(pvCenter.x + cs * dx - sn * dy - vCenter.x, pvCenter.y + cs * dy + sn * dx - vCenter.y));
+}
+
+void IEditable::Scale(const float scalex, const float scaley, const Vertex2D& pvCenter, const bool useElementCenter)
+{
+   const Vertex2D vCenter = GetCenter();
+
+   const float dx = vCenter.x - pvCenter.x;
+   const float dy = vCenter.y - pvCenter.y;
+
+   Translate(Vertex2D(pvCenter.x + dx * scalex - vCenter.x, pvCenter.y + dy * scaley - vCenter.y));
+}
+
 void IEditable::LoadSharedEditableField(const int tag, IObjectReader& reader)
 {
    switch (tag)
@@ -86,7 +108,7 @@ void IEditable::LoadSharedEditableField(const int tag, IObjectReader& reader)
    case FID(LAYR): // Old layer style (limited number of unnamed layers)
    {
       int layerIndex = reader.AsInt();
-      m_onLoadExpectedPartGroup = (layerIndex < 9 ? L"Layer_0" : L"Layer_") + std::to_wstring(layerIndex + 1);
+      m_onLoadExpectedPartGroup = (layerIndex < 9 ? "Layer_0" : "Layer_") + std::to_string(layerIndex + 1);
       break;
    }
    case FID(LANR): // 10.7 layers (limited number of named layers)
@@ -94,13 +116,12 @@ void IEditable::LoadSharedEditableField(const int tag, IObjectReader& reader)
       string layerName = reader.AsString();
       std::ranges::transform(
          layerName.begin(), layerName.end(), layerName.begin(), [](char c) { return ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) ? c : '_'; });
-      m_onLoadExpectedPartGroup = MakeWString(layerName);
+      m_onLoadExpectedPartGroup = std::move(layerName);
       break;
    }
    case FID(GRUP): // 10.8.1 groups (unlimited number of hierarchical parenting with properties)
    {
-      string layerName = reader.AsString();
-      m_onLoadExpectedPartGroup = MakeWString(layerName);
+      m_onLoadExpectedPartGroup = reader.AsString();
       break;
    }
    default:
@@ -136,8 +157,6 @@ void IEditable::SaveSharedEditableFields(IObjectWriter& writer)
 
 HRESULT IEditable::put_TimerEnabled(VARIANT_BOOL newVal, BOOL *pte)
 {
-   STARTUNDO
-
    const BOOL val = VBTOF(newVal);
 
    if (val != *pte && m_phittimer)
@@ -145,21 +164,15 @@ HRESULT IEditable::put_TimerEnabled(VARIANT_BOOL newVal, BOOL *pte)
 
    *pte = val;
 
-   STOPUNDO
-
    return S_OK;
 }
 
 HRESULT IEditable::put_TimerInterval(long newVal, int *pTimerInterval)
 {
-   STARTUNDO
-
    *pTimerInterval = newVal;
 
    if (m_phittimer)
       m_phittimer->SetInterval(newVal);
-
-   STOPUNDO
 
    return S_OK;
 }
@@ -172,13 +185,9 @@ HRESULT IEditable::get_UserValue(VARIANT *pVal)
 
 HRESULT IEditable::put_UserValue(VARIANT *newVal)
 {
-   STARTUNDO
-
    VariantInit(&m_uservalue);
    VariantClear(&m_uservalue);
    const HRESULT hr = VariantCopy(&m_uservalue, newVal);
-
-   STOPUNDO
 
    return hr;
 }
@@ -209,84 +218,38 @@ void IEditable::TimerRelease(vector<HitTimer *> &pvht)
    m_phittimer = nullptr;
 }
 
-void IEditable::BeginUndo()
-{
-   if (GetPTable())
-      GetPTable()->BeginUndo();
-}
-
-void IEditable::EndUndo()
-{
-   if (GetPTable())
-      GetPTable()->EndUndo();
-}
-
-void IEditable::MarkForUndo()
-{
-   if (GetPTable())
-      GetPTable()->m_undo.MarkForUndo(this);
-}
-
-void IEditable::MarkForDelete()
-{
-   GetPTable()->m_undo.BeginUndo();
-   GetPTable()->m_undo.MarkForDelete(this);
-   GetPTable()->m_undo.EndUndo();
-}
-
-void IEditable::Undelete()
-{
-   for (size_t i = 0; i < m_vCollection.size(); i++)
-   {
-      Collection *const pcollection = m_vCollection[i];
-      pcollection->m_visel.push_back(GetISelect());
-   }
-}
-
-string IEditable::GetName() const
+const string& IEditable::GetName() const
 {
    const IScriptable *const pscript = const_cast<IEditable*>(this)->GetIScriptable();
-   if (pscript)
-      return MakeString(pscript->get_Name());
-   return string();
+   static const string emptyString;
+   return pscript ? pscript->get_Name() : emptyString;
 }
 
-const wstring& IEditable::GetWName() const
-{
-   const IScriptable *const pscript = const_cast<IEditable*>(this)->GetIScriptable();
-   if (pscript)
-      return pscript->get_Name();
-   static const wstring emptyString;
-   return emptyString;
-}
-
-void IEditable::SetName(const wstring& name)
+void IEditable::SetName(const string& name)
 {
    IScriptable *const scriptable = GetIScriptable();
    if (name.empty() || scriptable == nullptr)
       return;
 
-   wstring newName = name;
-   if (newName.length() >= MAXNAMEBUFFER)
-      newName.erase(MAXNAMEBUFFER - 1);
+   string newName = TruncateToUTF16Length(name, MAXNAMEBUFFER - 1);
 
-   if (newName == scriptable->m_wzName)
+   if (newName == scriptable->m_name)
       return;
 
    if (PinTable* const pt = GetPTable(); pt)
    {
-      if (!pt->IsNameUnique(newName))
+      // A registered name takes itself, so a change of letter case only must not get a suffix
+      const bool registered = pt->HasRegisteredName(this);
+      if ((!registered || lowerCase(newName) != lowerCase(scriptable->m_name)) && !pt->IsNameUnique(newName))
          newName = pt->GetUniqueName(newName);
 
-      STARTUNDO
-      if (pt->HasPart(this))
+      if (registered)
          pt->RenamePart(this, newName);
       else
-         scriptable->m_wzName = newName;
-      STOPUNDO
+         scriptable->m_name = newName;
    }
    else
    {
-      scriptable->m_wzName = newName;
+      scriptable->m_name = newName;
    }
 }

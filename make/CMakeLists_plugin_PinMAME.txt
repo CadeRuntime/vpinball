@@ -20,6 +20,7 @@ set(PINMAME_PLUGIN_SOURCES
    plugins/pinmame/Roms.cpp
    plugins/pinmame/Settings.cpp
 
+   plugins/plugins/ColorSpace.h
    plugins/pinmame/common.h
    plugins/pinmame/Controller.h
    plugins/pinmame/ControllerSettings.h
@@ -33,6 +34,12 @@ set(PINMAME_PLUGIN_SOURCES
 
 if(BUILD_SHARED)
    add_library(PinMAMEPlugin MODULE ${PINMAME_PLUGIN_SOURCES})
+
+   if(NOT (PLATFORM STREQUAL "windows" OR PLATFORM STREQUAL "windows-mingw"))
+      target_compile_definitions(PinMAMEPlugin PRIVATE
+         "__forceinline=__attribute__((always_inline)) inline"
+      )
+   endif()
 
    target_include_directories(PinMAMEPlugin PUBLIC
       ${CMAKE_SOURCE_DIR}/third-party/include
@@ -97,29 +104,31 @@ if(BUILD_SHARED)
       target_link_libraries(PinMAMEPlugin PUBLIC pinmame)
    endif()
 
+   set_target_properties(PinMAMEPlugin PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY "${PLUGINS_DIR}/pinmame"
+   )
+
    add_custom_command(TARGET PinMAMEPlugin POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_SOURCE_DIR}/plugins/pinmame/plugin.cfg" "${PLUGINS_DIR}/pinmame/plugin.cfg"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:PinMAMEPlugin>" "${PLUGINS_DIR}/pinmame"
-      COMMAND "${CMAKE_COMMAND}" -E rm "$<TARGET_FILE:PinMAMEPlugin>"
+      COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/pinmame/plugin.cfg" "${PLUGINS_DIR}/pinmame/plugin.cfg"
    )
 
    if(POST_BUILD_COPY_EXT_LIBS)
       if(PLATFORM STREQUAL "windows")
          if (ARCH STREQUAL "x64")
             add_custom_command(TARGET PinMAMEPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/pinmame64.dll" "${PLUGINS_DIR}/pinmame/pinmame64.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/pinmame64.dll" "${PLUGINS_DIR}/pinmame/pinmame64.dll"
             )
          elseif (ARCH STREQUAL "x86")
             add_custom_command(TARGET PinMAMEPlugin POST_BUILD
-               COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/pinmame.dll" "${PLUGINS_DIR}/pinmame/pinmame.dll"
+               COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/pinmame.dll" "${PLUGINS_DIR}/pinmame/pinmame.dll"
             )
          endif()
       elseif(PLATFORM STREQUAL "windows-mingw")
          add_custom_command(TARGET PinMAMEPlugin POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/pinmame64.dll" "${PLUGINS_DIR}/pinmame/pinmame64.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/pinmame/libgcc_s_seh-1.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/pinmame/libstdc++-6.dll"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/pinmame/libwinpthread-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/pinmame64.dll" "${PLUGINS_DIR}/pinmame/pinmame64.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libgcc_s_seh-1.dll" "${PLUGINS_DIR}/pinmame/libgcc_s_seh-1.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libstdc++-6.dll" "${PLUGINS_DIR}/pinmame/libstdc++-6.dll"
+            COMMAND "${CMAKE_COMMAND}" -E copy "${RUNTIME_LIBS_DIR}/libwinpthread-1.dll" "${PLUGINS_DIR}/pinmame/libwinpthread-1.dll"
          )
       elseif(PLATFORM STREQUAL "linux")
          add_custom_command(TARGET PinMAMEPlugin POST_BUILD
@@ -139,6 +148,10 @@ if(BUILD_STATIC)
       ${CMAKE_SOURCE_DIR}/third-party/include
       plugins
       plugins/pinmame
+   )
+
+   target_compile_definitions(PinMAMEPlugin PRIVATE
+      "__forceinline=__attribute__((always_inline)) inline"
    )
 
    set_target_properties(PinMAMEPlugin PROPERTIES

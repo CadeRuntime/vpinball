@@ -1,54 +1,41 @@
 // license:GPLv3+
-
-// interface for the PinUndo class.
-
 #pragma once
 
-#include "utils/fileio.h"
-
-#define MAXUNDO 16
+#include <any>
+#include <functional>
 
 class IEditable;
 class PinTable;
-
-class UndoRecord final
-{
-public:
-   UndoRecord();
-   ~UndoRecord();
-
-   void MarkForUndo(IEditable *const pie, const bool saveForUndo);
-   void MarkForCreate(IEditable *const pie);
-   void MarkForDelete(IEditable *const pie);
-
-   vector<FastIStream*> m_vstm;
-   vector<IEditable*> m_vieCreate;
-   vector<IEditable*> m_vieDelete;
-
-private:
-   vector<IEditable*> m_vieMark;
-};
 
 class PinUndo final
 {
 public:
    PinUndo(PinTable* table);
+   ~PinUndo();
 
    void BeginUndo();
    void MarkForUndo(IEditable * const pie, const bool saveForUndo = false);
    void MarkForCreate(IEditable *const pie);
    void MarkForDelete(IEditable *const pie);
    void EndUndo();
-   void Undo(bool discard = false);
+   // Undoes the last record, returning the editor state captured when it was begun (empty if none)
+   std::any Undo();
+   void Discard();
 
+   bool HasUndo() const;
+   bool IsUndoPastCleanPoint() const;
    void SetCleanPoint(const SaveDirtyState sds);
 
-private:
-   bool IsDisabled() const;
+   // Registers the editor state capture callback: it is evaluated each time a new undo record is begun,
+   // the returned state is stored in the record and given back by Undo() (e.g. to restore the selection)
+   void SetEditorStateCapture(const std::function<std::any()> &capture) { m_editorStateCapture = capture; }
 
+private:
    PinTable *const m_table;
-   vector<std::unique_ptr<UndoRecord>> m_undoRecords;
-   int m_cUndoLayer = 0;
-   SaveDirtyState m_sdsDirty = eSaveClean; // Dirty flag for saving on close
+   vector<std::unique_ptr<class UndoRecord>> m_undoRecords;
+   int m_nUndoLayer = 0;
+   SaveDirtyState m_dirtyState = eSaveClean;
+   SaveDirtyState m_dirtyStateAtBegin = eSaveClean; // Dirty state when the last record was begun, restored if it is discarded
    size_t m_cleanpoint = 0; // Undo record at which table is in a non-dirty state (if bigger than undo records size, clean state can not be reached)
+   std::function<std::any()> m_editorStateCapture;
 };

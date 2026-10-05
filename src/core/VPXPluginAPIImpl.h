@@ -5,10 +5,10 @@
 #include "plugins/VPXPlugin.h"
 #include "plugins/ScriptablePlugin.h"
 #include "plugins/LoggingPlugin.h"
-
 #include "plugins/MsgPluginManager.h"
 
 #include "core/DynamicScript.h"
+#include "renderer/Texture.h"
 
 #include "unordered_dense.h"
 
@@ -30,7 +30,7 @@ public:
    ~VPXPluginAPIImpl();
 
    const VPXPluginAPI& getAPI() const { return m_api; }
-   unsigned int GetVPXEndPointId() const { return m_vpxPlugin->m_endpointId; }
+   uint32_t GetVPXEndPointId() const { return m_vpxPlugin->m_endpointId; }
    void BroadcastVPXMsg(const unsigned int msgId, void* data) const;
    unsigned int GetGameElementEventMsgId() const { return m_gameElementEventMsgId; }
 
@@ -53,7 +53,7 @@ public:
    const vector<PluginSetting>& GetPluginSettings() const { return m_pluginSettings; }
 
    void OnGameStart();
-   void UpdateDMDSource(Flasher* flasher, bool isAdd);
+   void OnDMDUpdated(Flasher* flasher, std::shared_ptr<BaseTexture> frame);
    void OnGameEnd();
 
 private:
@@ -69,7 +69,12 @@ private:
    const unsigned int m_onGameEndMsgId;
    const unsigned int m_getGameElementsMsgId;
    const unsigned int m_gameElementEventMsgId;
+   const unsigned int m_getGameElementAPIMsgId;
    static void MSGPIAPI OnGetGameElements(const unsigned int msgId, void* userData, void* msgData);
+
+   // Game element actuation API (Cade fork extension)
+   VPXGameElementAPI m_gameElementApi;
+   static void OnGetGameElementAPI(const unsigned int msgId, void* userData, void* msgData);
 
    static void MSGPIAPI GetVpxInfo(VPXInfo* info);
    static void MSGPIAPI GetTableInfo(VPXTableInfo* info);
@@ -91,6 +96,8 @@ private:
    static void MSGPIAPI UpdateTexture(VPXTexture* texture, int width, int height, VPXTextureFormat format, const void* image);
    static VPXTextureInfo* MSGPIAPI GetTextureInfo(VPXTexture texture);
    static void MSGPIAPI DeleteTexture(VPXTexture texture);
+
+   static void MSGPIAPI RunScript(const char* script);
 
    static int MSGPIAPI EjectBall(const char* deviceName, const float angle, const float speed, const float inclination);
    static int MSGPIAPI DestroyBall(const char* deviceName);
@@ -130,9 +137,14 @@ private:
    const unsigned int m_getScriptingAPIMsgId;
 
    // Contribute VPX script controlled DMD through controller plugin API
-   vector<Flasher*> m_dmdSources;
-   static void ControllerOnGetDMDSrc(const unsigned int msgId, void* userData, void* msgData);
-   static DisplayFrame ControllerOnGetRenderDMD(const CtlResId id);
-   const unsigned int m_onDisplaySrcChgMsgId;
-   const unsigned int m_onDisplayGetSrcMsgId;
+   struct DmdSource
+   {
+      Flasher* flasher;
+      unsigned int width;
+      unsigned int height;
+      BaseTexture::Format format;
+   };
+   vector<DmdSource> m_dmdSources;
+   std::unique_ptr<PinballPlugin::Controller::CtrlItemProvider<DisplaySrcId>> m_displaySources;
+   static DisplayFrame ControllerOnGetRenderDMD(void* callContext);
 };

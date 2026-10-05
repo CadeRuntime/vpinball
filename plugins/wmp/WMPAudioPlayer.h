@@ -6,22 +6,23 @@
 #include "miniaudio_private.h"
 #include <atomic>
 
-namespace WMP {
+namespace WMP
+{
 
 class WMPCore;
 
 class WMPAudioPlayer
 {
 public:
-   WMPAudioPlayer(MsgPluginAPI* msgApi, uint32_t endpointId, unsigned int onAudioUpdateId);
+   WMPAudioPlayer(const MsgPluginAPI* msgApi, uint32_t endpointId, unsigned int onAudioUpdateId);
    ~WMPAudioPlayer();
 
-   bool LoadFile(const string& filepath);
+   bool LoadFile(const std::filesystem::path& filepath);
    void UnloadFile();
    void Play();
    void Pause();
    void Stop();
-   double GetPosition();
+   double GetPosition() const;
    void SetPosition(double positionInSeconds);
    bool IsLoaded() const { return m_isLoaded; }
    bool IsPlaying() const { return m_isPlaying; }
@@ -37,7 +38,7 @@ private:
    void SendAudioChunk(const float* samples, size_t frameCount);
    void SendClear();
 
-   MsgPluginAPI* const m_msgApi;
+   const MsgPluginAPI* const m_msgApi;
    const uint32_t m_endpointId;
    const unsigned int m_onAudioUpdateId;
 
@@ -52,13 +53,15 @@ private:
    std::atomic<bool> m_isPlaying;
    std::atomic<bool> m_isPaused;
    std::atomic<float> m_volume;
-   std::atomic<bool> m_endSignaled{false};
+   std::atomic<bool> m_endSignaled { false };
 
    ma_uint32 m_sampleRate;
    ma_uint32 m_channels;
    string m_loadedFile;
 
-   CtlResId m_audioResId;
+   const CtlResId m_srcId;
+   PinballPlugin::Controller::CtrlItemProvider<AudioSrcId> m_audioSrc;
+
    static constexpr size_t BUFFER_SIZE_FRAMES = 128;
 };
 

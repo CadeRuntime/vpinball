@@ -2,12 +2,13 @@
 
 #pragma once
 
+#include "core/resourceid.h"
+#include "math/matrix.h"
 #include "parts/Collection.h"
 #include "parts/timer.h"
 #include "physics/hitable.h"
 #include "physics/hitball.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 class HitBall;
@@ -107,7 +108,6 @@ class Ball :
    public IConnectionPointContainerImpl<Ball>,
    public IProvideClassInfo2Impl<&IID_IBall, &DIID_IBallEvents, &LIBID_VPinballLib>,
 
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -116,7 +116,7 @@ class Ball :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -139,7 +139,7 @@ public:
       COM_INTERFACE_ENTRY(IProvideClassInfo2)
    END_COM_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Ball, eItemBall, BALL, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Ball, eItemBall, BALL)
 
    BEGIN_CONNECTION_POINT_MAP(Ball)
       CONNECTION_POINT_ENTRY(DIID_IBallEvents)
@@ -147,20 +147,14 @@ public:
 
    DECLARE_REGISTRY_RESOURCEID(IDR_BALL)
 
+   // IHitable implementation
    bool PhysicUpdate(class PhysicsEngine *physics, const bool isUI) final;
 
-   // ISelect implementation
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
 
    // IEditable implementation
-   void RenderBlueprint(Sur *psur, const bool solid) final;
    void WriteRegDefaults() final;
-
-   // IHitable implementation
-   ItemTypeEnum HitableGetItemType() const final { return eItemBall; }
 
    // IBall implementation
    STDMETHOD(get_FrontDecal)(/*[out, retval]*/ BSTR *pVal);

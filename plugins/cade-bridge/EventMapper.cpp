@@ -3,6 +3,7 @@
 #include "EventMapper.h"
 #include "DeviceRegistry.h"
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <google/protobuf/timestamp.pb.h>
 
@@ -17,85 +18,85 @@ static void SetTimestampNow(google::protobuf::Timestamp* ts)
    ts->set_nanos(static_cast<int32_t>(nanos.count()));
 }
 
-std::string MakeDeviceKey(const DeviceDef& def)
+std::string MakeDeviceKey(const StateSrcId& src, const StateDef& def)
 {
-   return MakeDeviceKey(def.id.groupId, def.id.deviceId);
+   return def.name ? SanitizeUTF8(def.name) : MakeDeviceKey(src.id.resId, def.mappingId);
 }
 
-std::string MakeDeviceKey(uint16_t groupId, uint16_t deviceId)
+std::string MakeDeviceKey(uint32_t groupId, uint32_t deviceId)
 {
    return std::to_string(groupId) + ":" + std::to_string(deviceId);
 }
 
-cade::events::CategorizedEvent MapInputToCade(const InputSrcId& src, unsigned int inputIndex, int state, const DeviceRegistry* registry)
+bool ReadControllerState(const StateDef& def, double& value)
 {
-   cade::events::CategorizedEvent event;
-   event.set_category(cade::events::EVENT_CATEGORY_GENERAL);
-   event.set_device_category(cade::events::DEVICE_CATEGORY_SWITCH);
-
-   int vpxEvent = state ? VPXDEV_EVENT_ON : VPXDEV_EVENT_OFF;
-   std::string deviceName;
-
-   if (inputIndex < src.nInputs)
+   if (def.GetState == nullptr)
+      return false;
+   switch (def.dataFormat)
    {
-      const DeviceDef& def = src.inputDefs[inputIndex];
-      deviceName = def.name ? SanitizeUTF8(def.name) : MakeDeviceKey(def);
-      event.set_device_key(deviceName);
-      if (def.name)
-         event.set_device_type(deviceName);
+   case CTLPI_STATE_FORMAT_UINT8:  { uint8_t v = 0;  def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_UINT16: { uint16_t v = 0; def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_UINT32: { uint32_t v = 0; def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_UINT64: { uint64_t v = 0; def.GetState(def.callContext, &v); value = static_cast<double>(v); return true; }
+   case CTLPI_STATE_FORMAT_INT8:   { int8_t v = 0;   def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_INT16:  { int16_t v = 0;  def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_INT32:  { int32_t v = 0;  def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_INT64:  { int64_t v = 0;  def.GetState(def.callContext, &v); value = static_cast<double>(v); return true; }
+   case CTLPI_STATE_FORMAT_FLOAT:  { float v = 0.f;  def.GetState(def.callContext, &v); value = v; return true; }
+   case CTLPI_STATE_FORMAT_DOUBLE: { double v = 0.;  def.GetState(def.callContext, &v); value = v; return true; }
+   default: return false; // CTLPI_STATE_FORMAT_STRING or unknown
    }
-
-   if (registry && registry->IsRegistered())
-   {
-      int cadeType = registry->GetCadeEventType(deviceName, vpxEvent);
-      if (cadeType >= 0)
-         event.set_event_type(cadeType);
-      event.set_device_category(registry->GetDeviceCategory(deviceName));
-   }
-   else
-   {
-      event.set_event_type(state ? CadeEventType::SwitchActivate : CadeEventType::SwitchDeactivate);
-   }
-
-   // Use negotiated scoring trigger name if available
-   std::string scoringName;
-   if (registry && registry->IsRegistered())
-      scoringName = registry->GetCadeEventName(deviceName, vpxEvent);
-   event.set_event_type_name(!scoringName.empty() ? scoringName : (state ? "switch_closed" : "switch_open"));
-   (*event.mutable_metadata())["state"] = std::to_string(state);
-   SetTimestampNow(event.mutable_timestamp());
-   return event;
 }
 
-cade::events::CategorizedEvent MapDeviceToCade(const DevSrcId& src, unsigned int deviceIndex, const DeviceRegistry* registry)
+static bool ContainsNoCase(const char* haystack, const char* needle)
+{
+   if (haystack == nullptr)
+      return false;
+   std::string h(haystack);
+   for (char& c : h)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+   return h.find(needle) != std::string::npos;
+}
+
+cade::events::DeviceCategory ClassifyControllerState(const StateSrcId& src, const StateDef& def)
+{
+   // Solenoid outputs are usually exposed with a relative brightness semantic
+   // (modulated outputs), so the state block name is checked first.
+   if (ContainsNoCase(src.name, "solenoid") || ContainsNoCase(src.name, "coil"))
+      return cade::events::DEVICE_CATEGORY_COIL;
+   if (def.semanticType == CTLPI_STATE_TYPE_SWITCH)
+      return cade::events::DEVICE_CATEGORY_SWITCH;
+   if (def.semanticType == CTLPI_STATE_TYPE_RELATIVE_BRIGHTNESS || ContainsNoCase(src.name, "lamp") || ContainsNoCase(src.name, "light")
+      || ContainsNoCase(src.name, "illumination"))
+      return cade::events::DEVICE_CATEGORY_LIGHT;
+   return cade::events::DEVICE_CATEGORY_GENERAL;
+}
+
+// Byte view of a state, as previously exposed by the controller device API:
+// relative brightness is normalized to the data range, so float formats are scaled from [0..1]
+static uint8_t StateToByte(const StateDef& def, double value)
+{
+   if (def.dataFormat == CTLPI_STATE_FORMAT_FLOAT || def.dataFormat == CTLPI_STATE_FORMAT_DOUBLE)
+      value *= 255.0;
+   return static_cast<uint8_t>(value <= 0.0 ? 0.0 : value >= 255.0 ? 255.0 : value + 0.5);
+}
+
+cade::events::CategorizedEvent MapStateToCade(const StateSrcId& src, unsigned int stateIndex, double value, const DeviceRegistry* registry)
 {
    cade::events::CategorizedEvent event;
    event.set_category(cade::events::EVENT_CATEGORY_GENERAL);
+   if (stateIndex >= src.nStates)
+      return event;
 
-   uint8_t byteState = 0;
-   if (src.GetByteState)
-      byteState = src.GetByteState(deviceIndex);
+   const StateDef& def = src.stateDefs[stateIndex];
+   const cade::events::DeviceCategory devCat = ClassifyControllerState(src, def);
+   const bool isOn = value != 0.0;
+   const int vpxEvent = isOn ? VPXDEV_EVENT_ON : VPXDEV_EVENT_OFF;
 
-   // Determine device category from the device def's groupId
-   // groupId conventions: 0=coil, 1=lamp/light, others=general
-   cade::events::DeviceCategory devCat = cade::events::DEVICE_CATEGORY_GENERAL;
-   std::string deviceName;
-   if (deviceIndex < src.nDevices)
-   {
-      const DeviceDef& def = src.deviceDefs[deviceIndex];
-      switch (def.id.groupId)
-      {
-      case 0: devCat = cade::events::DEVICE_CATEGORY_COIL; break;
-      case 1: devCat = cade::events::DEVICE_CATEGORY_LIGHT; break;
-      default: devCat = cade::events::DEVICE_CATEGORY_GENERAL; break;
-      }
-      deviceName = def.name ? SanitizeUTF8(def.name) : MakeDeviceKey(def);
-      event.set_device_key(deviceName);
-      if (def.name)
-         event.set_device_type(deviceName);
-   }
-
-   int vpxEvent = byteState ? VPXDEV_EVENT_ON : VPXDEV_EVENT_OFF;
+   const std::string deviceName = MakeDeviceKey(src, def);
+   event.set_device_key(deviceName);
+   if (def.name)
+      event.set_device_type(deviceName);
 
    if (registry && registry->IsRegistered())
    {
@@ -111,13 +112,13 @@ cade::events::CategorizedEvent MapDeviceToCade(const DevSrcId& src, unsigned int
       switch (devCat)
       {
       case cade::events::DEVICE_CATEGORY_COIL:
-         event.set_event_type(byteState ? CadeEventType::CoilEnable : CadeEventType::CoilDisable);
+         event.set_event_type(isOn ? CadeEventType::CoilEnable : CadeEventType::CoilDisable);
          break;
       case cade::events::DEVICE_CATEGORY_LIGHT:
-         event.set_event_type(byteState ? CadeEventType::LightOn : CadeEventType::LightOff);
+         event.set_event_type(isOn ? CadeEventType::LightOn : CadeEventType::LightOff);
          break;
       default:
-         event.set_event_type(byteState ? CadeEventType::SwitchActivate : CadeEventType::SwitchDeactivate);
+         event.set_event_type(isOn ? CadeEventType::SwitchActivate : CadeEventType::SwitchDeactivate);
          break;
       }
    }
@@ -126,13 +127,16 @@ cade::events::CategorizedEvent MapDeviceToCade(const DevSrcId& src, unsigned int
    std::string scoringName;
    if (registry && registry->IsRegistered())
       scoringName = registry->GetCadeEventName(deviceName, vpxEvent);
-   event.set_event_type_name(!scoringName.empty() ? scoringName : (byteState ? "device_on" : "device_off"));
-   (*event.mutable_metadata())["byte_state"] = std::to_string(byteState);
-
-   if (src.GetFloatState)
+   if (devCat == cade::events::DEVICE_CATEGORY_SWITCH)
    {
-      float floatState = src.GetFloatState(deviceIndex);
-      (*event.mutable_metadata())["float_state"] = std::to_string(floatState);
+      event.set_event_type_name(!scoringName.empty() ? scoringName : (isOn ? "switch_closed" : "switch_open"));
+      (*event.mutable_metadata())["state"] = std::to_string(isOn ? 1 : 0);
+   }
+   else
+   {
+      event.set_event_type_name(!scoringName.empty() ? scoringName : (isOn ? "device_on" : "device_off"));
+      (*event.mutable_metadata())["byte_state"] = std::to_string(StateToByte(def, value));
+      (*event.mutable_metadata())["float_state"] = std::to_string(value);
    }
 
    SetTimestampNow(event.mutable_timestamp());

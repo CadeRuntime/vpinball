@@ -47,29 +47,12 @@ float nrand(const vec2 uv)
 }
 #endif
 
-vec2 hash22(const vec2 uv)
-{
-   vec3 p3 = fract(uv.xyx * vec3(.1031, .1030, .0973));
-   p3 += dot(p3, p3.yzx + 33.33);
-   return fract((p3.xx + p3.yz)*p3.zy);
-}
-
 #if 0
 float gold_noise(const vec2 xy, const float seed)
 {
    return fract(tan(distance(xy * 1.61803398874989484820459, xy) * seed) * xy.x); // tan is usually slower than sin/cos
 }
 #endif
-
-float triangularPDF(const float r) // from -1..1, c=0 (with random no r=0..1)
-{
-   float p = 2.*r;
-   const bool b = (p > 1.);
-   if (b)
-      p = 2.-p;
-   p = 1.-sqrt(p); //!! handle 0 explicitly due to compiler doing 1/inversesqrt(0)? but might be still 0 according to spec, as rsqrt(0) = inf and 1/inf = 0, but values close to 0 could be screwed up still
-   return b ? p : -p;
-}
 
 #if 0
 // approximation, mainly to get limited support (i.e. not infinite, like real gauss, which is nonsense for a small amount of samples)
@@ -96,7 +79,7 @@ void main()
 	//!! this is incredibly heavy for a supposedly simple DMD output shader, but then again this is pretty robust for all kinds of scales and input resolutions now, plus also for 'distorted' output (via the flashers)!
 	//!! gaussianPDF is even more heavy, introduces more noise and is only barely higher quality (=bit less moiree) 
 	#ifdef DMD
-	   const float blur = /*gaussian: 4.0; /*/ 1.5; // 1.0..2.0 looks best (between sharp and blurry), and 1.5 matches the intention of the triangle filter (see triangularPDF calls below)!
+	   const float blur = /*gaussian: 4.0;*/ 1.5; // 1.0..2.0 looks best (between sharp and blurry), and 1.5 matches the intention of the triangle filter (see triangularPDF calls below)!
 	   const vec2 ddxs = dFdx(v_texcoord0)*blur; // use ddx and ddy to help the oversampling below/make filtering radius dependent on projected 'dots'/texel
 	   const vec2 ddys = dFdy(v_texcoord0)*blur;
 
@@ -114,7 +97,7 @@ void main()
 		  const float i_float = float(i);
 		  const vec2 xi = vec2(fract(i_float * (1.0 / samples_float) + offs.x), fract(i_float * (8.0 / samples_float) + offs.y)); //1,5,2,8,13,7,7 korobov,fibonacci
 		  //const vec2 gxi = gaussianPDF(xi);
-		  const vec2 uv = v_texcoord0 + /*gxi.x*ddxs + gxi.y*ddys; /*/ triangularPDF(xi.x)*ddxs + triangularPDF(xi.y)*ddys; //!! lots of ALU
+		  const vec2 uv = v_texcoord0 + /*gxi.x*ddxs + gxi.y*ddys;*/ triangularPDF(xi.x)*ddxs + triangularPDF(xi.y)*ddys; //!! lots of ALU
 
 		  const vec4 rgba = texNoLod(tex_dmd, uv); //!! lots of tex access by doing this all the time, but (tex) cache should be able to catch all of it
 

@@ -4,10 +4,10 @@
 
 #pragma once
 
+#include "core/resourceid.h"
 #include "parts/pintable.h"
 #include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 class MeshBuffer;
@@ -38,7 +38,6 @@ class Kicker :
    public EventProxy<Kicker, &DIID_IKickerEvents>,
    public IConnectionPointContainerImpl<Kicker>,
    public IProvideClassInfo2Impl<&CLSID_Kicker, &DIID_IKickerEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IHitable,
    public IRenderable,
@@ -47,7 +46,7 @@ class Kicker :
    public IPerPropertyBrowsing // Ability to fill in dropdown in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -73,23 +72,18 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IKickerEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES(Kicker, eItemKicker, KICKER, VIEW_PLAYFIELD)
+   STANDARD_EDITABLE_DECLARES(Kicker, eItemKicker, KICKER)
 
    DECLARE_REGISTRY_RESOURCEID(IDR_KICKER)
    // ISupportsErrorInfo
    STDMETHOD(InterfaceSupportsErrorInfo)(REFIID riid);
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D& pv) final;
 
    void SetDefaultPhysics(const bool fromMouseClick) final;
    void ExportMesh(ObjLoader& loader) final;
-
-   ItemTypeEnum HitableGetItemType() const final { return eItemKicker; }
-   void UpdateStatusBarInfo() final;
 
    void WriteRegDefaults() final;
 

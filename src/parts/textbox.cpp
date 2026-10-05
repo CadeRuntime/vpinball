@@ -9,8 +9,6 @@
 #include "renderer/Renderer.h"
 #include "renderer/Shader.h"
 #include "renderer/trace.h"
-#include "ui/win/sur.h"
-#include "ui/win/WinEditor.h"
 #include "utils/color.h"
 
 
@@ -28,8 +26,8 @@ Textbox *Textbox::CopyForPlay() const
 HRESULT Textbox::Init(const float x, const float y, const bool fromMouseClick, const bool forPlay)
 {
    SetDefaults(fromMouseClick);
-   const float width  = g_app->m_settings.GetDefaultPropsTextbox_Width();
-   const float height = g_app->m_settings.GetDefaultPropsTextbox_Height();
+   const float width  = g_settingsService.GetAppSettings().GetDefaultPropsTextbox_Width();
+   const float height = g_settingsService.GetAppSettings().GetDefaultPropsTextbox_Height();
    m_d.m_v1.x = x;
    m_d.m_v1.y = y;
    m_d.m_v2.x = x + width;
@@ -39,13 +37,12 @@ HRESULT Textbox::Init(const float x, const float y, const bool fromMouseClick, c
 
 void Textbox::SetDefaults(const bool fromMouseClick)
 {
-#define LinkProp(field, prop) field = fromMouseClick ? g_app->m_settings.GetDefaultPropsTextbox_##prop() : Settings::GetDefaultPropsTextbox_##prop##_Default()
+#define LinkProp(field, prop) field = fromMouseClick ? g_settingsService.GetAppSettings().GetDefaultPropsTextbox_##prop() : Settings::GetDefaultPropsTextbox_##prop##_Default()
    m_d.m_visible = true;
    LinkProp(m_d.m_backcolor, BackColor);
    LinkProp(m_d.m_fontcolor, FontColor);
    LinkProp(m_d.m_transparent, Transparent);
    LinkProp(m_d.m_isDMD, DMD);
-   LinkProp(m_d.m_backcolor, BackColor);
    LinkProp(m_d.m_intensity_scale, IntensityScale);
    LinkProp(m_d.m_text, Text);
    LinkProp(m_d.m_talign, TextAlignment);
@@ -69,12 +66,11 @@ void Textbox::SetDefaults(const bool fromMouseClick)
 
 void Textbox::WriteRegDefaults()
 {
-#define LinkProp(field, prop) g_app->m_settings.SetDefaultPropsTextbox_##prop(field, false)
+#define LinkProp(field, prop) g_settingsService.GetAppSettings().SetDefaultPropsTextbox_##prop(field, false)
    LinkProp(m_d.m_backcolor, BackColor);
    LinkProp(m_d.m_fontcolor, FontColor);
    LinkProp(m_d.m_transparent, Transparent);
    LinkProp(m_d.m_isDMD, DMD);
-   LinkProp(m_d.m_backcolor, BackColor);
    LinkProp(m_d.m_intensity_scale, IntensityScale);
    LinkProp(m_d.m_text, Text);
    LinkProp(m_d.m_talign, TextAlignment);
@@ -106,7 +102,7 @@ void Textbox::Save(IObjectWriter& writer, const bool saveForUndo)
    writer.WriteString(FID(TEXT), m_d.m_text);
    writer.WriteBool(FID(TMON), m_timerEnabled);
    writer.WriteInt(FID(TMIN), m_timerInterval);
-   writer.WriteWideString(FID(NAME), m_wzName);
+   writer.WriteWideString(FID(NAME), MakeWString(m_name));
    writer.WriteInt(FID(ALGN), m_d.m_talign);
    writer.WriteBool(FID(TRNS), m_d.m_transparent);
    writer.WriteBool(FID(IDMD), m_d.m_isDMD);
@@ -132,7 +128,7 @@ void Textbox::Load(IObjectReader& reader)
          case FID(TMON): m_timerEnabled = reader.AsBool(); break;
          case FID(TMIN): m_timerInterval = reader.AsInt(); break;
          case FID(TEXT): m_d.m_text = reader.AsString(); break;
-         case FID(NAME): m_wzName = reader.AsWideString(); break;
+         case FID(NAME): m_name = MakeString(reader.AsWideString()); break;
          case FID(ALGN): m_d.m_talign = static_cast<TextAlignment>(reader.AsInt()); break;
          case FID(TRNS): m_d.m_transparent = reader.AsBool(); break;
          case FID(IDMD): m_d.m_isDMD = reader.AsBool(); break;
@@ -167,46 +163,32 @@ STDMETHODIMP Textbox::InterfaceSupportsErrorInfo(REFIID riid)
    return S_FALSE;
 }
 
-void Textbox::UIRenderPass1(Sur * const psur)
+void Textbox::Translate(const Vertex2D &offset)
 {
-   psur->SetBorderColor(-1, false, 0);
-   psur->SetFillColor(m_d.m_backcolor);
-   psur->SetObject(this);
+   m_d.m_v1.x += offset.x;
+   m_d.m_v1.y += offset.y;
 
-   psur->Rectangle(m_d.m_v1.x, m_d.m_v1.y, m_d.m_v2.x, m_d.m_v2.y);
+   m_d.m_v2.x += offset.x;
+   m_d.m_v2.y += offset.y;
 }
 
-void Textbox::UIRenderPass2(Sur * const psur)
+void Textbox::PhysicSetup(PhysicsEngine *physics, const bool isUI)
 {
-   psur->SetBorderColor(RGB(0, 0, 0), false, 0);
-   psur->SetFillColor(-1);
-   psur->SetObject(this);
-   psur->SetObject(nullptr);
-
-   psur->Rectangle(m_d.m_v1.x, m_d.m_v1.y, m_d.m_v2.x, m_d.m_v2.y);
+   if (isUI)
+   {
+      // UI picking quad covering the textbox (textboxes have no playfield collider)
+      const float x1 = min(m_d.m_v1.x, m_d.m_v2.x), x2 = max(m_d.m_v1.x, m_d.m_v2.x);
+      const float y1 = min(m_d.m_v1.y, m_d.m_v2.y), y2 = max(m_d.m_v1.y, m_d.m_v2.y);
+      Vertex3Ds *const rgv3d = new Vertex3Ds[4];
+      rgv3d[0] = Vertex3Ds(x1, y1, 0.f); // Winding so that the quad faces up and can be picked from the top-down editor views
+      rgv3d[1] = Vertex3Ds(x1, y2, 0.f);
+      rgv3d[2] = Vertex3Ds(x2, y2, 0.f);
+      rgv3d[3] = Vertex3Ds(x2, y1, 0.f);
+      physics->AddCollider(new Hit3DPoly(this, rgv3d, 4), isUI);
+   }
 }
 
-void Textbox::SetObjectPos()
-{
-    m_vpinball->SetObjectPosCur(m_d.m_v1.x, m_d.m_v1.y);
-}
-
-void Textbox::MoveOffset(const float dx, const float dy)
-{
-   m_d.m_v1.x += dx;
-   m_d.m_v1.y += dy;
-
-   m_d.m_v2.x += dx;
-   m_d.m_v2.y += dy;
-}
-
-void Textbox::PutCenter(const Vertex2D& pv)
-{
-   m_d.m_v2.x = pv.x + m_d.m_v2.x - m_d.m_v1.x;
-   m_d.m_v2.y = pv.y + m_d.m_v2.y - m_d.m_v1.y;
-
-   m_d.m_v1 = pv;
-}
+void Textbox::PhysicRelease(PhysicsEngine *physics, const bool isUI) { }
 
 
 #pragma region Rendering
@@ -246,6 +228,7 @@ void Textbox::RenderRelease()
    if (m_pFont)
    {
       TTF_CloseFont(m_pFont);
+      TTF_Quit();
       m_pFont = nullptr;
    }
 #endif
@@ -294,36 +277,44 @@ void Textbox::Render(const unsigned int renderMask)
    {
       m_renderer->m_renderDevice->ResetRenderState();
       m_renderer->m_renderDevice->SetRenderState(RenderState::ALPHABLENDENABLE, RenderState::RS_FALSE);
-      m_renderer->m_renderDevice->m_DMDShader->SetTechnique(SHADER_TECHNIQUE_basic_DMD);
 
-      Vertex3D_NoTex2 vertices[4] = {
-         { 1.f, 1.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f }, 
-         { 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 1.f }, 
-         { 1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 0.f },
-         { 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f } };
+      const float vx1 = x * m_renderer->m_renderDevice->GetCurrentRenderTarget()->GetWidth();
+      const float vy1 = y * m_renderer->m_renderDevice->GetCurrentRenderTarget()->GetHeight();
+      const float vx2 = vx1 + w * m_renderer->m_renderDevice->GetCurrentRenderTarget()->GetWidth();
+      const float vy2 = vy1 + h * m_renderer->m_renderDevice->GetCurrentRenderTarget()->GetHeight();
+      Vertex3D_NoTex2 vertices[4] = { //
+         { vx2, vy2, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f }, //
+         { vx1, vy2, 0.f, 0.f, 0.f, 1.f, 0.f, 1.f }, //
+         { vx2, vy1, 0.f, 0.f, 0.f, 1.f, 1.f, 0.f }, //
+         { vx1, vy1, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f }
+      };
 
-      for (unsigned int i = 0; i < 4; ++i)
-      {
-         vertices[i].x = (vertices[i].x * w + x) * 2.0f - 1.0f;
-         vertices[i].y = 1.0f - (vertices[i].y * h + y) * 2.0f;
-      }
-
-      ResURIResolver::DisplayState dmd = g_pplayer->m_resURIResolver.GetDisplayState("ctrl://default/display"s);
+      PinballPlugin::ResURIResolver::DisplayState dmd = g_pplayer->m_resURIResolver.GetDisplayState(PinballPlugin::ResURIResolver::DefaultDmdUri);
       if (dmd.state.frame == nullptr)
          return;
-      BaseTexture::Update(m_texture, dmd.source->width, dmd.source->height, 
-              dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_LUM32F  ? BaseTexture::BW_FP32
-            : dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_SRGB565 ? BaseTexture::SRGB565
-                                                                      : BaseTexture::SRGB,
-         dmd.state.frame);
+
+      m_renderer->UpdateDesktopBackdropShaderMatrix(true, false, true);
+      if (!m_hasUploadedFrame || (m_texture == nullptr) || (dmd.state.frameId != m_uploadedFrameId) || (*dmd.source != m_uploadedSrc))
+      {
+         BaseTexture::Update(m_texture, dmd.source->width, dmd.source->height,
+                 dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_LUM32F  ? BaseTexture::BW_FP32
+               : dmd.source->frameFormat == CTLPI_DISPLAY_FORMAT_SRGB565 ? BaseTexture::SRGB565
+                                                                         : BaseTexture::SRGB,
+            dmd.state.frame);
+         m_uploadedSrc = *dmd.source;
+         m_uploadedFrameId = dmd.state.frameId;
+         m_hasUploadedFrame = true;
+      }
       // DMD support for textbox is for backward compatibility only, so only use compatibility style #0
       const vec3 color = m_texture->m_format == BaseTexture::BW_FP32 ? convertColor(m_d.m_fontcolor) : vec3(1.f, 1.f, 1.f);
-      m_renderer->SetupDMDRender(0, true, color, m_d.m_intensity_scale, m_texture, 1.f, Renderer::Reinhard, nullptr,
+      m_renderer->SetupDMDRender(0, true, color, m_d.m_intensity_scale, m_texture, 1.f, 0.f, Renderer::Reinhard, nullptr,
          vec4(0.f, 0.f, 0.f, 0.f), vec3(1.f, 1.f, 1.f), 0.f,
          nullptr, vec4(), vec3(0.f, 0.f, 0.f));
       m_renderer->m_renderDevice->DrawTexturedQuad(m_renderer->m_renderDevice->m_DMDShader, vertices);
       m_renderer->m_renderDevice->GetCurrentPass()->m_commands.back()->SetTransparent(true);
       m_renderer->m_renderDevice->GetCurrentPass()->m_commands.back()->SetDepth(-10000.f);
+
+      m_renderer->UpdateBasicShaderMatrix();
    }
    else if (m_texture)
    {
@@ -469,9 +460,9 @@ void Textbox::Render(const unsigned int renderMask)
       }
 
       m_renderer->m_renderDevice->ResetRenderState();
-      m_renderer->m_renderDevice->m_DMDShader->SetFloat(SHADER_alphaTestValue, (float)(128.0 / 255.0));
+      m_renderer->m_renderDevice->m_DMDShader->SetFloat(ShaderUniform::alphaTestValue, (float)(128.0 / 255.0));
       m_renderer->DrawSprite(x, y, w, h, 0xFFFFFFFF, m_renderer->m_renderDevice->m_texMan.LoadTexture(m_texture.get(), false), m_d.m_intensity_scale);
-      m_renderer->m_renderDevice->m_DMDShader->SetFloat(SHADER_alphaTestValue, 1.0f);
+      m_renderer->m_renderDevice->m_DMDShader->SetFloat(ShaderUniform::alphaTestValue, 1.0f);
    }
 }
 
@@ -488,7 +479,11 @@ STDMETHODIMP Textbox::get_BackColor(OLE_COLOR *pVal)
 
 STDMETHODIMP Textbox::put_BackColor(OLE_COLOR newVal)
 {
-   m_d.m_backcolor = newVal;
+   if (m_d.m_backcolor != newVal)
+   {
+      m_textureDirty = true;
+      m_d.m_backcolor = newVal;
+   }
    return S_OK;
 }
 
@@ -500,7 +495,11 @@ STDMETHODIMP Textbox::get_FontColor(OLE_COLOR *pVal)
 
 STDMETHODIMP Textbox::put_FontColor(OLE_COLOR newVal)
 {
-   m_d.m_fontcolor = newVal;
+   if (m_d.m_fontcolor != newVal)
+   {
+      m_textureDirty = true;
+      m_d.m_fontcolor = newVal;
+   }
    return S_OK;
 }
 
@@ -512,8 +511,11 @@ STDMETHODIMP Textbox::get_Text(BSTR *pVal)
 
 STDMETHODIMP Textbox::put_Text(BSTR newVal)
 {
-   m_d.m_text = MakeString(newVal);
-   m_textureDirty = true;
+   if (string text = MakeString(newVal); text != m_d.m_text)
+   {
+      m_d.m_text = std::move(text);
+      m_textureDirty = true; // Scripts often set the same text again (e.g. the score on each timer tick)
+   }
 
    return S_OK;
 }
@@ -533,12 +535,6 @@ STDMETHODIMP Textbox::get_Font(IFontDisp **pVal)
 #endif
 }
 
-STDMETHODIMP Textbox::put_Font(IFontDisp *newVal)
-{
-   // Does anybody use this way of setting the font?  Need to add to idl file.
-   return S_OK;
-}
-
 STDMETHODIMP Textbox::putref_Font(IFontDisp* pFont)
 {
    //We know that our own property browser gives us the same pointer
@@ -551,7 +547,8 @@ STDMETHODIMP Textbox::putref_Font(IFontDisp* pFont)
    }
 #endif
 
-   SetDirtyDraw();
+   if (PinTable *const table = GetPTable())
+      table->SetDirtyDraw();
 
    return S_OK;
 }
@@ -583,9 +580,6 @@ STDMETHODIMP Textbox::put_Height(float newVal)
 STDMETHODIMP Textbox::get_X(float *pVal)
 {
    *pVal = m_d.m_v1.x;
-   if (m_vpinball)
-      m_vpinball->SetStatusBarUnitInfo(string(), true);
-
    return S_OK;
 }
 
@@ -633,7 +627,11 @@ STDMETHODIMP Textbox::get_Alignment(TextAlignment *pVal)
 
 STDMETHODIMP Textbox::put_Alignment(TextAlignment newVal)
 {
-   m_d.m_talign = newVal;
+   if (m_d.m_talign != newVal)
+   {
+      m_textureDirty = true;
+      m_d.m_talign = newVal;
+   }
    return S_OK;
 }
 
@@ -680,6 +678,12 @@ TTF_Font* Textbox::LoadFont()
    if (m_pFont)
       return m_pFont;
 
+   if (!TTF_Init())
+   {
+      PLOGW << "Unable to initialize SDL_ttf: " << SDL_GetError();
+      return nullptr;
+   }
+
    TTF_Font* pFont = nullptr;
 
    string fontName = m_d.m_font.name;
@@ -700,9 +704,9 @@ TTF_Font* Textbox::LoadFont()
    for (const auto& szStyle : styles) {
       path = find_case_insensitive_file_path(tablePath / (fontName + szStyle + ".ttf"));
       if (!path.empty()) {
-         pFont = TTF_OpenFont(path.string().c_str(), (float)(m_d.m_font.size / 10000.));
+         pFont = TTF_OpenFont(PathToUTF8(path).c_str(), (float)(m_d.m_font.size / 10000.)); // SDL expects UTF-8
          if (pFont) {
-            PLOGI << "Font loaded: path=" << path.string();
+            PLOGI << "Font loaded: path=" << PathToUTF8(path);
             break;
          }
       }
@@ -710,15 +714,16 @@ TTF_Font* Textbox::LoadFont()
 
    if (!pFont) {
       path = tablePath / (fontName + styles[0] + ".ttf");
-      PLOGW << "Unable to locate font: path=" << path.string();
+      PLOGW << "Unable to locate font: path=" << PathToUTF8(path);
 
       path = g_app->m_fileLocator.GetAppPath(FileLocator::AppSubFolder::Assets) / "LiberationSans-Regular.ttf"sv;
-      pFont = TTF_OpenFont(path.string().c_str(), (float)(m_d.m_font.size / 10000.));
+      pFont = TTF_OpenFont(PathToUTF8(path).c_str(), (float)(m_d.m_font.size / 10000.)); // SDL expects UTF-8
       if (pFont) {
-         PLOGW << "Default font loaded: path=" << path.string();
+         PLOGW << "Default font loaded: path=" << PathToUTF8(path);
       }
       else {
-         PLOGW << "Unable to load font: path=" << path.string();
+         PLOGW << "Unable to load font: path=" << PathToUTF8(path);
+         TTF_Quit();
          return nullptr;
       }
    }

@@ -4,10 +4,11 @@
 
 #pragma once
 
+#include "core/resourceid.h"
 #include "parts/Collection.h"
 #include "parts/pintable.h"
+#include "physics/hitable.h"
 #include "renderer/Renderable.h"
-#include "ui/win/resource.h"
 #include "utils/eventproxy.h"
 
 // data in this class is persisted with the table
@@ -40,16 +41,15 @@ class DispReel :
    public EventProxy<DispReel, &DIID_IDispReelEvents>,
    public IConnectionPointContainerImpl<DispReel>,
    public IProvideClassInfo2Impl<&CLSID_DispReel, &DIID_IDispReelEvents, &LIBID_VPinballLib>,
-   public ISelect,
    public IEditable,
    public IScriptable,
    public IFireEvents,
-   //public Hitable, // FIXME implement UI picking
+   public IHitable, // only used for UI picking
    public IRenderable,
-   public IPerPropertyBrowsing     // Ability to fill in dropdown(s) in property browser
+   public IPerPropertyBrowsing // Ability to fill in dropdown(s) in property browser
 {
 public:
-#ifdef __STANDALONE__
+#ifdef VPX_MANUAL_SCRIPT_DISPATCH
    STDMETHOD(GetIDsOfNames)(REFIID /*riid*/, LPOLESTR* rgszNames, UINT cNames, LCID lcid,DISPID* rgDispId);
    STDMETHOD(Invoke)(DISPID dispIdMember, REFIID /*riid*/, LCID lcid, WORD wFlags, DISPPARAMS* pDispParams, VARIANT* pVarResult, EXCEPINFO* pExcepInfo, UINT* puArgErr);
    STDMETHOD(GetDocumentation)(MEMBERID index, BSTR *pBstrName, BSTR *pBstrDocString, DWORD *pdwHelpContext, BSTR *pBstrHelpFile);
@@ -75,13 +75,11 @@ public:
       CONNECTION_POINT_ENTRY(DIID_IDispReelEvents)
    END_CONNECTION_POINT_MAP()
 
-   STANDARD_EDITABLE_DECLARES_NO_HITABLE(DispReel, eItemDispReel, DISPREEL, VIEW_BACKGLASS)
+   STANDARD_EDITABLE_DECLARES(DispReel, eItemDispReel, DISPREEL)
 
-   void MoveOffset(const float dx, const float dy) final;
-   void SetObjectPos() final;
+   void Translate(const Vertex2D &offset) final;
    // Multi-object manipulation
    Vertex2D GetCenter() const final;
-   void PutCenter(const Vertex2D &pv) final;
 
    void WriteRegDefaults() final;
 
