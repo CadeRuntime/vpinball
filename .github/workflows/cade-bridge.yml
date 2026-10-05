@@ -4,6 +4,7 @@ name: cade-bridge
 # CadeBridge plugin silently skips itself there (see make/CMakeLists_plugin_CadeBridge.txt).
 # This workflow builds it on its own (BUILD_APP=OFF, no external.sh dependencies needed)
 # and fails if it was skipped. Kept in its own file to avoid conflicts with upstream syncs.
+# Also called by cade-release.yml with upload: true to ship the plugin in releases.
 
 on:
   push:
@@ -26,10 +27,22 @@ on:
       - 'CMakeLists.txt'
       - '.github/workflows/cade-bridge.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to build (defaults to the caller's)"
+        required: false
+        type: string
+      upload:
+        description: "Upload the plugin folders as artifacts"
+        required: false
+        type: boolean
+        default: false
 
+# Literal prefix: when called, github.workflow is the caller's, which would share its concurrency group
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: cade-bridge-${{ inputs.upload && 'release' || github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ !inputs.upload }}
 
 defaults:
   run:
@@ -38,15 +51,36 @@ defaults:
 jobs:
   linux:
     name: Linux x64
+    # Same image as the vpinball Linux release build, so the plugin runs against the same glibc / libstdc++
     runs-on: ubuntu-24.04
-    # Arch ships gRPC and protobuf with their CMake config packages, which the plugin's find_package(... CONFIG) needs
-    container: archlinux:latest
     steps:
-      - name: Install dependencies
-        run: pacman -Syu --noconfirm --needed base-devel cmake git grpc protobuf
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Get vcpkg location and revision
+        id: vcpkg
+        run: |
+          echo "root=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_OUTPUT
+          echo "rev=$(git -C "$VCPKG_INSTALLATION_ROOT" rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - name: Cache vcpkg packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.vcpkg.outputs.root }}/installed
+          key: cade-vcpkg-grpc-x64-linux-release-${{ steps.vcpkg.outputs.rev }}
+      # Static release only triplet: gRPC / protobuf are linked into the plugin, so the release
+      # doesn't depend on the user's distro shipping matching shared libraries
+      - name: Install gRPC
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install grpc:x64-linux-release protobuf:x64-linux-release \
+            --host-triplet=x64-linux-release --clean-after-build
+          echo "VCPKG_PREFIX=$VCPKG_INSTALLATION_ROOT/installed/x64-linux-release" >> $GITHUB_ENV
       - name: Configure
-        run: cmake -DBUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release -B build | tee configure.log
+        run: |
+          cmake -DBUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release -B build \
+            -DCMAKE_PREFIX_PATH="$VCPKG_PREFIX" \
+            -DProtobuf_PROTOC_EXECUTABLE="$VCPKG_PREFIX/tools/protobuf/protoc" \
+            -DPROTOC_EXECUTABLE="$VCPKG_PREFIX/tools/protobuf/protoc" \
+            -DGRPC_CPP_PLUGIN="$VCPKG_PREFIX/tools/grpc/grpc_cpp_plugin" | tee configure.log
       - name: Check plugin is enabled
         run: |
           grep -q "CadeBridge plugin: grpc++ and protobuf found" configure.log
@@ -59,12 +93,23 @@ jobs:
           # Not piped into grep -q: its early exit would SIGPIPE nm, failing the step under pipefail
           nm -D build/plugins/cade-bridge/plugin-cade-bridge.so > symbols.txt
           grep -q CadeBridgePluginLoad symbols.txt
+          # gRPC / protobuf / abseil must be linked in, not needed at runtime
+          readelf -d build/plugins/cade-bridge/plugin-cade-bridge.so | tee needed.txt
+          ! grep -E "NEEDED.*(grpc|protobuf|absl|upb|ssl|crypto|cares|re2)" needed.txt
+      - if: inputs.upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: cade-bridge-linux-x64
+          path: build/plugins/cade-bridge/
+          if-no-files-found: error
 
   windows:
     name: Windows x64
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
       # VCPKG_INSTALLATION_ROOT is a runner environment variable, not available in the workflow env context
       - name: Get vcpkg location and revision
         id: vcpkg
@@ -99,3 +144,11 @@ jobs:
           test -f build/plugins/cade-bridge/plugin.cfg
           test -f build/plugins/cade-bridge/plugin-cade-bridge64.dll
           df -h /c /d || true
+      - if: inputs.upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: cade-bridge-windows-x64
+          path: |
+            build/plugins/cade-bridge/
+            !build/plugins/cade-bridge/*.pdb
+          if-no-files-found: error

@@ -200,6 +200,9 @@ if(BUILD_SHARED)
          set_target_properties(CadeBridgePlugin PROPERTIES
             SUFFIX ".dylib"
          )
+      else()
+         # With a static gRPC (vcpkg, release builds), don't re-export its symbols from the plugin
+         target_link_options(CadeBridgePlugin PRIVATE -Wl,--exclude-libs,ALL)
       endif()
    endif()
 
