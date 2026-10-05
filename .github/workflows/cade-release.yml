@@ -1,0 +1,133 @@
+name: cade-release
+
+# Cade fork only. Publishes a GitHub release of a commit: the vpinball build artifacts of that
+# commit with the CadeBridge plugin added to the Windows x64 and Linux x64 packages. The plugin
+# isn't published on its own: it needs this fork's core changes (VPXGameElementAPI, game element
+# events), so it only belongs with a VPX built from the same commit. The commit must have a
+# successful vpinball.yml run.
+# Upstream's prerelease.yml is left untouched (it doesn't include the plugin).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "SHA (leave blank for HEAD)"
+        required: false
+      prerelease:
+        description: "Publish as a prerelease"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  VERSION_START_SHA: ea558e7417f6f06fe567d34f0e33792a141b8e64
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      tag: ${{ steps.version.outputs.tag }}
+      run_id: ${{ steps.find-run.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.sha || github.sha }}
+          fetch-depth: 0
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      - id: version
+        run: |
+          VERSION_MAJOR=$(grep -Eo "VP_VERSION_MAJOR\s+[0-9]+" src/core/vpversion.h | grep -Eo "[0-9]+")
+          VERSION_MINOR=$(grep -Eo "VP_VERSION_MINOR\s+[0-9]+" src/core/vpversion.h | grep -Eo "[0-9]+")
+          VERSION_REV=$(grep -Eo "VP_VERSION_REV\s+[0-9]+" src/core/vpversion.h | grep -Eo "[0-9]+")
+          REVISION=$(git rev-list ${{ env.VERSION_START_SHA }}..HEAD --count)
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          echo "tag=${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_REV}-${REVISION}-${SHA_SHORT}" >> $GITHUB_OUTPUT
+      # Fail early, before the plugin build, if there is nothing to release
+      - name: Find build run
+        id: find-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list --repo ${{ github.repository }} --workflow=vpinball.yml --status=success \
+            --commit=${{ steps.sha.outputs.sha }} --limit=1 --json databaseId -q '.[0].databaseId')
+          if [[ -z "${RUN_ID}" ]]; then
+            echo "::error::No successful vpinball.yml run for ${{ steps.sha.outputs.sha }}"
+            exit 1
+          fi
+          echo "run_id=${RUN_ID}" >> $GITHUB_OUTPUT
+
+  plugin:
+    needs: [ version ]
+    uses: ./.github/workflows/cade-bridge.yml
+    with:
+      ref: ${{ needs.version.outputs.sha }}
+      upload: true
+
+  release:
+    runs-on: ubuntu-24.04
+    needs: [ version, plugin ]
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download vpinball artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: VPinballX*
+          run-id: ${{ needs.version.outputs.run_id }}
+          github-token: ${{ github.token }}
+          skip-decompress: true
+      - name: Download plugin artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: cade
+          pattern: cade-bridge-*
+      - name: Add the plugin to the packages
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          mkdir release
+          find artifacts -type f -exec mv {} release/ \;
+          for PLATFORM in windows-x64 linux-x64; do
+            mkdir -p "stage-${PLATFORM}/plugins"
+            cp -r "cade/cade-bridge-${PLATFORM}" "stage-${PLATFORM}/plugins/cade-bridge"
+          done
+          chmod +x stage-linux-x64/plugins/cade-bridge/*.so
+
+          # Windows x64 packages (BGFX, GL, DX), not the dev-third-party ones
+          for f in release/VPinballX*-${TAG}-windows-x64-Release.zip; do
+            [[ "$f" == *dev-third-party* ]] && continue
+            (cd stage-windows-x64 && zip -qr "../$f" plugins/cade-bridge)
+            # Not piped into grep -q: its early exit would SIGPIPE the lister, failing the step under pipefail
+            unzip -l "$f" > contents.txt
+            grep -q "plugins/cade-bridge/plugin-cade-bridge64.dll" contents.txt
+            echo "Added plugin to $f"
+          done
+          # Linux x64 packages are created with 'tar -C stage .', keep the ./ prefix
+          for f in release/VPinballX*-${TAG}-linux-x64-Release.tar.gz; do
+            gunzip "$f"
+            tar -rf "${f%.gz}" -C stage-linux-x64 ./plugins/cade-bridge
+            gzip "${f%.gz}"
+            tar -tzf "$f" > contents.txt
+            grep -q "^./plugins/cade-bridge/plugin-cade-bridge.so$" contents.txt
+            echo "Added plugin to $f"
+          done
+
+          ls -l release
+      - uses: ncipollo/release-action@v1
+        with:
+          prerelease: ${{ inputs.prerelease }}
+          name: "v${{ needs.version.outputs.tag }}"
+          tag: "v${{ needs.version.outputs.tag }}"
+          commit: ${{ needs.version.outputs.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "release/*"

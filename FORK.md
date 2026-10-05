@@ -31,6 +31,7 @@ New files:
 - `src/core/VPXGameElementBridge.h`
 - `make/CMakeLists_plugin_CadeBridge.txt`, `make/plugin-cade-bridge.vcxproj`
 - `.github/workflows/cade-bridge.yml` (builds the plugin, which the upstream CI skips for lack of gRPC)
+- `.github/workflows/cade-release.yml` (publishes a release: the vpinball packages with the plugin added)
 
 Modified upstream files:
 - `src/core/ieditable.h` — one-line `FireGroupEvent` hook into the bridge
